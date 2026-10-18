@@ -61,6 +61,9 @@ pub struct Settings {
     /// Extrapolate the live stroke slightly ahead of the pen (hides latency).
     pub predict_pen: bool,
     pub zoom: ZoomMode,
+    pub pdf_path: String,
+    /// Draw the ruled/grid lines into the exported PDF.
+    pub pdf_rules: bool,
     pub file_path: String,
 }
 
@@ -73,6 +76,8 @@ impl Default for Settings {
             eraser_radius: 12.0,
             predict_pen: true,
             zoom: ZoomMode::Percent(100),
+            pdf_path: "notes.pdf".to_owned(),
+            pdf_rules: true,
             file_path: "notes.ink".to_owned(),
         }
     }

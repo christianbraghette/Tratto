@@ -1,6 +1,7 @@
 //! Application state and per-frame orchestration.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, DragValue, Event, FontId, Id, Key, Modifiers, PointerButton,
@@ -8,6 +9,7 @@ use eframe::egui::{
 };
 
 use crate::history::{Action, History};
+use crate::pdf_export::{self, PdfOptions};
 use crate::model::{paper_label, Document, PageKind, Point, Stroke, StrokeKind, PAPERS};
 use crate::render::{self, StrokeCache};
 use crate::scrollbar;
@@ -55,6 +57,8 @@ pub struct InkApp {
     last_erase_pos: Option<Pos2>,
     last_pressure: f32,
     status: String,
+    /// When `status` was last set (drives the transient toast).
+    status_at: Option<Instant>,
     /// Native Wayland pen source (None on X11/Windows or without tablet support).
     pen: Option<WaylandPen>,
     pen_init_done: bool,
@@ -91,6 +95,7 @@ impl InkApp {
             last_erase_pos: None,
             last_pressure: 1.0,
             status: String::new(),
+            status_at: None,
             pen: None,
             pen_init_done: false,
             pen_down: false,
@@ -112,6 +117,17 @@ impl InkApp {
             Ok(()) => format!("Saved to {path}"),
             Err(e) => format!("Save failed: {e}"),
         };
+        self.status_at = Some(Instant::now());
+    }
+
+    fn export_pdf(&mut self) {
+        let path = self.settings.pdf_path.clone();
+        let opts = PdfOptions { include_rules: self.settings.pdf_rules };
+        self.status = match pdf_export::export_pdf(&self.doc, Path::new(&path), &opts) {
+            Ok(()) => format!("Exported PDF to {path}"),
+            Err(e) => format!("PDF export failed: {e}"),
+        };
+        self.status_at = Some(Instant::now());
     }
 
     fn load(&mut self) {
@@ -125,12 +141,14 @@ impl InkApp {
             }
             Err(e) => self.status = format!("Load failed: {e}"),
         }
+        self.status_at = Some(Instant::now());
     }
 
     fn new_document(&mut self) {
         self.doc = Document::default();
         self.reset_editing_state();
         self.status = "New document".into();
+        self.status_at = Some(Instant::now());
     }
 
     fn reset_editing_state(&mut self) {
@@ -169,12 +187,13 @@ impl InkApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // Order matters: the Shift variant must be consumed before plain Ctrl+Z.
-        let (redo_shift, redo_y, undo, save, fullscreen) = ctx.input_mut(|i| {
+        let (redo_shift, redo_y, undo, save, export, fullscreen) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
                 i.consume_key(Modifiers::COMMAND, Key::Y),
                 i.consume_key(Modifiers::COMMAND, Key::Z),
                 i.consume_key(Modifiers::COMMAND, Key::S),
+                i.consume_key(Modifiers::COMMAND, Key::E),
                 i.consume_key(Modifiers::NONE, Key::F11),
             )
         });
@@ -185,6 +204,9 @@ impl InkApp {
         }
         if save {
             self.save_file();
+        }
+        if export {
+            self.export_pdf();
         }
         if fullscreen {
             let is_fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
@@ -586,6 +608,25 @@ impl InkApp {
             }
         }
 
+        // Transient status message (saved / exported / errors).
+        if let Some(t) = self.status_at {
+            if t.elapsed() < Duration::from_millis(3500) && !self.status.is_empty() {
+                let galley = painter.layout_no_wrap(
+                    self.status.clone(),
+                    FontId::proportional(15.0),
+                    Color32::WHITE,
+                );
+                let size = galley.size() + vec2(24.0, 14.0);
+                let pill = Rect::from_center_size(
+                    pos2(canvas.center().x, canvas.bottom() - 90.0),
+                    size,
+                );
+                painter.rect_filled(pill, 10.0, Color32::from_black_alpha(220));
+                painter.galley(pill.min + vec2(12.0, 7.0), galley, Color32::WHITE);
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+            }
+        }
+
         // Scrollbars on top; the vertical one shows a page indicator while dragged.
         let center_y = self.scroll.y + canvas.height() / scale * 0.5;
         let label = format!("Page {} / {}", layout.page_index_at_y(center_y) + 1, layout.count);
@@ -694,6 +735,17 @@ impl InkApp {
                 ui.add(Slider::new(&mut self.doc.page.spacing, 16.0..=80.0).text("Line spacing"));
 
                 ui.separator();
+                ui.heading("Export");
+                ui.horizontal(|ui| {
+                    ui.label("PDF file");
+                    ui.text_edit_singleline(&mut self.settings.pdf_path);
+                });
+                ui.checkbox(&mut self.settings.pdf_rules, "Include ruled lines / grid");
+                if ui.button("Export PDF").on_hover_text("Ctrl+E").clicked() {
+                    self.export_pdf();
+                }
+
+                ui.separator();
                 ui.heading("File");
                 ui.text_edit_singleline(&mut self.settings.file_path);
                 ui.horizontal(|ui| {
@@ -713,7 +765,7 @@ impl InkApp {
                 if self.pen.is_some() {
                     ui.small("Native Wayland pen input: active (pressure, eraser end, barrel button = undo)");
                 }
-                ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, F11 fullscreen, PageUp/PageDown scroll");
+                ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, Ctrl+E export PDF, F11 fullscreen, PageUp/PageDown scroll");
             });
         self.settings_open = open;
     }

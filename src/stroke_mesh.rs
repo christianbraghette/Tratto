@@ -126,6 +126,38 @@ pub fn tessellate(
     add_arc(mesh, last.p, perp(dirs[n - 2]), dirs[n - 2], last.r - half_aa, last.r + half_aa, solid, PI, arc_segments(last.r, aa));
 }
 
+/// One sample of a stroke's smoothed centreline, in page units.
+#[derive(Clone, Copy, Debug)]
+pub struct Sample {
+    pub x: f32,
+    pub y: f32,
+    /// Half of the local stroke width.
+    pub r: f32,
+}
+
+/// The same curve that is rendered on screen (Bézier through midpoints, with
+/// pressure-dependent radius), sampled every `step` page units. Used by the
+/// PDF export so the printed ink matches what is seen.
+pub fn centerline(kind: StrokeKind, width: f32, pts: &[Point], step: f32) -> Vec<Sample> {
+    if pts.is_empty() {
+        return Vec::new();
+    }
+    let nodes: Vec<Node> = pts
+        .iter()
+        .map(|p| {
+            let w = match kind {
+                StrokeKind::Pen => width * pressure_factor(p.pressure),
+                StrokeKind::Highlighter => width,
+            };
+            Node { p: pos2(p.x, p.y), r: w * 0.5 }
+        })
+        .collect();
+    dedup(smooth(&nodes, step), 0.01)
+        .into_iter()
+        .map(|n| Sample { x: n.p.x, y: n.p.y, r: n.r })
+        .collect()
+}
+
 /// Quadratic Bézier through segment midpoints, using the points as controls.
 fn smooth(nodes: &[Node], step: f32) -> Vec<Node> {
     let n = nodes.len();

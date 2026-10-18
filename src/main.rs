@@ -12,6 +12,7 @@
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `toolbar`        the floating pill toolbar
 //! - `wayland_pen`    native Wayland tablet (pen) input, Linux only
+//! - `pdf_export`    vector PDF export (hand-written PDF writer)
 //! - `storage`        bincode save/load
 //! - `app`            application state and per-frame orchestration
 
@@ -19,6 +20,7 @@ mod app;
 mod geometry;
 mod history;
 mod model;
+mod pdf_export;
 mod render;
 mod scrollbar;
 mod settings;
