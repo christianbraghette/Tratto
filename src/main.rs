@@ -12,6 +12,7 @@
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `toolbar`        the floating pill toolbar
 //! - `wayland_pen`    native Wayland tablet (pen) input, Linux only
+//! - `windows_pen`    pen side button / eraser end on Windows
 //! - `pdf_export`    vector PDF export (hand-written PDF writer)
 //! - `storage`        bincode save/load
 //! - `app`            application state and per-frame orchestration
@@ -29,7 +30,8 @@ mod stroke_builder;
 mod stroke_mesh;
 mod toolbar;
 mod view;
-mod pen;
+mod windows_pen;
+mod wayland_pen;
 
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
@@ -62,8 +64,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("InkNote")
             .with_decorations(true) // keep system window buttons
-            .with_maximized(true)
-            //.with_fullscreen(true) // F11 toggles this at runtime
+            .with_maximized(true) // F11 toggles fullscreen at runtime
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };

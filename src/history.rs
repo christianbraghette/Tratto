@@ -6,9 +6,11 @@
 //!
 //! * `AddStroke`    inserts a stroke (moved in) and returns `RemoveStroke`.
 //! * `RemoveStroke` removes a stroke (moved out) and returns `AddStroke`.
+//! * `InsertPage` / `RemovePage` change the page list (shifting stroke pages).
+//! * `MoveStrokes` moves strokes, possibly to another page.
 //! * `Batch`        groups actions, e.g. everything erased in one drag.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use crate::model::{Document, Stroke};
 
@@ -17,6 +19,10 @@ const MAX_DEPTH: usize = 1000;
 pub enum Action {
     AddStroke { index: usize, stroke: Stroke },
     RemoveStroke { id: u64 },
+    InsertPage { index: u32 },
+    RemovePage { index: u32 },
+    /// Translate the strokes by (dx, dy) in page space and put them on `to_page`.
+    MoveStrokes { ids: Vec<u64>, to_page: u32, dx: f32, dy: f32 },
     Batch(Vec<Action>),
 }
 
@@ -37,6 +43,44 @@ impl Action {
                 }
                 None => Action::Batch(Vec::new()), // already gone: no-op
             },
+            Action::InsertPage { index } => {
+                let index = index.min(doc.page_count);
+                for s in doc.strokes.iter_mut().filter(|s| s.page >= index) {
+                    s.page += 1;
+                }
+                doc.page_count += 1;
+                Action::RemovePage { index }
+            }
+            Action::RemovePage { index } => {
+                if doc.page_count <= 1 || index >= doc.page_count {
+                    return Action::Batch(Vec::new());
+                }
+                // The page is empty when reached through undo/redo or the UI;
+                // as a safety net any leftover strokes go to the previous page.
+                for s in doc.strokes.iter_mut() {
+                    if s.page == index {
+                        s.page = index.saturating_sub(1);
+                    } else if s.page > index {
+                        s.page -= 1;
+                    }
+                }
+                doc.page_count -= 1;
+                Action::InsertPage { index }
+            }
+            Action::MoveStrokes { ids, to_page, dx, dy } => {
+                let set: HashSet<u64> = ids.iter().copied().collect();
+                let mut old_page = to_page;
+                let mut first = true;
+                for s in doc.strokes.iter_mut().filter(|s| set.contains(&s.id)) {
+                    if first {
+                        old_page = s.page;
+                        first = false;
+                    }
+                    s.translate(dx, dy);
+                    s.page = to_page;
+                }
+                Action::MoveStrokes { ids, to_page: old_page, dx: -dx, dy: -dy }
+            }
             Action::Batch(actions) => {
                 let mut inverses: Vec<Action> =
                     actions.into_iter().map(|a| a.apply(doc)).collect();
@@ -132,6 +176,44 @@ mod tests {
         assert_eq!(doc.strokes.len(), 1);
         h.redo(&mut doc);
         assert_eq!(doc.strokes.len(), 2);
+    }
+
+    #[test]
+    fn insert_page_shifts_strokes_and_undoes() {
+        let mut doc = Document::default();
+        doc.page_count = 2;
+        let mut h = History::default();
+        let mut s0 = stroke(1);
+        s0.page = 0;
+        let mut s1 = stroke(2);
+        s1.page = 1;
+        h.exec(&mut doc, Action::AddStroke { index: 0, stroke: s0 });
+        h.exec(&mut doc, Action::AddStroke { index: 1, stroke: s1 });
+        h.exec(&mut doc, Action::InsertPage { index: 1 });
+        assert_eq!(doc.page_count, 3);
+        assert_eq!(doc.strokes.iter().map(|s| s.page).collect::<Vec<_>>(), vec![0, 2]);
+        h.undo(&mut doc);
+        assert_eq!(doc.page_count, 2);
+        assert_eq!(doc.strokes.iter().map(|s| s.page).collect::<Vec<_>>(), vec![0, 1]);
+        h.redo(&mut doc);
+        assert_eq!(doc.strokes[1].page, 2);
+    }
+
+    #[test]
+    fn move_strokes_roundtrip() {
+        let mut doc = Document::default();
+        doc.page_count = 2;
+        let mut h = History::default();
+        h.exec(&mut doc, Action::AddStroke { index: 0, stroke: stroke(1) });
+        h.exec(&mut doc, Action::MoveStrokes { ids: vec![1], to_page: 1, dx: 5.0, dy: 7.0 });
+        assert_eq!(doc.strokes[0].page, 1);
+        assert_eq!(doc.strokes[0].points[0].x, 5.0);
+        assert_eq!(doc.strokes[0].bounds[1], 7.0);
+        h.undo(&mut doc);
+        assert_eq!(doc.strokes[0].page, 0);
+        assert_eq!(doc.strokes[0].points[0].x, 0.0);
+        h.redo(&mut doc);
+        assert_eq!(doc.strokes[0].points[1].x, 15.0);
     }
 
     #[test]

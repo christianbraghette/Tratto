@@ -2,7 +2,7 @@
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{self, vec2, Align2, Color32, Margin, Order, Rounding, Sense, Slider, Stroke, Vec2};
+use eframe::egui::{self, vec2, Align2, Color32, Margin, Order, Rounding, Sense, Slider, Stroke};
 
 use crate::settings::{Settings, ToolStyle, ToolbarPosition};
 
@@ -14,6 +14,8 @@ pub enum Tool {
     Pen,
     Highlighter,
     Eraser,
+    /// Lasso select + move.
+    Select,
 }
 
 pub enum ToolbarEvent {
@@ -38,22 +40,20 @@ const HIGHLIGHTER_PALETTE: [[u8; 3]; 5] = [
     [255, 170, 60],
 ];
 
-/// Shows the toolbar at its configured position; returns a clicked action.
+/// Shows the toolbar at the top or bottom edge; returns a clicked action.
+///
+/// `bottom_inset` keeps it clear of the horizontal scrollbar when that is visible.
 pub fn show(
     ctx: &egui::Context,
     tool: &mut Tool,
     settings: &mut Settings,
     can_undo: bool,
     can_redo: bool,
-    // Extra space taken by scrollbars on the right / bottom edge.
-    inset: Vec2,
+    bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
-    // (anchor, offset from that anchor, horizontal layout?)
-    let (anchor, offset, horizontal) = match settings.toolbar_position {
-        ToolbarPosition::Top => (Align2::CENTER_TOP, vec2(0.0, MARGIN), true),
-        ToolbarPosition::Bottom => (Align2::CENTER_BOTTOM, vec2(0.0, -(MARGIN + inset.y)), true),
-        //ToolbarPosition::Left => (Align2::LEFT_CENTER, vec2(MARGIN, 0.0), false),
-        //ToolbarPosition::Right => (Align2::RIGHT_CENTER, vec2(-(MARGIN + inset.x), 0.0), false),
+    let (anchor, offset) = match settings.toolbar_position {
+        ToolbarPosition::Top => (Align2::CENTER_TOP, vec2(0.0, MARGIN)),
+        ToolbarPosition::Bottom => (Align2::CENTER_BOTTOM, vec2(0.0, -(MARGIN + bottom_inset))),
     };
 
     let mut event = None;
@@ -66,15 +66,9 @@ pub fn show(
                 .inner_margin(Margin::symmetric(14.0, 10.0))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-                    if horizontal {
-                        ui.horizontal(|ui| {
-                            event = contents(ui, tool, settings, can_undo, can_redo);
-                        });
-                    } else {
-                        ui.vertical(|ui| {
-                            event = contents(ui, tool, settings, can_undo, can_redo);
-                        });
-                    }
+                    ui.horizontal(|ui| {
+                        event = contents(ui, tool, settings, can_undo, can_redo);
+                    });
                 });
         });
     event
@@ -92,6 +86,7 @@ fn contents(
     ui.selectable_value(tool, Tool::Pen, "Pen");
     ui.selectable_value(tool, Tool::Highlighter, "Highlighter");
     ui.selectable_value(tool, Tool::Eraser, "Eraser");
+    ui.selectable_value(tool, Tool::Select, "Select");
     ui.separator();
 
     ui.spacing_mut().slider_width = 100.0;
@@ -103,6 +98,9 @@ fn contents(
         Tool::Eraser => {
             ui.add(Slider::new(&mut settings.eraser_radius, 4.0..=60.0).show_value(false))
                 .on_hover_text("Eraser size");
+        }
+        Tool::Select => {
+            ui.weak("Lasso, then drag");
         }
     }
     ui.separator();

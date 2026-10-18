@@ -1,6 +1,6 @@
 //! Painting: pages, cached anti-aliased stroke meshes, eraser cursor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{epaint::Mesh, pos2, vec2, Color32, Painter, Pos2, Shape, Stroke as UiStroke, Vec2};
 
@@ -22,6 +22,8 @@ const CACHE_TTL_FRAMES: u64 = 512;
 struct Entry {
     mesh: Mesh,
     last_used: u64,
+    /// `Stroke::rev` the mesh was built for.
+    rev: u32,
 }
 
 /// Per-stroke tessellation cache. Meshes are stored at `page_space * scale`
@@ -56,11 +58,15 @@ impl StrokeCache {
 
     fn get(&mut self, s: &Stroke, scale: f32, aa: f32) -> &Mesh {
         let frame = self.frame;
-        let e = self.map.entry(s.id).or_insert_with(|| {
+        let build = || {
             let mut mesh = Mesh::default();
             stroke_mesh::tessellate(&mut mesh, s.kind, s.color, s.width, &s.points, scale, aa);
-            Entry { mesh, last_used: frame }
-        });
+            Entry { mesh, last_used: frame, rev: s.rev }
+        };
+        let e = self.map.entry(s.id).or_insert_with(build);
+        if e.rev != s.rev {
+            *e = build(); // the stroke was moved: rebuild
+        }
         e.last_used = frame;
         &e.mesh
     }
@@ -68,16 +74,28 @@ impl StrokeCache {
 
 // ------------------------------------------------------------ strokes
 
-/// Paints the strokes of all visible pages, one batched mesh per page.
+/// The selected strokes while they are shown at an offset (being dragged).
+pub struct Moved<'a> {
+    pub ids: &'a HashSet<u64>,
+    pub page: u32,
+    /// Offset in content space.
+    pub offset: Vec2,
+}
+
+/// Paints the strokes of all visible pages, one batched mesh per page. Strokes
+/// in `moved` are skipped there and drawn last, translated by the drag offset
+/// (their cached meshes are reused, nothing is re-tessellated while dragging).
 pub fn paint_strokes(
     painter: &Painter,
     view: &View,
     strokes: &[Stroke],
     cache: &mut StrokeCache,
     ppp: f32,
+    moved: Option<&Moved>,
 ) {
     let aa = 1.0 / ppp;
     cache.begin_frame(view.scale, ppp);
+    let is_moved = |id: u64| moved.map_or(false, |m| m.ids.contains(&id));
 
     for page in view.visible_pages() {
         let offset = view.page_origin_screen(page).to_vec2();
@@ -86,10 +104,22 @@ pub fn paint_strokes(
         let y1 = y0 + view.rect.height() / view.scale;
 
         let mut batch = Mesh::default();
-        for s in strokes.iter().filter(|s| s.page == page) {
+        for s in strokes.iter().filter(|s| s.page == page && !is_moved(s.id)) {
             if s.bounds[3] + s.width < y0 || s.bounds[1] - s.width > y1 {
                 continue; // outside the viewport
             }
+            batch.append_ref(cache.get(s, view.scale, aa));
+            if batch.vertices.len() > MAX_BATCH_VERTS {
+                flush(painter, &mut batch, offset);
+            }
+        }
+        flush(painter, &mut batch, offset);
+    }
+
+    if let Some(m) = moved {
+        let offset = view.page_origin_screen(m.page).to_vec2() + m.offset * view.scale;
+        let mut batch = Mesh::default();
+        for s in strokes.iter().filter(|s| s.page == m.page && m.ids.contains(&s.id)) {
             batch.append_ref(cache.get(s, view.scale, aa));
             if batch.vertices.len() > MAX_BATCH_VERTS {
                 flush(painter, &mut batch, offset);

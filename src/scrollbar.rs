@@ -1,6 +1,6 @@
 //! Large, pen-friendly scrollbars.
 //!
-//! The track is 28 points wide and the thumb never gets shorter than 72 points,
+//! The track is 16 points wide and the thumb never gets shorter than 56 points,
 //! so it is easy to hit with a stylus. Dragging the thumb scrolls with a fixed
 //! grab offset; tapping or pressing on the empty track makes the thumb jump
 //! there and follow the pen. Interaction (`update`) and painting (`paint`) are
@@ -8,9 +8,9 @@
 
 use eframe::egui::{pos2, vec2, Color32, FontId, Id, Painter, Rect, Sense, Ui};
 
-pub const THICKNESS: f32 = 20.0; //28.0;
-const MIN_THUMB: f32 = 72.0;
-const INSET: f32 = 4.0;
+pub const THICKNESS: f32 = 16.0;
+const MIN_THUMB: f32 = 56.0;
+const INSET: f32 = 3.0;
 
 pub struct BarState {
     pub thumb: Rect,
@@ -87,7 +87,7 @@ pub fn paint(painter: &Painter, track: Rect, vertical: bool, s: &BarState, label
     } else {
         Color32::from_gray(150)
     };
-    painter.rect_filled(s.thumb, 8.0, color);
+    painter.rect_filled(s.thumb, 6.0, color);
 
     // Floating label (e.g. "Page 3 / 12") next to the thumb while dragging.
     if let (true, true, Some(text)) = (s.active, vertical, label) {

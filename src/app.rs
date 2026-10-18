@@ -1,5 +1,6 @@
 //! Application state and per-frame orchestration.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -8,17 +9,19 @@ use eframe::egui::{
     Pos2, Rect, Sense, Slider, TouchPhase, Vec2,
 };
 
+use crate::geometry::point_in_polygon;
 use crate::history::{Action, History};
 use crate::pdf_export::{self, PdfOptions};
 use crate::model::{paper_label, Document, PageKind, Point, Stroke, StrokeKind, PAPERS};
-use crate::render::{self, StrokeCache};
+use crate::render::{self, Moved, StrokeCache};
 use crate::scrollbar;
 use crate::settings::{Settings, ToolbarPosition, ZoomMode};
 use crate::storage;
 use crate::stroke_builder::StrokeBuilder;
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::view::{Layout, View};
-use crate::pen::{PenEvent, WaylandPen};
+use crate::wayland_pen::{PenEvent, WaylandPen};
+use crate::windows_pen::WindowsPen;
 
 const SETTINGS_KEY: &str = "inknote_settings";
 /// Samples closer than this (document units) are treated as jitter.
@@ -36,6 +39,26 @@ struct ActiveStroke {
     color: [u8; 4],
     width: f32,
     builder: StrokeBuilder,
+}
+
+/// Strokes picked with the select tool (all on one page).
+struct Selection {
+    page: u32,
+    ids: HashSet<u64>,
+    /// Bounding box in that page's space.
+    bounds: Rect,
+}
+
+/// Freehand lasso being drawn (page space).
+struct Lasso {
+    page: u32,
+    points: Vec<Pos2>,
+}
+
+/// Selection being dragged; `delta` is in content space.
+struct MoveDrag {
+    start: Pos2,
+    delta: Vec2,
 }
 
 pub struct InkApp {
@@ -61,11 +84,20 @@ pub struct InkApp {
     status_at: Option<Instant>,
     /// Native Wayland pen source (None on X11/Windows or without tablet support).
     pen: Option<WaylandPen>,
+    /// Windows: pen side button / eraser end (None elsewhere).
+    win_pen: Option<WindowsPen>,
     pen_init_done: bool,
     pen_down: bool,
     pen_pos: Pos2,
-    /// Tool to restore when the pen's eraser end is lifted.
+    /// Tool to restore when the temporary eraser (pen eraser end / side button) is released.
     saved_tool: Option<Tool>,
+    /// Eraser requested by the native pen (eraser end or side button).
+    eraser_native: bool,
+    /// A drag that started on the grey area is scrolling the view.
+    panning: bool,
+    selection: Option<Selection>,
+    lasso: Option<Lasso>,
+    moving: Option<MoveDrag>,
     /// Cached anti-aliased meshes of finished strokes.
     cache: StrokeCache,
 }
@@ -97,10 +129,16 @@ impl InkApp {
             status: String::new(),
             status_at: None,
             pen: None,
+            win_pen: None,
             pen_init_done: false,
             pen_down: false,
             pen_pos: Pos2::ZERO,
             saved_tool: None,
+            eraser_native: false,
+            panning: false,
+            selection: None,
+            lasso: None,
+            moving: None,
             cache: StrokeCache::default(),
         };
         if Path::new(&app.settings.file_path).exists() {
@@ -172,16 +210,18 @@ impl InkApp {
     // ------------------------------------------------------- undo / redo
 
     fn undo(&mut self) {
-        if self.active.is_none() && self.erase_session.is_empty() {
+        if !self.busy() {
             self.history.undo(&mut self.doc);
             self.ensure_pages();
+            self.clear_selection();
         }
     }
 
     fn redo(&mut self) {
-        if self.active.is_none() && self.erase_session.is_empty() {
+        if !self.busy() {
             self.history.redo(&mut self.doc);
             self.ensure_pages();
+            self.clear_selection();
         }
     }
 
@@ -207,6 +247,20 @@ impl InkApp {
         }
         if export {
             self.export_pdf();
+        }
+        if self.selection.is_some() && !ctx.wants_keyboard_input() {
+            let (delete, escape) = ctx.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::Delete)
+                        || i.consume_key(Modifiers::NONE, Key::Backspace),
+                    i.consume_key(Modifiers::NONE, Key::Escape),
+                )
+            });
+            if delete {
+                self.delete_selection();
+            } else if escape {
+                self.clear_selection();
+            }
         }
         if fullscreen {
             let is_fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
@@ -261,7 +315,7 @@ impl InkApp {
                     if down {
                         self.last_pressure = pressure.clamp(0.0, 1.0);
                     }
-                    self.apply_pen_eraser(eraser);
+                    self.eraser_native = eraser;
                 }
                 PenEvent::Leave => {
                     if self.pen_down {
@@ -274,16 +328,16 @@ impl InkApp {
                         });
                     }
                     raw_input.events.push(Event::PointerGone);
-                    self.apply_pen_eraser(false);
+                    self.eraser_native = false;
                     self.last_pressure = 1.0;
                 }
-                // Barrel button = undo.
-                PenEvent::BarrelPressed => self.undo(),
+                PenEvent::BarrelPressed => todo!(),
             }
         }
     }
 
-    /// Flipping the pen over switches to the eraser; flipping back restores the tool.
+    /// Switches to the eraser while it is requested (pen eraser end or a held
+    /// side button) and restores the previous tool afterwards.
     fn apply_pen_eraser(&mut self, eraser: bool) {
         if eraser {
             if self.saved_tool.is_none() && self.tool != Tool::Eraser {
@@ -292,6 +346,183 @@ impl InkApp {
             }
         } else if let Some(t) = self.saved_tool.take() {
             self.tool = t;
+        }
+    }
+
+    // ---------------------------------------------------- pages / selection
+
+    /// True while a stroke, erase drag, lasso or selection drag is in progress.
+    fn busy(&self) -> bool {
+        self.active.is_some()
+            || !self.erase_session.is_empty()
+            || self.lasso.is_some()
+            || self.moving.is_some()
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.lasso = None;
+        self.moving = None;
+    }
+
+    /// Inserts an empty page so that it gets `index` (undoable).
+    fn insert_page(&mut self, index: u32) {
+        self.clear_selection();
+        self.history.exec(&mut self.doc, Action::InsertPage { index });
+    }
+
+    fn selection_for(&self, page: u32, ids: HashSet<u64>) -> Option<Selection> {
+        let mut bounds: Option<Rect> = None;
+        for s in self.doc.strokes.iter().filter(|s| ids.contains(&s.id)) {
+            let pad = s.width * 0.5;
+            let r = Rect::from_min_max(
+                pos2(s.bounds[0] - pad, s.bounds[1] - pad),
+                pos2(s.bounds[2] + pad, s.bounds[3] + pad),
+            );
+            bounds = Some(bounds.map_or(r, |b| b.union(r)));
+        }
+        bounds.map(|bounds| Selection { page, ids, bounds })
+    }
+
+    /// Lasso released: pick the strokes that are mostly inside it. A simple
+    /// tap selects the stroke under the pen instead.
+    fn finish_lasso(&mut self) {
+        let Some(l) = self.lasso.take() else { return };
+        let mut ids = HashSet::new();
+        let path_len: f32 = l.points.windows(2).map(|w| w[0].distance(w[1])).sum();
+
+        if l.points.len() < 4 || path_len < 8.0 {
+            if let Some(p) = l.points.first() {
+                if let Some(s) = self
+                    .doc
+                    .strokes
+                    .iter()
+                    .rev()
+                    .find(|s| s.page == l.page && s.hit_test(*p, 4.0))
+                {
+                    ids.insert(s.id);
+                }
+            }
+        } else {
+            let poly_bounds = Rect::from_points(&l.points);
+            for s in self.doc.strokes.iter().filter(|s| s.page == l.page) {
+                let sb = Rect::from_min_max(
+                    pos2(s.bounds[0], s.bounds[1]),
+                    pos2(s.bounds[2], s.bounds[3]),
+                );
+                if !sb.intersects(poly_bounds) {
+                    continue;
+                }
+                let inside = s
+                    .points
+                    .iter()
+                    .filter(|p| point_in_polygon(p.pos2(), &l.points))
+                    .count();
+                if inside * 2 >= s.points.len().max(1) {
+                    ids.insert(s.id);
+                }
+            }
+        }
+        self.selection = self.selection_for(l.page, ids);
+    }
+
+    /// Drop the dragged selection: possibly onto another page, kept inside it.
+    fn commit_move(&mut self, layout: Layout) {
+        let Some(m) = self.moving.take() else { return };
+        let Some(sel) = self.selection.as_mut() else { return };
+        let d = m.delta;
+        if d.length() < 0.5 {
+            return;
+        }
+        let src_o = layout.page_origin(sel.page).to_vec2();
+        let center = sel.bounds.center() + src_o + d;
+        let dst = layout.page_at(center).unwrap_or(sel.page);
+        let dst_o = layout.page_origin(dst).to_vec2();
+
+        // Delta expressed in the destination page's space.
+        let mut local = d + src_o - dst_o;
+        let nb = sel.bounds.translate(local);
+        if nb.width() <= layout.page_w {
+            if nb.min.x < 0.0 {
+                local.x -= nb.min.x;
+            } else if nb.max.x > layout.page_w {
+                local.x -= nb.max.x - layout.page_w;
+            }
+        }
+        if nb.height() <= layout.page_h {
+            if nb.min.y < 0.0 {
+                local.y -= nb.min.y;
+            } else if nb.max.y > layout.page_h {
+                local.y -= nb.max.y - layout.page_h;
+            }
+        }
+
+        let ids: Vec<u64> = sel.ids.iter().copied().collect();
+        sel.bounds = sel.bounds.translate(local);
+        sel.page = dst;
+        self.history.exec(
+            &mut self.doc,
+            Action::MoveStrokes { ids, to_page: dst, dx: local.x, dy: local.y },
+        );
+    }
+
+    fn delete_selection(&mut self) {
+        let Some(sel) = self.selection.take() else { return };
+        self.lasso = None;
+        self.moving = None;
+        let mut inverses = Vec::new();
+        for id in sel.ids {
+            inverses.push(Action::RemoveStroke { id }.apply(&mut self.doc));
+        }
+        if !inverses.is_empty() {
+            self.history
+                .push_undo(Action::Batch(inverses.into_iter().rev().collect()));
+        }
+    }
+
+    fn handle_select(
+        &mut self,
+        resp: &egui::Response,
+        view: &View,
+        press: Option<Pos2>,
+        moves: &[Pos2],
+    ) {
+        if resp.drag_started_by(PointerButton::Primary) {
+            if let Some(pos) = press.or(resp.interact_pointer_pos()) {
+                let c = view.screen_to_content(pos);
+                let inside = self.selection.as_ref().map_or(false, |s| {
+                    s.bounds.translate(view.layout.page_origin(s.page).to_vec2()).contains(c)
+                });
+                if inside {
+                    self.moving = Some(MoveDrag { start: c, delta: Vec2::ZERO });
+                } else {
+                    self.selection = None;
+                    if let Some(page) = view.layout.page_at(c) {
+                        let p = to_page_point(view, page, pos, 1.0).pos2();
+                        self.lasso = Some(Lasso { page, points: vec![p] });
+                    }
+                }
+            }
+        } else if resp.dragged() || resp.drag_stopped() {
+            if let Some(m) = self.moving.as_mut() {
+                if let Some(last) = moves.last() {
+                    m.delta = view.screen_to_content(*last) - m.start;
+                }
+            } else if let Some(l) = self.lasso.as_mut() {
+                for pos in moves {
+                    let p = to_page_point(view, l.page, *pos, 1.0).pos2();
+                    if l.points.last().map_or(true, |q| q.distance(p) > 1.5) {
+                        l.points.push(p);
+                    }
+                }
+            }
+        }
+        if !resp.dragged() {
+            if self.moving.is_some() {
+                self.commit_move(view.layout);
+            } else if self.lasso.is_some() {
+                self.finish_lasso();
+            }
         }
     }
 
@@ -309,7 +540,7 @@ impl InkApp {
                     s.width,
                 ))
             }
-            Tool::Eraser => None,
+            Tool::Eraser | Tool::Select => None,
         }
     }
 
@@ -463,7 +694,7 @@ impl InkApp {
 
         // ---- geometry and zoom
         let (mut canvas, mut scale, mut hbar) = self.canvas_geometry(full, &layout);
-        let idle = self.active.is_none() && self.erase_session.is_empty();
+        let idle = !self.busy();
 
         // Ctrl + wheel / pinch zoom, anchored under the pointer.
         if idle && ui.rect_contains_pointer(canvas) {
@@ -518,6 +749,32 @@ impl InkApp {
         let max = View::max_scroll(canvas, scale, &layout);
         self.scroll = vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
 
+        // ---- drag on the grey area around the pages = pan (touch / pen friendly)
+        let press = ui.input(|i| i.pointer.press_origin());
+        if idle && canvas_resp.drag_started_by(PointerButton::Primary) {
+            let start = press.or(canvas_resp.interact_pointer_pos());
+            let v = View::new(canvas, self.scroll, scale, layout);
+            self.panning = start
+                .map_or(false, |p| v.layout.page_at(v.screen_to_content(p)).is_none());
+        }
+        if self.panning {
+            if canvas_resp.dragged() {
+                self.scroll -= canvas_resp.drag_delta() / scale;
+                self.scroll =
+                    vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else {
+                self.panning = false;
+            }
+        } else if idle {
+            if let Some(p) = canvas_resp.hover_pos() {
+                let v = View::new(canvas, self.scroll, scale, layout);
+                if v.layout.page_at(v.screen_to_content(p)).is_none() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                }
+            }
+        }
+
         // ---- scrollbars (interaction first, so the view below is final)
         let vbar_rect = Rect::from_min_max(
             pos2(canvas.right(), full.top()),
@@ -556,7 +813,6 @@ impl InkApp {
 
         // ---- pen / mouse input
         self.update_pressure(ui.ctx());
-        let press = ui.input(|i| i.pointer.press_origin());
         let mut moves: Vec<Pos2> = ui.input(|i| {
             i.events
                 .iter()
@@ -569,16 +825,59 @@ impl InkApp {
         if moves.is_empty() {
             moves.extend(canvas_resp.interact_pointer_pos());
         }
-        match self.tool {
-            Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
-            Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves),
+        if !self.panning {
+            match self.tool {
+                Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
+                Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
+                Tool::Pen | Tool::Highlighter => {
+                    self.handle_ink(&canvas_resp, &view, press, &moves)
+                }
+            }
         }
 
         // ---- painting
         let painter = ui.painter_at(canvas);
         render::paint_background(&painter, &view, &self.doc.page);
         let ppp = ui.ctx().pixels_per_point();
-        render::paint_strokes(&painter, &view, &self.doc.strokes, &mut self.cache, ppp);
+        let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
+        let moved = self
+            .selection
+            .as_ref()
+            .map(|s| Moved { ids: &s.ids, page: s.page, offset: move_off });
+        render::paint_strokes(
+            &painter,
+            &view,
+            &self.doc.strokes,
+            &mut self.cache,
+            ppp,
+            moved.as_ref(),
+        );
+
+        // Selection box and lasso outline.
+        let blue = Color32::from_rgb(40, 120, 255);
+        if let Some(sel) = &self.selection {
+            let r = sel.bounds.translate(layout.page_origin(sel.page).to_vec2() + move_off);
+            let rect = Rect::from_min_max(
+                view.content_to_screen(r.min),
+                view.content_to_screen(r.max),
+            );
+            painter.rect_filled(rect, 2.0, Color32::from_rgba_unmultiplied(40, 120, 255, 22));
+            let path = [
+                rect.left_top(),
+                rect.right_top(),
+                rect.right_bottom(),
+                rect.left_bottom(),
+                rect.left_top(),
+            ];
+            painter.extend(egui::Shape::dashed_line(&path, egui::Stroke::new(1.5, blue), 6.0, 4.0));
+        }
+        if let Some(l) = &self.lasso {
+            let o = layout.page_origin(l.page).to_vec2();
+            let pts: Vec<Pos2> = l.points.iter().map(|p| view.content_to_screen(*p + o)).collect();
+            if pts.len() >= 2 {
+                painter.extend(egui::Shape::dashed_line(&pts, egui::Stroke::new(1.5, blue), 5.0, 4.0));
+            }
+        }
         if let Some(a) = &self.active {
             let pts = a.builder.preview_points(self.settings.predict_pen);
             render::paint_live(&painter, &view, a.page, a.kind, a.color, a.width, &pts, ppp);
@@ -604,8 +903,40 @@ impl InkApp {
                 Color32::WHITE,
             );
             if resp.clicked() {
-                self.doc.page_count += 1;
+                self.insert_page(self.doc.page_count);
             }
+        }
+
+        // Small "+" in the gap between two pages: insert a page right there.
+        let mut insert_at = None;
+        for i in view.visible_pages() {
+            if i + 1 >= layout.count {
+                continue;
+            }
+            let (a, b) = (view.page_screen_rect(i), view.page_screen_rect(i + 1));
+            let d = ((b.top() - a.bottom()) * 0.8).clamp(12.0, 22.0);
+            let r = Rect::from_center_size(
+                pos2(a.center().x, (a.bottom() + b.top()) * 0.5),
+                vec2(d, d),
+            );
+            if !r.intersects(canvas) {
+                continue;
+            }
+            let resp = ui
+                .interact(r.intersect(canvas), Id::new(("insert_page", i)), Sense::click())
+                .on_hover_text("Insert a page here");
+            let fill = if resp.hovered() { Color32::from_gray(120) } else { Color32::from_gray(85) };
+            painter.circle_filled(r.center(), d * 0.5, fill);
+            let arm = d * 0.25;
+            let plus = egui::Stroke::new(1.6, Color32::WHITE);
+            painter.line_segment([r.center() - vec2(arm, 0.0), r.center() + vec2(arm, 0.0)], plus);
+            painter.line_segment([r.center() - vec2(0.0, arm), r.center() + vec2(0.0, arm)], plus);
+            if resp.clicked() {
+                insert_at = Some(i + 1);
+            }
+        }
+        if let Some(index) = insert_at {
+            self.insert_page(index);
         }
 
         // Transient status message (saved / exported / errors).
@@ -653,8 +984,6 @@ impl InkApp {
                     for (pos, label) in [
                         (ToolbarPosition::Top, "Top"),
                         (ToolbarPosition::Bottom, "Bottom"),
-                        //(ToolbarPosition::Left, "Left"),
-                        //(ToolbarPosition::Right, "Right"),
                     ] {
                         ui.selectable_value(&mut self.settings.toolbar_position, pos, label);
                     }
@@ -710,7 +1039,7 @@ impl InkApp {
                 ui.horizontal(|ui| {
                     ui.label(format!("{} page(s)", self.doc.page_count));
                     if ui.button("Add page").clicked() {
-                        self.doc.page_count += 1;
+                        self.insert_page(self.doc.page_count);
                     }
                     let last = self.doc.page_count.saturating_sub(1);
                     let removable = self.doc.page_count > 1
@@ -720,7 +1049,9 @@ impl InkApp {
                         .on_disabled_hover_text("Only an empty last page can be removed")
                         .clicked()
                     {
-                        self.doc.page_count -= 1;
+                        let index = self.doc.page_count - 1;
+                        self.clear_selection();
+                        self.history.exec(&mut self.doc, Action::RemovePage { index });
                     }
                 });
                 ui.horizontal(|ui| {
@@ -763,9 +1094,12 @@ impl InkApp {
                     ui.label(&self.status);
                 }
                 if self.pen.is_some() {
-                    ui.small("Native Wayland pen input: active (pressure, eraser end, barrel button = undo)");
+                    ui.small("Native Wayland pen input: active (pressure, eraser end or side button = eraser)");
                 }
-                ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, Ctrl+E export PDF, F11 fullscreen, PageUp/PageDown scroll");
+                if self.win_pen.is_some() {
+                    ui.small("Windows pen input: side button or eraser end = eraser");
+                }
+                ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, Ctrl+E export PDF, Del delete selection, F11 fullscreen, PageUp/PageDown scroll");
             });
         self.settings_open = open;
     }
@@ -789,24 +1123,37 @@ impl eframe::App for InkApp {
         if !self.pen_init_done {
             self.pen_init_done = true;
             self.pen = WaylandPen::start(ctx, frame);
+            self.win_pen = WindowsPen::start(ctx, frame);
         }
 
         self.handle_shortcuts(ctx);
 
+        // Pen side button = eraser while held. Wayland pens report it through
+        // `eraser_native`, Windows pens through `win_pen`; on X11 the button
+        // arrives as a right or middle mouse button. Never switch in the middle of a stroke.
+        if !self.busy() {
+            let button_held = ctx.input(|i| i.pointer.secondary_down() || i.pointer.middle_down());
+            let win = self.win_pen.as_ref().map(|p| p.buttons()).unwrap_or_default();
+            let pen_eraser = self.eraser_native || win.barrel || win.eraser_end;
+            self.apply_pen_eraser(pen_eraser || button_held);
+        }
+        // Leaving the select tool drops the selection (the temporary eraser
+        // from the pen button must not).
+        if self.tool != Tool::Select && self.saved_tool != Some(Tool::Select) && !self.busy() {
+            self.clear_selection();
+        }
+
         // The toolbar is an Area above the canvas, so egui's hit-testing
         // automatically keeps pen strokes from starting underneath it. It is
-        // moved inwards so it never covers the scrollbars.
-        let inset = vec2(
-            scrollbar::THICKNESS,
-            if self.hbar_visible { scrollbar::THICKNESS } else { 0.0 },
-        );
+        // moved up so it never covers the horizontal scrollbar.
+        let bottom_inset = if self.hbar_visible { scrollbar::THICKNESS } else { 0.0 };
         let event = toolbar::show(
             ctx,
             &mut self.tool,
             &mut self.settings,
             self.history.can_undo(),
             self.history.can_redo(),
-            inset,
+            bottom_inset,
         );
         match event {
             Some(ToolbarEvent::Undo) => self.undo(),

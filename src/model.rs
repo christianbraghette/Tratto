@@ -76,6 +76,9 @@ pub struct Stroke {
     pub points: Vec<Point>,
     /// Cached `[min_x, min_y, max_x, max_y]` for culling and eraser rejection.
     pub bounds: [f32; 4],
+    /// Bumped whenever the points change; invalidates cached meshes. Not saved.
+    #[serde(skip)]
+    pub rev: u32,
 }
 
 impl Stroke {
@@ -88,7 +91,20 @@ impl Stroke {
         points: Vec<Point>,
     ) -> Self {
         let bounds = compute_bounds(&points);
-        Self { id, page, kind, color, width, points, bounds }
+        Self { id, page, kind, color, width, points, bounds, rev: 0 }
+    }
+
+    /// Moves the stroke (page space).
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        for p in &mut self.points {
+            p.x += dx;
+            p.y += dy;
+        }
+        self.bounds[0] += dx;
+        self.bounds[2] += dx;
+        self.bounds[1] += dy;
+        self.bounds[3] += dy;
+        self.rev = self.rev.wrapping_add(1);
     }
 
     /// Stroke-based eraser test: does a circle at `center` with `radius`
