@@ -113,6 +113,7 @@ mod tests {
     fn stroke(id: u64) -> Stroke {
         Stroke::new(
             id,
+            0,
             StrokeKind::Pen,
             [0, 0, 0, 255],
             2.0,

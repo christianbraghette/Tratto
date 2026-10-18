@@ -3,17 +3,19 @@
 use std::path::Path;
 
 use eframe::egui::{
-    self, Align2, DragValue, Event, Key, Modifiers, PointerButton, Pos2, Sense, Slider, TouchPhase,
+    self, pos2, vec2, Align2, Color32, DragValue, Event, FontId, Id, Key, Modifiers, PointerButton,
+    Pos2, Rect, Sense, Slider, TouchPhase, Vec2,
 };
 
 use crate::history::{Action, History};
-use crate::model::{Document, PageKind, Point, StrokeKind, Stroke};
+use crate::model::{paper_label, Document, PageKind, Point, Stroke, StrokeKind, PAPERS};
 use crate::render::{self, StrokeCache};
-use crate::settings::{Settings, ToolbarPosition};
+use crate::scrollbar;
+use crate::settings::{Settings, ToolbarPosition, ZoomMode};
 use crate::storage;
 use crate::stroke_builder::StrokeBuilder;
 use crate::toolbar::{self, Tool, ToolbarEvent};
-use crate::view::View;
+use crate::view::{Layout, View};
 use crate::wayland_pen::{PenEvent, WaylandPen};
 
 const SETTINGS_KEY: &str = "inknote_settings";
@@ -27,6 +29,7 @@ const HIGHLIGHTER_ALPHA: u8 = 96;
 
 /// Stroke currently being drawn.
 struct ActiveStroke {
+    page: u32,
     kind: StrokeKind,
     color: [u8; 4],
     width: f32,
@@ -39,11 +42,16 @@ pub struct InkApp {
     tool: Tool,
     settings: Settings,
     settings_open: bool,
-    /// Top of the viewport in document units (>= 0).
-    scroll_y: f32,
+    /// Content-space position at the top-left of the writing area.
+    scroll: Vec2,
+    vbar_grab: Option<f32>,
+    hbar_grab: Option<f32>,
+    /// Whether a horizontal scrollbar was shown last frame (toolbar placement).
+    hbar_visible: bool,
     active: Option<ActiveStroke>,
     /// Inverse actions of strokes erased during the current eraser drag.
     erase_session: Vec<Action>,
+    /// Last eraser position, in content space.
     last_erase_pos: Option<Pos2>,
     last_pressure: f32,
     status: String,
@@ -60,6 +68,9 @@ pub struct InkApp {
 
 impl InkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // We implement zoom ourselves; keep egui's UI from zooming on Ctrl +/-.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+
         let settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value(s, SETTINGS_KEY))
@@ -71,7 +82,10 @@ impl InkApp {
             tool: Tool::Pen,
             settings,
             settings_open: false,
-            scroll_y: 0.0,
+            scroll: Vec2::ZERO,
+            vbar_grab: None,
+            hbar_grab: None,
+            hbar_visible: false,
             active: None,
             erase_session: Vec::new(),
             last_erase_pos: None,
@@ -105,6 +119,7 @@ impl InkApp {
         match storage::load_document(Path::new(&path)) {
             Ok(doc) => {
                 self.doc = doc;
+                self.ensure_pages();
                 self.reset_editing_state();
                 self.status = format!("Loaded {path}");
             }
@@ -124,7 +139,16 @@ impl InkApp {
         self.active = None;
         self.erase_session.clear();
         self.last_erase_pos = None;
-        self.scroll_y = 0.0;
+        self.scroll = Vec2::ZERO;
+    }
+
+    /// Guarantees that every stroke lies on an existing page (e.g. after an
+    /// undo that restores a stroke whose page was removed).
+    fn ensure_pages(&mut self) {
+        let need = self.doc.strokes.iter().map(|s| s.page + 1).max().unwrap_or(1).max(1);
+        if self.doc.page_count < need {
+            self.doc.page_count = need;
+        }
     }
 
     // ------------------------------------------------------- undo / redo
@@ -132,12 +156,14 @@ impl InkApp {
     fn undo(&mut self) {
         if self.active.is_none() && self.erase_session.is_empty() {
             self.history.undo(&mut self.doc);
+            self.ensure_pages();
         }
     }
 
     fn redo(&mut self) {
         if self.active.is_none() && self.erase_session.is_empty() {
             self.history.redo(&mut self.doc);
+            self.ensure_pages();
         }
     }
 
@@ -276,18 +302,21 @@ impl InkApp {
             if let (Some(pos), Some((kind, color, width))) =
                 (press.or(resp.interact_pointer_pos()), self.stroke_params())
             {
-                // Only start inside the writable page, not in the padding.
-                if view.page_rect().contains(pos) {
-                    let mut builder = StrokeBuilder::new(MIN_POINT_DIST, SMOOTH_ALPHA_MIN, SMOOTH_SPEED_REF);
-                    builder.begin(to_doc_point(view, pos, self.last_pressure));
-                    self.active = Some(ActiveStroke { kind, color, width, builder });
+                // A stroke belongs to the page it starts on; the gaps and
+                // margins between pages are not writable.
+                if let Some(page) = view.layout.page_at(view.screen_to_content(pos)) {
+                    let mut builder =
+                        StrokeBuilder::new(MIN_POINT_DIST, SMOOTH_ALPHA_MIN, SMOOTH_SPEED_REF);
+                    builder.begin(to_page_point(view, page, pos, self.last_pressure));
+                    self.active = Some(ActiveStroke { page, kind, color, width, builder });
                 }
             }
         } else if resp.dragged() || resp.drag_stopped() {
             let pressure = self.last_pressure;
             if let Some(active) = self.active.as_mut() {
+                let page = active.page;
                 for pos in moves {
-                    active.builder.push(to_doc_point(view, *pos, pressure));
+                    active.builder.push(to_page_point(view, page, *pos, pressure));
                 }
             }
         }
@@ -303,7 +332,7 @@ impl InkApp {
                 return;
             }
             let id = self.doc.alloc_id();
-            let stroke = Stroke::new(id, a.kind, a.color, a.width, points);
+            let stroke = Stroke::new(id, a.page, a.kind, a.color, a.width, points);
             let index = self.doc.strokes.len();
             self.history
                 .exec(&mut self.doc, Action::AddStroke { index, stroke });
@@ -320,11 +349,11 @@ impl InkApp {
         if resp.drag_started_by(PointerButton::Primary) {
             self.last_erase_pos = None;
             if let Some(p) = press.or(resp.interact_pointer_pos()) {
-                self.erase_along(view.to_doc(p));
+                self.erase_along(view.screen_to_content(p));
             }
         } else if resp.dragged() || resp.drag_stopped() {
             for p in moves {
-                self.erase_along(view.to_doc(*p));
+                self.erase_along(view.screen_to_content(*p));
             }
         }
         if !resp.dragged() {
@@ -332,8 +361,9 @@ impl InkApp {
         }
     }
 
-    /// Erases along the path from the previous cursor position to `target`.
-    /// Intermediate samples prevent fast flicks from skipping over strokes.
+    /// Erases along the path from the previous cursor position to `target`
+    /// (content space). Intermediate samples prevent fast flicks from
+    /// skipping over strokes.
     fn erase_along(&mut self, target: Pos2) {
         let radius = self.settings.eraser_radius;
         let from = self.last_erase_pos.unwrap_or(target);
@@ -348,13 +378,23 @@ impl InkApp {
     }
 
     fn erase_at(&mut self, center: Pos2, radius: f32) {
-        let hits: Vec<u64> = self
-            .doc
-            .strokes
-            .iter()
-            .filter(|s| s.hit_test(center, radius))
-            .map(|s| s.id)
-            .collect();
+        let layout = Layout {
+            page_w: self.doc.page_width,
+            page_h: self.doc.page_height,
+            count: self.doc.page_count,
+        };
+        let mut hits: Vec<u64> = Vec::new();
+        // The eraser circle may touch two neighbouring pages near the gap.
+        for page in layout.pages_overlapping(center.y - radius, center.y + radius) {
+            let local = center - layout.page_origin(page).to_vec2();
+            hits.extend(
+                self.doc
+                    .strokes
+                    .iter()
+                    .filter(|s| s.page == page && s.hit_test(local, radius))
+                    .map(|s| s.id),
+            );
+        }
         for id in hits {
             let inverse = Action::RemoveStroke { id }.apply(&mut self.doc);
             self.erase_session.push(inverse);
@@ -375,21 +415,125 @@ impl InkApp {
 
     // ---------------------------------------------------------------- UI
 
-    fn canvas_ui(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.max_rect();
-        let response = ui.allocate_rect(rect, Sense::drag());
-
-        // Infinite vertical scrolling (mouse wheel / touchpad / touch scroll).
-        let scale = View::scale_for(rect.width(), self.doc.page_width);
-        if response.hovered() && self.active.is_none() {
-            let dy = ui.input(|i| i.smooth_scroll_delta.y);
-            self.scroll_y = (self.scroll_y - dy / scale).max(0.0);
+    /// Writing-area rectangle, zoom scale and whether a horizontal scrollbar
+    /// is needed. The vertical scrollbar always occupies the right edge.
+    fn canvas_geometry(&self, full: Rect, layout: &Layout) -> (Rect, f32, bool) {
+        let sb = scrollbar::THICKNESS;
+        let w = (full.width() - sb).max(50.0);
+        let mut rect = Rect::from_min_size(full.min, vec2(w, full.height()));
+        let mut scale = View::scale_for(self.settings.zoom, rect, layout);
+        let hbar = layout.content_w() * scale > rect.width() + 0.5;
+        if hbar {
+            rect = Rect::from_min_size(full.min, vec2(w, (full.height() - sb).max(50.0)));
+            scale = View::scale_for(self.settings.zoom, rect, layout);
         }
-        let view = View::new(rect, self.scroll_y, self.doc.page_width);
+        (rect, scale, hbar)
+    }
 
+    fn canvas_ui(&mut self, ui: &mut egui::Ui) {
+        let full = ui.max_rect();
+        let layout = Layout {
+            page_w: self.doc.page_width,
+            page_h: self.doc.page_height,
+            count: self.doc.page_count.max(1),
+        };
+        ui.painter().rect_filled(full, 0.0, render::PADDING_COLOR);
+
+        // ---- geometry and zoom
+        let (mut canvas, mut scale, mut hbar) = self.canvas_geometry(full, &layout);
+        let idle = self.active.is_none() && self.erase_session.is_empty();
+
+        // Ctrl + wheel / pinch zoom, anchored under the pointer.
+        if idle && ui.rect_contains_pointer(canvas) {
+            let zd = ui.input(|i| i.zoom_delta());
+            if (zd - 1.0).abs() > 1e-4 {
+                let anchor = ui
+                    .input(|i| i.pointer.hover_pos())
+                    .filter(|p| canvas.contains(*p))
+                    .unwrap_or_else(|| canvas.center());
+                let before = View::new(canvas, self.scroll, scale, layout);
+                let c = before.screen_to_content(anchor);
+                let pct = (scale * zd * 100.0).round().clamp(25.0, 400.0) as u32;
+                self.settings.zoom = ZoomMode::Percent(pct);
+                (canvas, scale, hbar) = self.canvas_geometry(full, &layout);
+                let pad = View::pad_x_for(canvas.width(), layout.content_w(), scale);
+                self.scroll.x = c.x - (anchor.x - canvas.left() - pad) / scale;
+                self.scroll.y = c.y - (anchor.y - canvas.top()) / scale;
+            }
+        }
+        self.hbar_visible = hbar;
+
+        let canvas_resp = ui.allocate_rect(canvas, Sense::drag());
+
+        // ---- scrolling: wheel / touchpad / keys
+        if idle && ui.rect_contains_pointer(full) {
+            let d = ui.input(|i| i.smooth_scroll_delta);
+            self.scroll -= d / scale;
+        }
+        if !ui.ctx().wants_keyboard_input() {
+            let (pgdn, pgup, home, end) = ui.input(|i| {
+                (
+                    i.key_pressed(Key::PageDown),
+                    i.key_pressed(Key::PageUp),
+                    i.key_pressed(Key::Home),
+                    i.key_pressed(Key::End),
+                )
+            });
+            let page_len = canvas.height() / scale * 0.9;
+            if pgdn {
+                self.scroll.y += page_len;
+            }
+            if pgup {
+                self.scroll.y -= page_len;
+            }
+            if home {
+                self.scroll.y = 0.0;
+            }
+            if end {
+                self.scroll.y = f32::MAX;
+            }
+        }
+        let max = View::max_scroll(canvas, scale, &layout);
+        self.scroll = vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
+
+        // ---- scrollbars (interaction first, so the view below is final)
+        let vbar_rect = Rect::from_min_max(
+            pos2(canvas.right(), full.top()),
+            pos2(full.right(), canvas.bottom()),
+        );
+        let hbar_rect = Rect::from_min_max(
+            pos2(full.left(), canvas.bottom()),
+            pos2(canvas.right(), full.bottom()),
+        );
+        let vstate = scrollbar::update(
+            ui,
+            Id::new("vbar"),
+            vbar_rect,
+            true,
+            &mut self.scroll.y,
+            max.y,
+            canvas.height() / scale,
+            layout.content_h(scale),
+            &mut self.vbar_grab,
+        );
+        let hstate = hbar.then(|| {
+            scrollbar::update(
+                ui,
+                Id::new("hbar"),
+                hbar_rect,
+                false,
+                &mut self.scroll.x,
+                max.x,
+                canvas.width() / scale,
+                layout.content_w(),
+                &mut self.hbar_grab,
+            )
+        });
+
+        let view = View::new(canvas, self.scroll, scale, layout);
+
+        // ---- pen / mouse input
         self.update_pressure(ui.ctx());
-
-        // All pointer positions of this frame (higher fidelity than one per frame).
         let press = ui.input(|i| i.pointer.press_origin());
         let mut moves: Vec<Pos2> = ui.input(|i| {
             i.events
@@ -401,28 +545,54 @@ impl InkApp {
                 .collect()
         });
         if moves.is_empty() {
-            moves.extend(response.interact_pointer_pos());
+            moves.extend(canvas_resp.interact_pointer_pos());
         }
-
         match self.tool {
-            Tool::Eraser => self.handle_erase(&response, &view, press, &moves),
-            Tool::Pen | Tool::Highlighter => self.handle_ink(&response, &view, press, &moves),
+            Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
+            Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves),
         }
 
         // ---- painting
-        let painter = ui.painter_at(rect);
+        let painter = ui.painter_at(canvas);
         render::paint_background(&painter, &view, &self.doc.page);
-
         let ppp = ui.ctx().pixels_per_point();
         render::paint_strokes(&painter, &view, &self.doc.strokes, &mut self.cache, ppp);
         if let Some(a) = &self.active {
             let pts = a.builder.preview_points(self.settings.predict_pen);
-            render::paint_live(&painter, &view, a.kind, a.color, a.width, &pts, ppp);
+            render::paint_live(&painter, &view, a.page, a.kind, a.color, a.width, &pts, ppp);
         }
         if self.tool == Tool::Eraser {
-            if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos()) {
-                render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * view.scale);
+            if let Some(pos) = canvas_resp.hover_pos().or(canvas_resp.interact_pointer_pos()) {
+                render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * scale);
             }
+        }
+
+        // "Add page" button below the last page.
+        let last = view.page_screen_rect(layout.count - 1);
+        let btn = Rect::from_center_size(pos2(last.center().x, last.bottom() + 36.0), vec2(160.0, 36.0));
+        if btn.intersects(canvas) {
+            let resp = ui.interact(btn.intersect(canvas), Id::new("add_page"), Sense::click());
+            let fill = if resp.hovered() { Color32::from_gray(95) } else { Color32::from_gray(75) };
+            painter.rect_filled(btn, 18.0, fill);
+            painter.text(
+                btn.center(),
+                Align2::CENTER_CENTER,
+                "+ Add page",
+                FontId::proportional(15.0),
+                Color32::WHITE,
+            );
+            if resp.clicked() {
+                self.doc.page_count += 1;
+            }
+        }
+
+        // Scrollbars on top; the vertical one shows a page indicator while dragged.
+        let center_y = self.scroll.y + canvas.height() / scale * 0.5;
+        let label = format!("Page {} / {}", layout.page_index_at_y(center_y) + 1, layout.count);
+        let full_painter = ui.painter();
+        scrollbar::paint(full_painter, vbar_rect, true, &vstate, Some(&label));
+        if let Some(h) = &hstate {
+            scrollbar::paint(full_painter, hbar_rect, false, h, None);
         }
     }
 
@@ -448,14 +618,70 @@ impl InkApp {
                         ui.selectable_value(&mut self.settings.toolbar_position, pos, label);
                     }
                 });
-
                 ui.checkbox(
                     &mut self.settings.predict_pen,
                     "Predict pen tip (lower perceived latency)",
                 );
 
                 ui.separator();
-                ui.heading("Page");
+                ui.heading("View");
+                egui::ComboBox::from_label("Zoom")
+                    .selected_text(self.settings.zoom.label())
+                    .show_ui(ui, |ui| {
+                        for z in ZoomMode::PRESETS {
+                            ui.selectable_value(&mut self.settings.zoom, z, z.label());
+                        }
+                    });
+                ui.small("Ctrl + mouse wheel (or pinch) also zooms.");
+
+                ui.separator();
+                ui.heading("Pages");
+                egui::ComboBox::from_label("Paper size")
+                    .selected_text(paper_label(self.doc.page_width, self.doc.page_height))
+                    .show_ui(ui, |ui| {
+                        for (name, dims, w, h) in PAPERS {
+                            if ui.selectable_label(false, format!("{name}  ({dims})")).clicked() {
+                                self.doc.page_width = w;
+                                self.doc.page_height = h;
+                            }
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    ui.label("Width");
+                    ui.add(
+                        DragValue::new(&mut self.doc.page_width)
+                            .range(200.0..=4000.0)
+                            .speed(2.0)
+                            .suffix(" px"),
+                    );
+                    ui.label("Height");
+                    ui.add(
+                        DragValue::new(&mut self.doc.page_height)
+                            .range(200.0..=6000.0)
+                            .speed(2.0)
+                            .suffix(" px"),
+                    );
+                    if ui.button("Rotate").clicked() {
+                        std::mem::swap(&mut self.doc.page_width, &mut self.doc.page_height);
+                    }
+                });
+                ui.small("Existing ink keeps its position on the page; it is not rescaled.");
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} page(s)", self.doc.page_count));
+                    if ui.button("Add page").clicked() {
+                        self.doc.page_count += 1;
+                    }
+                    let last = self.doc.page_count.saturating_sub(1);
+                    let removable = self.doc.page_count > 1
+                        && !self.doc.strokes.iter().any(|s| s.page == last);
+                    if ui
+                        .add_enabled(removable, egui::Button::new("Remove last page"))
+                        .on_disabled_hover_text("Only an empty last page can be removed")
+                        .clicked()
+                    {
+                        self.doc.page_count -= 1;
+                    }
+                });
                 ui.horizontal(|ui| {
                     for (kind, label) in [
                         (PageKind::Blank, "Blank"),
@@ -466,15 +692,6 @@ impl InkApp {
                     }
                 });
                 ui.add(Slider::new(&mut self.doc.page.spacing, 16.0..=80.0).text("Line spacing"));
-                ui.horizontal(|ui| {
-                    ui.label("Page width");
-                    // Note: shrinking the page does not move existing strokes.
-                    ui.add(
-                        DragValue::new(&mut self.doc.page_width)
-                            .range(400.0..=1600.0)
-                            .speed(5.0),
-                    );
-                });
 
                 ui.separator();
                 ui.heading("File");
@@ -496,16 +713,21 @@ impl InkApp {
                 if self.pen.is_some() {
                     ui.small("Native Wayland pen input: active (pressure, eraser end, barrel button = undo)");
                 }
-                ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, F11 fullscreen");
+                ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, F11 fullscreen, PageUp/PageDown scroll");
             });
         self.settings_open = open;
     }
 }
 
-/// Screen position -> document point, clamped to the page.
-fn to_doc_point(view: &View, pos: Pos2, pressure: f32) -> Point {
-    let d = view.to_doc(pos);
-    Point::new(d.x.clamp(0.0, view.page_width), d.y.max(0.0), pressure)
+/// Screen position -> point in the page's space, clamped to the page.
+fn to_page_point(view: &View, page: u32, pos: Pos2, pressure: f32) -> Point {
+    let c = view.screen_to_content(pos);
+    let o = view.layout.page_origin(page);
+    Point::new(
+        (c.x - o.x).clamp(0.0, view.layout.page_w),
+        (c.y - o.y).clamp(0.0, view.layout.page_h),
+        pressure,
+    )
 }
 
 impl eframe::App for InkApp {
@@ -520,13 +742,19 @@ impl eframe::App for InkApp {
         self.handle_shortcuts(ctx);
 
         // The toolbar is an Area above the canvas, so egui's hit-testing
-        // automatically keeps pen strokes from starting underneath it.
+        // automatically keeps pen strokes from starting underneath it. It is
+        // moved inwards so it never covers the scrollbars.
+        let inset = vec2(
+            scrollbar::THICKNESS,
+            if self.hbar_visible { scrollbar::THICKNESS } else { 0.0 },
+        );
         let event = toolbar::show(
             ctx,
             &mut self.tool,
             &mut self.settings,
             self.history.can_undo(),
             self.history.can_redo(),
+            inset,
         );
         match event {
             Some(ToolbarEvent::Undo) => self.undo(),

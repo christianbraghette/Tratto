@@ -6,7 +6,8 @@
 //! - `history`        action-based undo/redo (no document cloning)
 //! - `stroke_builder` jitter filter + velocity-adaptive smoothing + prediction
 //! - `stroke_mesh`    anti-aliased, curve-interpolated stroke tessellation
-//! - `view`           document <-> screen coordinate transform, centering
+//! - `view`           page layout + page/content/screen coordinate transforms
+//! - `scrollbar`      large pen-friendly scrollbars
 //! - `render`         painting of page background and strokes
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `toolbar`        the floating pill toolbar
@@ -19,6 +20,7 @@ mod geometry;
 mod history;
 mod model;
 mod render;
+mod scrollbar;
 mod settings;
 mod storage;
 mod stroke_builder;
@@ -58,7 +60,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("InkNote")
             .with_decorations(true) // keep system window buttons
-            .with_fullscreen(true) // F11 toggles this at runtime
+            //.with_fullscreen(true) // F11 toggles this at runtime
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };

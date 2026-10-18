@@ -10,6 +10,39 @@ pub enum ToolbarPosition {
     //Right,
 }
 
+/// How the pages are scaled in the window.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ZoomMode {
+    /// Page width (plus margins) fills the window.
+    FitWidth,
+    /// A whole page fits in the window.
+    FitPage,
+    /// Fixed zoom; 100 % = 1 document unit per screen point.
+    Percent(u32),
+}
+
+impl ZoomMode {
+    pub const PRESETS: [ZoomMode; 9] = [
+        ZoomMode::FitWidth,
+        ZoomMode::FitPage,
+        ZoomMode::Percent(50),
+        ZoomMode::Percent(75),
+        ZoomMode::Percent(100),
+        ZoomMode::Percent(125),
+        ZoomMode::Percent(150),
+        ZoomMode::Percent(200),
+        ZoomMode::Percent(300),
+    ];
+
+    pub fn label(&self) -> String {
+        match self {
+            ZoomMode::FitWidth => "Fit width".into(),
+            ZoomMode::FitPage => "Fit page".into(),
+            ZoomMode::Percent(p) => format!("{p}%"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ToolStyle {
     pub color: [u8; 3],
@@ -27,6 +60,7 @@ pub struct Settings {
     pub eraser_radius: f32,
     /// Extrapolate the live stroke slightly ahead of the pen (hides latency).
     pub predict_pen: bool,
+    pub zoom: ZoomMode,
     pub file_path: String,
 }
 
@@ -38,6 +72,7 @@ impl Default for Settings {
             highlighter: ToolStyle { color: [255, 235, 0], width: 14.0 },
             eraser_radius: 12.0,
             predict_pen: true,
+            zoom: ZoomMode::Percent(100),
             file_path: "notes.ink".to_owned(),
         }
     }

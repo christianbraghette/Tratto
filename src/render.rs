@@ -1,14 +1,14 @@
-//! Painting: page background, cached anti-aliased stroke meshes, eraser cursor.
+//! Painting: pages, cached anti-aliased stroke meshes, eraser cursor.
 
 use std::collections::HashMap;
 
-use eframe::egui::{epaint::Mesh, vec2, Color32, Painter, Pos2, Shape, Stroke as UiStroke, Vec2};
+use eframe::egui::{epaint::Mesh, pos2, vec2, Color32, Painter, Pos2, Shape, Stroke as UiStroke, Vec2};
 
 use crate::model::{PageKind, PageStyle, Point, Stroke, StrokeKind};
 use crate::stroke_mesh;
 use crate::view::View;
 
-/// Distinct colour of the non-writable side padding.
+/// Distinct colour of the non-writable area around the pages.
 pub const PADDING_COLOR: Color32 = Color32::from_gray(52);
 pub const PAGE_COLOR: Color32 = Color32::from_rgb(252, 251, 247);
 
@@ -24,9 +24,9 @@ struct Entry {
     last_used: u64,
 }
 
-/// Per-stroke tessellation cache. Meshes are stored at `document * scale`
-/// without translation, so scrolling never invalidates them; only a change of
-/// scale or pixels-per-point does.
+/// Per-stroke tessellation cache. Meshes are stored at `page_space * scale`
+/// without translation, so neither scrolling nor page-size changes invalidate
+/// them; only a change of zoom or pixels-per-point does.
 #[derive(Default)]
 pub struct StrokeCache {
     map: HashMap<u64, Entry>,
@@ -68,7 +68,7 @@ impl StrokeCache {
 
 // ------------------------------------------------------------ strokes
 
-/// Paints all visible strokes in document order as one (or a few) meshes.
+/// Paints the strokes of all visible pages, one batched mesh per page.
 pub fn paint_strokes(
     painter: &Painter,
     view: &View,
@@ -78,26 +78,33 @@ pub fn paint_strokes(
 ) {
     let aa = 1.0 / ppp;
     cache.begin_frame(view.scale, ppp);
-    let offset = mesh_offset(view);
-    let (y0, y1) = view.visible_y();
 
-    let mut batch = Mesh::default();
-    for s in strokes {
-        if s.bounds[3] + s.width < y0 || s.bounds[1] - s.width > y1 {
-            continue; // outside the viewport
+    for page in view.visible_pages() {
+        let offset = view.page_origin_screen(page).to_vec2();
+        // Visible vertical range in this page's space.
+        let y0 = view.scroll.y - view.layout.page_top(page);
+        let y1 = y0 + view.rect.height() / view.scale;
+
+        let mut batch = Mesh::default();
+        for s in strokes.iter().filter(|s| s.page == page) {
+            if s.bounds[3] + s.width < y0 || s.bounds[1] - s.width > y1 {
+                continue; // outside the viewport
+            }
+            batch.append_ref(cache.get(s, view.scale, aa));
+            if batch.vertices.len() > MAX_BATCH_VERTS {
+                flush(painter, &mut batch, offset);
+            }
         }
-        batch.append_ref(cache.get(s, view.scale, aa));
-        if batch.vertices.len() > MAX_BATCH_VERTS {
-            flush(painter, &mut batch, offset);
-        }
+        flush(painter, &mut batch, offset);
     }
-    flush(painter, &mut batch, offset);
 }
 
 /// Paints the stroke that is currently being drawn (rebuilt every frame).
+#[allow(clippy::too_many_arguments)]
 pub fn paint_live(
     painter: &Painter,
     view: &View,
+    page: u32,
     kind: StrokeKind,
     rgba: [u8; 4],
     width: f32,
@@ -106,18 +113,10 @@ pub fn paint_live(
 ) {
     let mut mesh = Mesh::default();
     stroke_mesh::tessellate(&mut mesh, kind, rgba, width, pts, view.scale, 1.0 / ppp);
-    mesh.translate(mesh_offset(view));
+    mesh.translate(view.page_origin_screen(page).to_vec2());
     if !mesh.is_empty() {
         painter.add(Shape::mesh(mesh));
     }
-}
-
-/// Translation from "document * scale" space to screen space.
-fn mesh_offset(view: &View) -> Vec2 {
-    vec2(
-        view.rect.left() + view.pad_x,
-        view.rect.top() - view.scroll_y * view.scale,
-    )
 }
 
 fn flush(painter: &Painter, batch: &mut Mesh, offset: Vec2) {
@@ -131,44 +130,47 @@ fn flush(painter: &Painter, batch: &mut Mesh, offset: Vec2) {
 
 // -------------------------------------------------------- background
 
+/// Fills the area around the pages and draws every visible page.
 pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
     painter.rect_filled(view.rect, 0.0, PADDING_COLOR);
-    let page = view.page_rect();
-    painter.rect_filled(page, 0.0, PAGE_COLOR);
 
-    let line = UiStroke::new(1.0, Color32::from_rgb(200, 214, 230));
+    let l = view.layout;
+    let s = view.scale;
     let spacing = style.spacing.max(8.0);
+    let rule = UiStroke::new(1.0, Color32::from_rgb(200, 214, 230));
 
-    if style.kind != PageKind::Blank {
-        // Horizontal rules (infinite downwards): only those in view are drawn.
-        let mut k = ((view.scroll_y / spacing).floor() as i64).max(1);
-        loop {
-            let sy = view.to_screen(0.0, k as f32 * spacing).y;
-            if sy > view.rect.bottom() {
-                break;
-            }
-            if sy >= view.rect.top() {
-                painter.line_segment([Pos2::new(page.left(), sy), Pos2::new(page.right(), sy)], line);
-            }
-            k += 1;
-        }
-    }
-    if style.kind == PageKind::Grid {
-        let mut x = spacing;
-        while x < view.page_width {
-            let sx = view.to_screen(x, 0.0).x;
-            painter.line_segment(
-                [Pos2::new(sx, view.rect.top()), Pos2::new(sx, view.rect.bottom())],
-                line,
-            );
-            x += spacing;
-        }
-    }
+    for page in view.visible_pages() {
+        let rect = view.page_screen_rect(page);
+        // Soft drop shadow, then the paper.
+        painter.rect_filled(rect.translate(vec2(2.0, 3.0)), 0.0, Color32::from_black_alpha(70));
+        painter.rect_filled(rect, 0.0, PAGE_COLOR);
 
-    // Page edges.
-    let edge = UiStroke::new(1.0, Color32::from_gray(25));
-    painter.line_segment([page.left_top(), page.left_bottom()], edge);
-    painter.line_segment([page.right_top(), page.right_bottom()], edge);
+        if style.kind != PageKind::Blank {
+            // Rules at page-local y = k * spacing; only those in view are drawn.
+            let vis_top = ((view.rect.top() - rect.top()) / s).max(0.0);
+            let vis_bottom = ((view.rect.bottom() - rect.top()) / s).min(l.page_h);
+            let mut k = ((vis_top / spacing).floor() as i64).max(1);
+            loop {
+                let ly = k as f32 * spacing;
+                if ly >= l.page_h || ly > vis_bottom {
+                    break;
+                }
+                let sy = rect.top() + ly * s;
+                painter.line_segment([pos2(rect.left(), sy), pos2(rect.right(), sy)], rule);
+                k += 1;
+            }
+        }
+        if style.kind == PageKind::Grid {
+            let (y0, y1) = (rect.top().max(view.rect.top()), rect.bottom().min(view.rect.bottom()));
+            let mut x = spacing;
+            while x < l.page_w {
+                let sx = rect.left() + x * s;
+                painter.line_segment([pos2(sx, y0), pos2(sx, y1)], rule);
+                x += spacing;
+            }
+        }
+        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, Color32::from_gray(25)));
+    }
 }
 
 pub fn paint_eraser_cursor(painter: &Painter, center: Pos2, radius_px: f32) {

@@ -1,12 +1,37 @@
-//! Serializable document model. Coordinates are in *document units*:
-//! x in `0..page_width`, y in `0..∞` (top of the page downwards).
+//! Serializable document model. Stroke coordinates are in *page space*:
+//! document units relative to the top-left corner of the stroke's page.
 
 use eframe::egui::Pos2;
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::point_segment_distance;
 
-pub const DEFAULT_PAGE_WIDTH: f32 = 800.0;
+/// A4 at 96 dpi.
+pub const DEFAULT_PAGE_WIDTH: f32 = 794.0;
+pub const DEFAULT_PAGE_HEIGHT: f32 = 1123.0;
+
+/// (name, physical size, width, height) in document units (96 dpi), portrait.
+pub const PAPERS: [(&str, &str, f32, f32); 5] = [
+    ("A3", "297 × 420 mm", 1123.0, 1587.0),
+    ("A4", "210 × 297 mm", 794.0, 1123.0),
+    ("A5", "148 × 210 mm", 559.0, 794.0),
+    ("Letter", "8.5 × 11 in", 816.0, 1056.0),
+    ("Legal", "8.5 × 14 in", 816.0, 1344.0),
+];
+
+/// Human-readable name of a page size ("A4 portrait", "Custom", ...).
+pub fn paper_label(w: f32, h: f32) -> String {
+    let close = |a: f32, b: f32| (a - b).abs() < 0.5;
+    for (name, _, pw, ph) in PAPERS {
+        if close(w, pw) && close(h, ph) {
+            return format!("{name} portrait");
+        }
+        if close(w, ph) && close(h, pw) {
+            return format!("{name} landscape");
+        }
+    }
+    "Custom".to_owned()
+}
 
 /// A single input sample.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -41,6 +66,8 @@ pub enum StrokeKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stroke {
     pub id: u64,
+    /// Zero-based page the stroke belongs to; points are in that page's space.
+    pub page: u32,
     pub kind: StrokeKind,
     /// Unmultiplied RGBA. Highlighters carry their alpha here.
     pub color: [u8; 4],
@@ -52,9 +79,16 @@ pub struct Stroke {
 }
 
 impl Stroke {
-    pub fn new(id: u64, kind: StrokeKind, color: [u8; 4], width: f32, points: Vec<Point>) -> Self {
+    pub fn new(
+        id: u64,
+        page: u32,
+        kind: StrokeKind,
+        color: [u8; 4],
+        width: f32,
+        points: Vec<Point>,
+    ) -> Self {
         let bounds = compute_bounds(&points);
-        Self { id, kind, color, width, points, bounds }
+        Self { id, page, kind, color, width, points, bounds }
     }
 
     /// Stroke-based eraser test: does a circle at `center` with `radius`
@@ -114,10 +148,12 @@ impl Default for PageStyle {
     }
 }
 
-/// The whole note.
+/// The whole note: `page_count` pages of `page_width` x `page_height`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     pub page_width: f32,
+    pub page_height: f32,
+    pub page_count: u32,
     pub page: PageStyle,
     /// Draw order: later strokes are painted on top.
     pub strokes: Vec<Stroke>,
@@ -128,6 +164,8 @@ impl Default for Document {
     fn default() -> Self {
         Self {
             page_width: DEFAULT_PAGE_WIDTH,
+            page_height: DEFAULT_PAGE_HEIGHT,
+            page_count: 1,
             page: PageStyle::default(),
             strokes: Vec::new(),
             next_id: 1,

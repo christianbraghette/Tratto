@@ -2,7 +2,7 @@
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{self, vec2, Align2, Color32, Margin, Order, Rounding, Sense, Slider, Stroke};
+use eframe::egui::{self, vec2, Align2, Color32, Margin, Order, Rounding, Sense, Slider, Stroke, Vec2};
 
 use crate::settings::{Settings, ToolStyle, ToolbarPosition};
 
@@ -45,13 +45,15 @@ pub fn show(
     settings: &mut Settings,
     can_undo: bool,
     can_redo: bool,
+    // Extra space taken by scrollbars on the right / bottom edge.
+    inset: Vec2,
 ) -> Option<ToolbarEvent> {
     // (anchor, offset from that anchor, horizontal layout?)
     let (anchor, offset, horizontal) = match settings.toolbar_position {
         ToolbarPosition::Top => (Align2::CENTER_TOP, vec2(0.0, MARGIN), true),
-        ToolbarPosition::Bottom => (Align2::CENTER_BOTTOM, vec2(0.0, -MARGIN), true),
+        ToolbarPosition::Bottom => (Align2::CENTER_BOTTOM, vec2(0.0, -(MARGIN + inset.y)), true),
         //ToolbarPosition::Left => (Align2::LEFT_CENTER, vec2(MARGIN, 0.0), false),
-        //ToolbarPosition::Right => (Align2::RIGHT_CENTER, vec2(-MARGIN, 0.0), false),
+        //ToolbarPosition::Right => (Align2::RIGHT_CENTER, vec2(-(MARGIN + inset.x), 0.0), false),
     };
 
     let mut event = None;

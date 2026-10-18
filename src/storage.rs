@@ -7,7 +7,8 @@ use std::{fmt, fs, io, path::Path};
 use crate::model::Document;
 
 const MAGIC: &[u8; 4] = b"INK1";
-const FORMAT_VERSION: u32 = 1;
+/// v2: paged documents (stroke.page, page_height, page_count).
+const FORMAT_VERSION: u32 = 2;
 const HEADER_LEN: usize = 8;
 
 #[derive(Debug)]
@@ -78,6 +79,7 @@ mod tests {
         let id = doc.alloc_id();
         doc.strokes.push(Stroke::new(
             id,
+            0,
             StrokeKind::Highlighter,
             [255, 230, 0, 96],
             14.0,
