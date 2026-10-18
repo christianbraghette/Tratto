@@ -60,6 +60,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("InkNote")
             .with_decorations(true) // keep system window buttons
+            .with_maximized(true)
             //.with_fullscreen(true) // F11 toggles this at runtime
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
