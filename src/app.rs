@@ -8,7 +8,7 @@ use eframe::egui::{
 
 use crate::history::{Action, History};
 use crate::model::{Document, PageKind, Point, StrokeKind, Stroke};
-use crate::render;
+use crate::render::{self, StrokeCache};
 use crate::settings::{Settings, ToolbarPosition};
 use crate::storage;
 use crate::stroke_builder::StrokeBuilder;
@@ -19,8 +19,10 @@ use crate::wayland_pen::{PenEvent, WaylandPen};
 const SETTINGS_KEY: &str = "inknote_settings";
 /// Samples closer than this (document units) are treated as jitter.
 const MIN_POINT_DIST: f32 = 0.6;
-/// Moving-average window for smoothing.
-const SMOOTHING_WINDOW: usize = 3;
+/// Smoothing strength at rest (0..1, lower = smoother) ...
+const SMOOTH_ALPHA_MIN: f32 = 0.4;
+/// ... fading to none at this per-sample distance (document units).
+const SMOOTH_SPEED_REF: f32 = 6.0;
 const HIGHLIGHTER_ALPHA: u8 = 96;
 
 /// Stroke currently being drawn.
@@ -52,6 +54,8 @@ pub struct InkApp {
     pen_pos: Pos2,
     /// Tool to restore when the pen's eraser end is lifted.
     saved_tool: Option<Tool>,
+    /// Cached anti-aliased meshes of finished strokes.
+    cache: StrokeCache,
 }
 
 impl InkApp {
@@ -78,6 +82,7 @@ impl InkApp {
             pen_down: false,
             pen_pos: Pos2::ZERO,
             saved_tool: None,
+            cache: StrokeCache::default(),
         };
         if Path::new(&app.settings.file_path).exists() {
             app.load();
@@ -114,6 +119,7 @@ impl InkApp {
     }
 
     fn reset_editing_state(&mut self) {
+        self.cache.clear();
         self.history.clear();
         self.active = None;
         self.erase_session.clear();
@@ -272,7 +278,7 @@ impl InkApp {
             {
                 // Only start inside the writable page, not in the padding.
                 if view.page_rect().contains(pos) {
-                    let mut builder = StrokeBuilder::new(MIN_POINT_DIST, SMOOTHING_WINDOW);
+                    let mut builder = StrokeBuilder::new(MIN_POINT_DIST, SMOOTH_ALPHA_MIN, SMOOTH_SPEED_REF);
                     builder.begin(to_doc_point(view, pos, self.last_pressure));
                     self.active = Some(ActiveStroke { kind, color, width, builder });
                 }
@@ -407,16 +413,11 @@ impl InkApp {
         let painter = ui.painter_at(rect);
         render::paint_background(&painter, &view, &self.doc.page);
 
-        let (y0, y1) = view.visible_y();
-        for s in &self.doc.strokes {
-            // Cull strokes outside the viewport.
-            if s.bounds[3] + s.width < y0 || s.bounds[1] - s.width > y1 {
-                continue;
-            }
-            render::paint_stroke(&painter, &view, s);
-        }
+        let ppp = ui.ctx().pixels_per_point();
+        render::paint_strokes(&painter, &view, &self.doc.strokes, &mut self.cache, ppp);
         if let Some(a) = &self.active {
-            render::paint_points(&painter, &view, a.kind, a.color, a.width, a.builder.points());
+            let pts = a.builder.preview_points(self.settings.predict_pen);
+            render::paint_live(&painter, &view, a.kind, a.color, a.width, &pts, ppp);
         }
         if self.tool == Tool::Eraser {
             if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos()) {
@@ -441,12 +442,17 @@ impl InkApp {
                     for (pos, label) in [
                         (ToolbarPosition::Top, "Top"),
                         (ToolbarPosition::Bottom, "Bottom"),
-                        (ToolbarPosition::Left, "Left"),
-                        (ToolbarPosition::Right, "Right"),
+                        //(ToolbarPosition::Left, "Left"),
+                        //(ToolbarPosition::Right, "Right"),
                     ] {
                         ui.selectable_value(&mut self.settings.toolbar_position, pos, label);
                     }
                 });
+
+                ui.checkbox(
+                    &mut self.settings.predict_pen,
+                    "Predict pen tip (lower perceived latency)",
+                );
 
                 ui.separator();
                 ui.heading("Page");

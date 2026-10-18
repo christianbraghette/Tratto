@@ -4,7 +4,8 @@
 //! - `model`          serializable data model (`Point`, `Stroke`, `Document`)
 //! - `geometry`       point-to-segment math used by the eraser
 //! - `history`        action-based undo/redo (no document cloning)
-//! - `stroke_builder` jitter filter + moving-average smoothing of raw input
+//! - `stroke_builder` jitter filter + velocity-adaptive smoothing + prediction
+//! - `stroke_mesh`    anti-aliased, curve-interpolated stroke tessellation
 //! - `view`           document <-> screen coordinate transform, centering
 //! - `render`         painting of page background and strokes
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
@@ -21,15 +22,39 @@ mod render;
 mod settings;
 mod storage;
 mod stroke_builder;
+mod stroke_mesh;
 mod toolbar;
 mod view;
 mod wayland_pen;
 
 use eframe::egui;
+use eframe::egui_wgpu::{self, wgpu};
 
 fn main() -> eframe::Result<()> {
+    // Low-latency presentation by default: no vsync wait and at most one frame
+    // queued. Set INKNOTE_VSYNC=1 to go back to vsync (saves power, adds latency).
+    // INKNOTE_MSAA=4 additionally enables 4x MSAA (strokes are already
+    // anti-aliased analytically, so this is rarely needed).
+    let vsync = std::env::var_os("INKNOTE_VSYNC").is_some();
+    let msaa: u16 = std::env::var("INKNOTE_MSAA")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        vsync,
+        multisampling: msaa,
+        wgpu_options: egui_wgpu::WgpuConfiguration {
+            present_mode: if vsync {
+                wgpu::PresentMode::AutoVsync
+            } else {
+                wgpu::PresentMode::AutoNoVsync
+            },
+            desired_maximum_frame_latency: Some(1),
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        },
         viewport: egui::ViewportBuilder::default()
             .with_title("InkNote")
             .with_decorations(true) // keep system window buttons

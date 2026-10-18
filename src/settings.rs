@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 pub enum ToolbarPosition {
     Top,
     Bottom,
-    Left,
-    Right,
+    //Left,
+    //Right,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -25,6 +25,8 @@ pub struct Settings {
     pub highlighter: ToolStyle,
     /// Eraser radius in document units.
     pub eraser_radius: f32,
+    /// Extrapolate the live stroke slightly ahead of the pen (hides latency).
+    pub predict_pen: bool,
     pub file_path: String,
 }
 
@@ -35,6 +37,7 @@ impl Default for Settings {
             pen: ToolStyle { color: [20, 20, 20], width: 2.5 },
             highlighter: ToolStyle { color: [255, 235, 0], width: 14.0 },
             eraser_radius: 12.0,
+            predict_pen: true,
             file_path: "notes.ink".to_owned(),
         }
     }

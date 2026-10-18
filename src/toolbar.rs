@@ -50,8 +50,8 @@ pub fn show(
     let (anchor, offset, horizontal) = match settings.toolbar_position {
         ToolbarPosition::Top => (Align2::CENTER_TOP, vec2(0.0, MARGIN), true),
         ToolbarPosition::Bottom => (Align2::CENTER_BOTTOM, vec2(0.0, -MARGIN), true),
-        ToolbarPosition::Left => (Align2::LEFT_CENTER, vec2(MARGIN, 0.0), false),
-        ToolbarPosition::Right => (Align2::RIGHT_CENTER, vec2(-MARGIN, 0.0), false),
+        //ToolbarPosition::Left => (Align2::LEFT_CENTER, vec2(MARGIN, 0.0), false),
+        //ToolbarPosition::Right => (Align2::RIGHT_CENTER, vec2(-MARGIN, 0.0), false),
     };
 
     let mut event = None;

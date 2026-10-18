@@ -1,13 +1,135 @@
-//! Painting with `egui::Painter`.
+//! Painting: page background, cached anti-aliased stroke meshes, eraser cursor.
 
-use eframe::egui::{Color32, Painter, Pos2, Shape, Stroke as UiStroke};
+use std::collections::HashMap;
+
+use eframe::egui::{epaint::Mesh, vec2, Color32, Painter, Pos2, Shape, Stroke as UiStroke, Vec2};
 
 use crate::model::{PageKind, PageStyle, Point, Stroke, StrokeKind};
+use crate::stroke_mesh;
 use crate::view::View;
 
 /// Distinct colour of the non-writable side padding.
 pub const PADDING_COLOR: Color32 = Color32::from_gray(52);
 pub const PAGE_COLOR: Color32 = Color32::from_rgb(252, 251, 247);
+
+/// Flush the batched mesh before it grows beyond this many vertices.
+const MAX_BATCH_VERTS: usize = 60_000;
+/// Cache entries unused for this many frames are dropped (bounds memory).
+const CACHE_TTL_FRAMES: u64 = 512;
+
+// ------------------------------------------------------------------ cache
+
+struct Entry {
+    mesh: Mesh,
+    last_used: u64,
+}
+
+/// Per-stroke tessellation cache. Meshes are stored at `document * scale`
+/// without translation, so scrolling never invalidates them; only a change of
+/// scale or pixels-per-point does.
+#[derive(Default)]
+pub struct StrokeCache {
+    map: HashMap<u64, Entry>,
+    scale_bits: u32,
+    ppp_bits: u32,
+    frame: u64,
+}
+
+impl StrokeCache {
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    fn begin_frame(&mut self, scale: f32, ppp: f32) {
+        let (s, p) = (scale.to_bits(), ppp.to_bits());
+        if s != self.scale_bits || p != self.ppp_bits {
+            self.map.clear();
+            self.scale_bits = s;
+            self.ppp_bits = p;
+        }
+        self.frame += 1;
+        if self.frame % 256 == 0 {
+            let f = self.frame;
+            self.map.retain(|_, e| f - e.last_used < CACHE_TTL_FRAMES);
+        }
+    }
+
+    fn get(&mut self, s: &Stroke, scale: f32, aa: f32) -> &Mesh {
+        let frame = self.frame;
+        let e = self.map.entry(s.id).or_insert_with(|| {
+            let mut mesh = Mesh::default();
+            stroke_mesh::tessellate(&mut mesh, s.kind, s.color, s.width, &s.points, scale, aa);
+            Entry { mesh, last_used: frame }
+        });
+        e.last_used = frame;
+        &e.mesh
+    }
+}
+
+// ------------------------------------------------------------ strokes
+
+/// Paints all visible strokes in document order as one (or a few) meshes.
+pub fn paint_strokes(
+    painter: &Painter,
+    view: &View,
+    strokes: &[Stroke],
+    cache: &mut StrokeCache,
+    ppp: f32,
+) {
+    let aa = 1.0 / ppp;
+    cache.begin_frame(view.scale, ppp);
+    let offset = mesh_offset(view);
+    let (y0, y1) = view.visible_y();
+
+    let mut batch = Mesh::default();
+    for s in strokes {
+        if s.bounds[3] + s.width < y0 || s.bounds[1] - s.width > y1 {
+            continue; // outside the viewport
+        }
+        batch.append_ref(cache.get(s, view.scale, aa));
+        if batch.vertices.len() > MAX_BATCH_VERTS {
+            flush(painter, &mut batch, offset);
+        }
+    }
+    flush(painter, &mut batch, offset);
+}
+
+/// Paints the stroke that is currently being drawn (rebuilt every frame).
+pub fn paint_live(
+    painter: &Painter,
+    view: &View,
+    kind: StrokeKind,
+    rgba: [u8; 4],
+    width: f32,
+    pts: &[Point],
+    ppp: f32,
+) {
+    let mut mesh = Mesh::default();
+    stroke_mesh::tessellate(&mut mesh, kind, rgba, width, pts, view.scale, 1.0 / ppp);
+    mesh.translate(mesh_offset(view));
+    if !mesh.is_empty() {
+        painter.add(Shape::mesh(mesh));
+    }
+}
+
+/// Translation from "document * scale" space to screen space.
+fn mesh_offset(view: &View) -> Vec2 {
+    vec2(
+        view.rect.left() + view.pad_x,
+        view.rect.top() - view.scroll_y * view.scale,
+    )
+}
+
+fn flush(painter: &Painter, batch: &mut Mesh, offset: Vec2) {
+    if batch.is_empty() {
+        return;
+    }
+    let mut m = std::mem::take(batch);
+    m.translate(offset);
+    painter.add(Shape::mesh(m));
+}
+
+// -------------------------------------------------------- background
 
 pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
     painter.rect_filled(view.rect, 0.0, PADDING_COLOR);
@@ -26,7 +148,7 @@ pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
                 break;
             }
             if sy >= view.rect.top() {
-                painter.line_segment([egui_pos(page.left(), sy), egui_pos(page.right(), sy)], line);
+                painter.line_segment([Pos2::new(page.left(), sy), Pos2::new(page.right(), sy)], line);
             }
             k += 1;
         }
@@ -36,7 +158,7 @@ pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
         while x < view.page_width {
             let sx = view.to_screen(x, 0.0).x;
             painter.line_segment(
-                [egui_pos(sx, view.rect.top()), egui_pos(sx, view.rect.bottom())],
+                [Pos2::new(sx, view.rect.top()), Pos2::new(sx, view.rect.bottom())],
                 line,
             );
             x += spacing;
@@ -47,78 +169,6 @@ pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
     let edge = UiStroke::new(1.0, Color32::from_gray(25));
     painter.line_segment([page.left_top(), page.left_bottom()], edge);
     painter.line_segment([page.right_top(), page.right_bottom()], edge);
-}
-
-fn egui_pos(x: f32, y: f32) -> Pos2 {
-    Pos2::new(x, y)
-}
-
-pub fn paint_stroke(painter: &Painter, view: &View, s: &Stroke) {
-    paint_points(painter, view, s.kind, s.color, s.width, &s.points);
-}
-
-/// Paints a polyline; used for finished strokes and the live stroke.
-pub fn paint_points(
-    painter: &Painter,
-    view: &View,
-    kind: StrokeKind,
-    rgba: [u8; 4],
-    width: f32,
-    pts: &[Point],
-) {
-    if pts.is_empty() {
-        return;
-    }
-    // Unmultiplied alpha -> egui handles blending (highlighter is semi-transparent).
-    let color = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
-    let screen: Vec<Pos2> = pts.iter().map(|p| view.to_screen(p.x, p.y)).collect();
-    let w = (width * view.scale).max(0.5);
-
-    match kind {
-        StrokeKind::Highlighter => {
-            // One single path shape, constant width, butt caps.
-            // (Per-segment circles would double-blend the translucent colour.)
-            if screen.len() == 1 {
-                painter.circle_filled(screen[0], w * 0.5, color);
-            } else {
-                painter.add(Shape::line(screen, UiStroke::new(w, color)));
-            }
-        }
-        StrokeKind::Pen => paint_pen(painter, color, w, &screen, pts),
-    }
-}
-
-/// Pressure -> width multiplier.
-fn pressure_factor(p: f32) -> f32 {
-    0.35 + 0.65 * p.clamp(0.0, 1.0)
-}
-
-fn paint_pen(painter: &Painter, color: Color32, w: f32, screen: &[Pos2], pts: &[Point]) {
-    if screen.len() == 1 {
-        painter.circle_filled(screen[0], w * pressure_factor(pts[0].pressure) * 0.5, color);
-        return;
-    }
-    let uniform = pts.iter().all(|p| (p.pressure - pts[0].pressure).abs() < 0.02);
-    if uniform {
-        // Mouse / constant pressure: a single path is the cheapest.
-        let ww = w * pressure_factor(pts[0].pressure);
-        painter.add(Shape::line(screen.to_vec(), UiStroke::new(ww, color)));
-        painter.circle_filled(screen[0], ww * 0.5, color); // round caps
-        painter.circle_filled(screen[screen.len() - 1], ww * 0.5, color);
-    } else {
-        // Variable pressure: one capsule per segment (line + round joint).
-        for i in 0..screen.len() - 1 {
-            let ww = w * pressure_factor((pts[i].pressure + pts[i + 1].pressure) * 0.5);
-            painter.line_segment([screen[i], screen[i + 1]], UiStroke::new(ww, color));
-            painter.circle_filled(screen[i], ww * 0.5, color);
-        }
-        let last = screen.len() - 1;
-        painter.circle_filled(
-            screen[last],
-            w * pressure_factor(pts[last].pressure) * 0.5,
-            color,
-        );
-    }
 }
 
 pub fn paint_eraser_cursor(painter: &Painter, center: Pos2, radius_px: f32) {
