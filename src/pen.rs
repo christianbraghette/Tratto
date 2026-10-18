@@ -19,6 +19,7 @@
 //! normal winit input path is used unchanged.
 
 /// One normalised pen sample (already grouped by the protocol's `frame`).
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum PenEvent {
     /// Pen moved, hovered, touched down or lifted.

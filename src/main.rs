@@ -27,7 +27,7 @@ mod stroke_builder;
 mod stroke_mesh;
 mod toolbar;
 mod view;
-mod wayland_pen;
+mod pen;
 
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};

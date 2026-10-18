@@ -16,7 +16,7 @@ use crate::storage;
 use crate::stroke_builder::StrokeBuilder;
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::view::{Layout, View};
-use crate::wayland_pen::{PenEvent, WaylandPen};
+use crate::pen::{PenEvent, WaylandPen};
 
 const SETTINGS_KEY: &str = "inknote_settings";
 /// Samples closer than this (document units) are treated as jitter.
