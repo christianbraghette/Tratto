@@ -1620,7 +1620,11 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "eframe",
+ "raw-window-handle",
  "serde",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@
 //! - `render`         painting of page background and strokes
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `toolbar`        the floating pill toolbar
+//! - `wayland_pen`    native Wayland tablet (pen) input, Linux only
 //! - `storage`        bincode save/load
 //! - `app`            application state and per-frame orchestration
 
@@ -22,6 +23,7 @@ mod storage;
 mod stroke_builder;
 mod toolbar;
 mod view;
+mod wayland_pen;
 
 use eframe::egui;
 

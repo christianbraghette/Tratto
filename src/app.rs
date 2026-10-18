@@ -14,6 +14,7 @@ use crate::storage;
 use crate::stroke_builder::StrokeBuilder;
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::view::View;
+use crate::wayland_pen::{PenEvent, WaylandPen};
 
 const SETTINGS_KEY: &str = "inknote_settings";
 /// Samples closer than this (document units) are treated as jitter.
@@ -44,6 +45,13 @@ pub struct InkApp {
     last_erase_pos: Option<Pos2>,
     last_pressure: f32,
     status: String,
+    /// Native Wayland pen source (None on X11/Windows or without tablet support).
+    pen: Option<WaylandPen>,
+    pen_init_done: bool,
+    pen_down: bool,
+    pen_pos: Pos2,
+    /// Tool to restore when the pen's eraser end is lifted.
+    saved_tool: Option<Tool>,
 }
 
 impl InkApp {
@@ -65,6 +73,11 @@ impl InkApp {
             last_erase_pos: None,
             last_pressure: 1.0,
             status: String::new(),
+            pen: None,
+            pen_init_done: false,
+            pen_down: false,
+            pen_pos: Pos2::ZERO,
+            saved_tool: None,
         };
         if Path::new(&app.settings.file_path).exists() {
             app.load();
@@ -167,6 +180,65 @@ impl InkApp {
                 }
             }
         });
+    }
+
+    /// Converts native pen events into regular egui pointer events and pressure.
+    /// Called from `raw_input_hook`, i.e. before egui processes the frame.
+    fn inject_pen_events(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let Some(pen) = self.pen.as_ref() else { return };
+        let events: Vec<PenEvent> = pen.try_iter().collect();
+        let zoom = ctx.zoom_factor();
+
+        for ev in events {
+            match ev {
+                PenEvent::Motion { x, y, pressure, down, eraser } => {
+                    let pos = Pos2::new(x / zoom, y / zoom);
+                    self.pen_pos = pos;
+                    raw_input.events.push(Event::PointerMoved(pos));
+                    if down != self.pen_down {
+                        self.pen_down = down;
+                        raw_input.events.push(Event::PointerButton {
+                            pos,
+                            button: PointerButton::Primary,
+                            pressed: down,
+                            modifiers: raw_input.modifiers,
+                        });
+                    }
+                    if down {
+                        self.last_pressure = pressure.clamp(0.0, 1.0);
+                    }
+                    self.apply_pen_eraser(eraser);
+                }
+                PenEvent::Leave => {
+                    if self.pen_down {
+                        self.pen_down = false;
+                        raw_input.events.push(Event::PointerButton {
+                            pos: self.pen_pos,
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers: raw_input.modifiers,
+                        });
+                    }
+                    raw_input.events.push(Event::PointerGone);
+                    self.apply_pen_eraser(false);
+                    self.last_pressure = 1.0;
+                }
+                // Barrel button = undo.
+                PenEvent::BarrelPressed => self.undo(),
+            }
+        }
+    }
+
+    /// Flipping the pen over switches to the eraser; flipping back restores the tool.
+    fn apply_pen_eraser(&mut self, eraser: bool) {
+        if eraser {
+            if self.saved_tool.is_none() && self.tool != Tool::Eraser {
+                self.saved_tool = Some(self.tool);
+                self.tool = Tool::Eraser;
+            }
+        } else if let Some(t) = self.saved_tool.take() {
+            self.tool = t;
+        }
     }
 
     fn stroke_params(&self) -> Option<(StrokeKind, [u8; 4], f32)> {
@@ -415,6 +487,9 @@ impl InkApp {
                 if !self.status.is_empty() {
                     ui.label(&self.status);
                 }
+                if self.pen.is_some() {
+                    ui.small("Native Wayland pen input: active (pressure, eraser end, barrel button = undo)");
+                }
                 ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, F11 fullscreen");
             });
         self.settings_open = open;
@@ -428,7 +503,14 @@ fn to_doc_point(view: &View, pos: Pos2, pressure: f32) -> Point {
 }
 
 impl eframe::App for InkApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The Wayland display handle is only available through `Frame`, so the
+        // native pen source is started lazily on the first frame.
+        if !self.pen_init_done {
+            self.pen_init_done = true;
+            self.pen = WaylandPen::start(ctx, frame);
+        }
+
         self.handle_shortcuts(ctx);
 
         // The toolbar is an Area above the canvas, so egui's hit-testing
@@ -451,6 +533,10 @@ impl eframe::App for InkApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none())
             .show(ctx, |ui| self.canvas_ui(ui));
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.inject_pen_events(ctx, raw_input);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
