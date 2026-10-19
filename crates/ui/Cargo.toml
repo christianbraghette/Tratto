@@ -19,6 +19,8 @@ inknote-core.workspace = true
 eframe.workspace = true
 serde.workspace = true
 raw-window-handle = "0.6"
+# Icon font (MIT OR Apache-2.0); 0.7 is the release built for egui 0.29.
+egui-phosphor = "0.7.3"
 windows-sys = "0.61.2"
 
 # Native Wayland tablet (pen) support. Versions match what winit 0.30 uses so

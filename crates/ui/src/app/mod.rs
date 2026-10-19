@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align2, Color32, DragValue, Event, FontId, Id, Key, Modifiers, PointerButton, Pos2, Rect,
-    Sense, Slider, TouchPhase, Vec2, pos2, vec2,
+    self, Align2, Color32, DragValue, Event, FontId, Id, Key, Modifiers, MouseWheelUnit,
+    PointerButton, Pos2, Rect, Sense, Slider, TouchPhase, Vec2, pos2, vec2,
 };
 
 use inknote_core::geometry::point_in_polygon;
@@ -22,6 +22,7 @@ use inknote_core::stroke_builder::StrokeBuilder;
 
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
 use crate::input::windows_pen::WindowsPen;
+use crate::kinetic::Kinetic;
 use crate::render::{self, Moved, StrokeCache};
 use crate::scrollbar;
 use crate::settings::{Settings, ToolbarPosition, ZoomMode};
@@ -29,10 +30,15 @@ use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::view::{Layout, MARGIN, View};
 
 mod library_ui;
+mod menus;
+
+use menus::{Command, ContextMenu, HelpWindows};
 
 /// Width of the left page-preview panel (points).
 const PANEL_WIDTH: f32 = 164.0;
 /// Autosave this long after the last change.
+/// Key under which eframe stores the window state (not public in eframe).
+const WINDOW_STATE_KEY: &str = "window";
 const AUTOSAVE_DELAY: Duration = Duration::from_secs(2);
 const SETTINGS_KEY: &str = "inknote_settings";
 /// Samples closer than this (document units) are treated as jitter.
@@ -118,6 +124,8 @@ pub struct InkApp {
     settings_open: bool,
     /// Content-space position at the top-left of the writing area.
     scroll: Vec2,
+    /// Momentum, wheel acceleration and eased jumps of `scroll`.
+    kinetic: Kinetic,
     vbar_grab: Option<f32>,
     hbar_grab: Option<f32>,
     /// Whether a horizontal scrollbar was shown last frame (toolbar placement).
@@ -169,12 +177,32 @@ pub struct InkApp {
     /// Text box being typed into.
     edit: Option<EditState>,
     text_press: Option<TextPress>,
+    /// Canvas context menu (right click), if open.
+    context_menu: Option<ContextMenu>,
+    /// The press that closed the context menu must not reach the canvas.
+    swallow_press: bool,
+    /// Menu commands collected this frame, run after drawing.
+    pending: Vec<Command>,
+    help: HelpWindows,
+    /// Decorations last requested from the OS (None = not yet).
+    decorations: Option<bool>,
+    /// The window state restored at startup has been checked.
+    window_checked: bool,
+    /// The window was maximized before entering fullscreen.
+    maximize_after_fullscreen: bool,
+    /// Window title last sent to the OS.
+    os_title: String,
+    /// Zoom of the last frame (points per document unit).
+    view_scale: f32,
+    /// Zoom factor requested by a menu command, applied around the centre.
+    zoom_request: Option<f32>,
 }
 
 impl InkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // We implement zoom ourselves; keep egui's UI from zooming on Ctrl +/-.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        toolbar::install_icon_font(&cc.egui_ctx);
 
         let settings: Settings = cc
             .storage
@@ -188,6 +216,7 @@ impl InkApp {
             settings,
             settings_open: false,
             scroll: Vec2::ZERO,
+            kinetic: Kinetic::default(),
             vbar_grab: None,
             hbar_grab: None,
             hbar_visible: false,
@@ -223,6 +252,17 @@ impl InkApp {
             last_fp: (0, 0, 0, 0, 0),
             edit: None,
             text_press: None,
+            context_menu: None,
+            swallow_press: false,
+            pending: Vec::new(),
+            help: HelpWindows::default(),
+            // main.rs creates the window without decorations.
+            decorations: Some(false),
+            window_checked: false,
+            maximize_after_fullscreen: false,
+            os_title: "InkNote".to_owned(),
+            view_scale: 1.0,
+            zoom_request: None,
         };
         app.refresh_library();
         app
@@ -318,6 +358,7 @@ impl InkApp {
             return;
         }
         self.note_path = None;
+        self.context_menu = None;
         self.doc = Document::default();
         self.reset_editing_state();
         self.settings_open = false;
@@ -351,6 +392,7 @@ impl InkApp {
         self.erase_session.clear();
         self.last_erase_pos = None;
         self.scroll = Vec2::ZERO;
+        self.kinetic.stop();
     }
 
     /// Guarantees that every stroke lies on an existing page (e.g. after an
@@ -391,14 +433,13 @@ impl InkApp {
         // While typing, Ctrl+Z / Ctrl+Y belong to the text editor.
         let typing = self.edit.is_some();
         // Order matters: the Shift variant must be consumed before plain Ctrl+Z.
-        let (redo_shift, redo_y, undo, save, export, fullscreen) = ctx.input_mut(|i| {
+        let (redo_shift, redo_y, undo, save, export) = ctx.input_mut(|i| {
             (
                 !typing && i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
                 !typing && i.consume_key(Modifiers::COMMAND, Key::Y),
                 !typing && i.consume_key(Modifiers::COMMAND, Key::Z),
                 i.consume_key(Modifiers::COMMAND, Key::S),
                 i.consume_key(Modifiers::COMMAND, Key::E),
-                i.consume_key(Modifiers::NONE, Key::F11),
             )
         });
         if redo_shift || redo_y {
@@ -412,7 +453,8 @@ impl InkApp {
         if export {
             self.export_pdf();
         }
-        if self.selection.is_some() && !ctx.wants_keyboard_input() {
+        // While the context menu is open, Escape belongs to it.
+        if self.selection.is_some() && self.context_menu.is_none() && !ctx.wants_keyboard_input() {
             let (delete, escape) = ctx.input_mut(|i| {
                 (
                     i.consume_key(Modifiers::NONE, Key::Delete)
@@ -425,10 +467,6 @@ impl InkApp {
             } else if escape {
                 self.clear_selection();
             }
-        }
-        if fullscreen {
-            let is_fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fs));
         }
     }
 
@@ -715,6 +753,28 @@ impl InkApp {
         self.clear_selection();
         self.history
             .exec(&mut self.doc, Action::InsertPage { index });
+    }
+
+    /// Deletes a page with its content (undoable).
+    fn delete_page(&mut self, index: u32) {
+        self.clear_selection();
+        self.history.exec(&mut self.doc, Action::DeletePage { index });
+        self.toast(format!("Page {} deleted (Ctrl+Z restores it)", index + 1));
+    }
+
+    /// Selects every stroke on `page` with the select tool.
+    fn select_all_on_page(&mut self, page: u32) {
+        let ids: HashSet<u64> = self.doc.strokes.iter().filter(|s| s.page == page).map(|s| s.id).collect();
+        if ids.is_empty() {
+            self.toast(format!("Nothing to select on page {}", page + 1));
+            return;
+        }
+        if self.edit.is_some() {
+            self.edit = None;
+        }
+        self.tool = Tool::Select;
+        self.saved_tool = None;
+        self.selection = self.selection_for(page, ids);
     }
 
     fn selection_for(&self, page: u32, ids: HashSet<u64>) -> Option<Selection> {
@@ -1074,6 +1134,44 @@ impl InkApp {
         (rect, scale, hbar)
     }
 
+    /// Mouse wheel and touchpad scrolling over the canvas. Wheel notches
+    /// glide and accelerate; precise touchpad deltas are applied directly.
+    /// Ctrl / Cmd + wheel is zoom and is handled elsewhere.
+    fn wheel_input(&mut self, ui: &egui::Ui, canvas: Rect, scale: f32, now: f64) {
+        let line = ui.ctx().options(|o| o.line_scroll_speed);
+        let wheel: Vec<_> = ui.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::MouseWheel { unit, delta, modifiers } => Some((*unit, *delta, *modifiers)),
+                    _ => None,
+                })
+                .collect()
+        });
+        for (unit, delta, m) in wheel {
+            if m.ctrl || m.command || m.mac_cmd {
+                continue;
+            }
+            // Same conversion as egui's own scroll delta.
+            let mut d = match unit {
+                MouseWheelUnit::Point => delta,
+                MouseWheelUnit::Line => delta * line,
+                MouseWheelUnit::Page => delta * canvas.height(),
+            };
+            if m.shift {
+                d = vec2(d.x + d.y, 0.0);
+            }
+            // Positive deltas move the content down/right, i.e. scroll up/left.
+            let content = -d / scale;
+            if unit == MouseWheelUnit::Point && d.length() < 8.0 {
+                self.kinetic.stop();
+                self.scroll += content;
+            } else {
+                self.kinetic.notch(content, now);
+            }
+        }
+    }
+
     fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         let full = ui.max_rect();
         let layout = Layout {
@@ -1087,13 +1185,15 @@ impl InkApp {
         let (mut canvas, mut scale, mut hbar) = self.canvas_geometry(full, &layout);
         let idle = !self.busy();
 
-        // Ctrl + wheel / pinch zoom, anchored under the pointer.
-        if idle && ui.rect_contains_pointer(canvas) {
-            let zd = ui.input(|i| i.zoom_delta());
+        // Ctrl + wheel / pinch zoom, anchored under the pointer; zoom from the
+        // menu, anchored at the centre.
+        let request = self.zoom_request.take();
+        if idle && (request.is_some() || ui.rect_contains_pointer(canvas)) {
+            let zd = request.unwrap_or_else(|| ui.input(|i| i.zoom_delta()));
             if (zd - 1.0).abs() > 1e-4 {
                 let anchor = ui
                     .input(|i| i.pointer.hover_pos())
-                    .filter(|p| canvas.contains(*p))
+                    .filter(|p| request.is_none() && canvas.contains(*p))
                     .unwrap_or_else(|| canvas.center());
                 let before = View::new(canvas, self.scroll, scale, layout);
                 let c = before.screen_to_content(anchor);
@@ -1103,9 +1203,11 @@ impl InkApp {
                 let pad = View::pad_x_for(canvas.width(), layout.content_w(), scale);
                 self.scroll.x = c.x - (anchor.x - canvas.left() - pad) / scale;
                 self.scroll.y = c.y - (anchor.y - canvas.top()) / scale;
+                self.kinetic.stop();
             }
         }
         self.hbar_visible = hbar;
+        self.view_scale = scale;
 
         let canvas_resp = ui.allocate_rect(canvas, Sense::drag());
 
@@ -1114,10 +1216,15 @@ impl InkApp {
             self.commit_edit(ui.ctx());
         }
 
-        // ---- scrolling: wheel / touchpad / keys
+        // ---- scrolling: wheel / touchpad / keys, with momentum
+        let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(1.0 / 30.0)));
+        let max = View::max_scroll(canvas, scale, &layout);
+        if !idle {
+            // Never move the page under a stroke being drawn.
+            self.kinetic.stop();
+        }
         if idle && ui.rect_contains_pointer(full) {
-            let d = ui.input(|i| i.smooth_scroll_delta);
-            self.scroll -= d / scale;
+            self.wheel_input(ui, canvas, scale, now);
         }
         if !ui.ctx().wants_keyboard_input() {
             let (pgdn, pgup, home, end) = ui.input(|i| {
@@ -1128,32 +1235,36 @@ impl InkApp {
                     i.key_pressed(Key::End),
                 )
             });
+            // Repeated presses continue from where the running ease ends.
+            let base = self.kinetic.target().unwrap_or(self.scroll);
             let page_len = canvas.height() / scale * 0.9;
             if pgdn {
-                self.scroll.y += page_len;
+                self.kinetic.ease_to(base + vec2(0.0, page_len));
             }
             if pgup {
-                self.scroll.y -= page_len;
+                self.kinetic.ease_to(base - vec2(0.0, page_len));
             }
             if home {
-                self.scroll.y = 0.0;
+                self.kinetic.ease_to(vec2(base.x, 0.0));
             }
             if end {
-                self.scroll.y = f32::MAX;
+                self.kinetic.ease_to(vec2(base.x, max.y));
             }
         }
         if let Some(y) = self.scroll_to.take() {
-            self.scroll.y = y;
+            self.kinetic.ease_to(vec2(self.scroll.x, y));
         }
-        let max = View::max_scroll(canvas, scale, &layout);
+        self.kinetic.step(&mut self.scroll, dt, max, scale);
         self.scroll = vec2(
             self.scroll.x.clamp(0.0, max.x),
             self.scroll.y.clamp(0.0, max.y),
         );
 
+        let swallowed = std::mem::take(&mut self.swallow_press);
+
         // ---- drag on the grey area around the pages = pan (touch / pen friendly)
         let press = ui.input(|i| i.pointer.press_origin());
-        if idle && canvas_resp.drag_started_by(PointerButton::Primary) {
+        if idle && !swallowed && canvas_resp.drag_started_by(PointerButton::Primary) {
             let start = press.or(canvas_resp.interact_pointer_pos());
             let v = View::new(canvas, self.scroll, scale, layout);
             self.panning = start.map_or(false, |p| {
@@ -1162,14 +1273,18 @@ impl InkApp {
         }
         if self.panning {
             if canvas_resp.dragged() {
+                let before = self.scroll;
                 self.scroll -= canvas_resp.drag_delta() / scale;
                 self.scroll = vec2(
                     self.scroll.x.clamp(0.0, max.x),
                     self.scroll.y.clamp(0.0, max.y),
                 );
+                self.kinetic.drag(self.scroll - before, now);
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             } else {
+                // Let go: the view keeps gliding with the release velocity.
                 self.panning = false;
+                self.kinetic.release(now, scale);
             }
         } else if idle {
             if let Some(p) = canvas_resp.hover_pos() {
@@ -1214,6 +1329,13 @@ impl InkApp {
             )
         });
 
+        if self.vbar_grab.is_some() || self.hbar_grab.is_some() {
+            self.kinetic.stop();
+        }
+        if self.kinetic.is_active() {
+            ui.ctx().request_repaint();
+        }
+
         let view = View::new(canvas, self.scroll, scale, layout);
 
         // ---- pen / mouse input
@@ -1230,7 +1352,30 @@ impl InkApp {
         if moves.is_empty() {
             moves.extend(canvas_resp.interact_pointer_pos());
         }
-        if !self.panning {
+        // ---- right click: context menu for what is under the pointer
+        let right_click = ui.input(|i| i.pointer.secondary_clicked());
+        if right_click && !self.busy() && self.saved_tool.is_none() && ui.rect_contains_pointer(canvas) {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let c = view.screen_to_content(pos);
+                let page = view.layout.page_at(c);
+                let on_selection = match (&self.selection, page) {
+                    (Some(sel), Some(p)) if sel.page == p => {
+                        let o = view.layout.page_origin(p);
+                        sel.bounds.expand(6.0).contains(pos2(c.x - o.x, c.y - o.y))
+                    }
+                    _ => false,
+                };
+                self.context_menu = Some(ContextMenu {
+                    pos,
+                    page,
+                    text: self.text_at(&view.layout, c),
+                    on_selection,
+                });
+                ui.ctx().request_repaint();
+            }
+        }
+
+        if !self.panning && !swallowed {
             match self.tool {
                 Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
                 Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
@@ -1547,7 +1692,11 @@ impl InkApp {
                 ui.horizontal(|ui| {
                     ui.strong(format!("Pages ({})", layout.count));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("<").on_hover_text("Collapse").clicked() {
+                        if ui
+                            .small_button(egui_phosphor::regular::CARET_LEFT)
+                            .on_hover_text("Collapse")
+                            .clicked()
+                        {
                             close = true;
                         }
                     });
@@ -1710,11 +1859,7 @@ impl InkApp {
             self.scroll_to = Some(layout.page_top(to) - MARGIN);
         }
         if let Some(index) = delete {
-            self.clear_selection();
-            self.history
-                .exec(&mut self.doc, Action::DeletePage { index });
-            self.status = format!("Page {} deleted (Ctrl+Z restores it)", index + 1);
-            self.status_at = Some(Instant::now());
+            self.delete_page(index);
         }
         if let Some(i) = jump {
             self.scroll_to = Some(layout.page_top(i) - MARGIN);
@@ -1729,10 +1874,11 @@ impl InkApp {
         self.handle_shortcuts(ctx);
 
         // Pen side button = eraser while held. Wayland pens report it through
-        // `eraser_native`, Windows pens through `win_pen`; on X11 the button
-        // arrives as a right or middle mouse button. Never switch in the middle of a stroke.
+        // `eraser_native`, Windows pens through `win_pen`; on X11 it can arrive
+        // as the middle mouse button. (The right button opens the context
+        // menu.) Never switch in the middle of a stroke.
         if !self.busy() && self.edit.is_none() {
-            let button_held = ctx.input(|i| i.pointer.secondary_down() || i.pointer.middle_down());
+            let button_held = ctx.input(|i| i.pointer.middle_down());
             let win = self
                 .win_pen
                 .as_ref()
@@ -1771,16 +1917,22 @@ impl InkApp {
             self.history.can_redo(),
             bottom_inset,
         );
-        let mut leave = false;
-        match event {
-            Some(ToolbarEvent::Undo) => self.undo(),
-            Some(ToolbarEvent::Redo) => self.redo(),
-            Some(ToolbarEvent::ToggleSettings) => self.settings_open = !self.settings_open,
-            Some(ToolbarEvent::Library) => leave = true,
-            None => {}
-        }
         self.settings_window(ctx);
         self.pages_panel(ctx);
+        // After the pages panel, so the corner buttons sit next to it.
+        let corner = toolbar::show_corners(ctx, &mut self.settings, self.settings_open);
+        // Before the canvas, which must not see the press that closes it.
+        self.context_menu_ui(ctx);
+
+        let mut leave = false;
+        for event in [event, corner].into_iter().flatten() {
+            match event {
+                ToolbarEvent::Undo => self.undo(),
+                ToolbarEvent::Redo => self.redo(),
+                ToolbarEvent::ToggleSettings => self.settings_open = !self.settings_open,
+                ToolbarEvent::Library => leave = true,
+            }
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none())
@@ -1826,6 +1978,11 @@ impl InkApp {
                     &mut self.settings.predict_pen,
                     "Predict pen tip (lower perceived latency)",
                 );
+                ui.checkbox(
+                    &mut self.settings.custom_title_bar,
+                    "Custom title bar (menus inside the window title)",
+                )
+                .on_hover_text("Off: use the system title bar, with the menus below it");
 
                 ui.separator();
                 ui.heading("View");
@@ -1920,7 +2077,7 @@ impl InkApp {
                 if self.win_pen.is_some() {
                     ui.small("Windows pen input: side button or eraser end = eraser");
                 }
-                ui.small("Shortcuts: Ctrl+Z undo, Ctrl+Y redo, Ctrl+S save, Ctrl+E export PDF, Del delete selection, F11 fullscreen, PageUp/PageDown scroll");
+                ui.small("All keyboard shortcuts: Help > Keyboard shortcuts");
             });
         self.settings_open = open;
     }
@@ -1978,11 +2135,13 @@ impl eframe::App for InkApp {
             }
         }
 
-        if self.screen == Screen::Library {
-            self.library_screen(ctx);
-            return;
+        self.menu_shortcuts(ctx);
+        self.window_chrome(ctx);
+        match self.screen {
+            Screen::Library => self.library_screen(ctx),
+            Screen::Editor => self.editor_screen(ctx),
         }
-        self.editor_screen(ctx);
+        self.finish_chrome(ctx);
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -1991,6 +2150,9 @@ impl eframe::App for InkApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+        // Overwrite the window state saved by earlier versions (eframe's key);
+        // an unparsable value makes eframe skip restoring it.
+        storage.set_string(WINDOW_STATE_KEY, String::new());
         // eframe calls this periodically and on exit. Only write what is already
         // committed; a text box being typed stays open (it is committed on close).
         if self.screen == Screen::Editor && self.note_path.is_some() {

@@ -19,6 +19,7 @@ the GPU and, optionally, predicted slightly ahead of the pen tip.
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
+- [Acknowledgements](#acknowledgements)
 - [License](#license)
 
 ## Features
@@ -28,13 +29,22 @@ the GPU and, optionally, predicted slightly ahead of the pen tip.
 - Pressure-sensitive strokes, with smoothing and optional prediction of the pen tip
 - Stroke eraser, and lasso selection to move or delete ink
 - Text boxes for typed notes
-- Native pen support on Wayland (pressure, eraser end, side button) and Windows (eraser end, side button)
+- Native pen support on Wayland (pressure, eraser end, side button) and Windows (eraser end, side button);
+  on X11, a pen side button reported as the middle mouse button also switches to the eraser
 
 **Pages**
 - A3, A4, A5, Letter, Legal or custom paper sizes, in portrait or landscape
 - Blank, ruled or grid paper with adjustable line spacing
 - A page panel with previews for navigating, reordering, inserting and deleting pages
 - Zoom presets, plus zooming with Ctrl + wheel or a touchpad pinch
+- Smooth scrolling: wheel notches glide and speed up when you spin the wheel
+  quickly, a pan flicked on the grey area keeps moving, and page jumps ease
+  into place
+
+**Interface**
+- VS Code-style title bar with File, Edit, View, Page and Help menus (or the system title bar, if you prefer)
+- Context menu on right-click, adapted to what is under the pointer
+- Icon buttons, with names and shortcuts in tooltips
 
 **Organisation**
 - A library of notebooks (with colour covers), sections and quick notes
@@ -87,33 +97,77 @@ InkNote opens on the library screen. From there you can:
 - **Import** an existing `.ink` file into the library
 - choose a different **Library folder**, or **Refresh** after an external sync tool changes it
 
+### Window and menus
+
+Like VS Code, InkNote draws its own title bar. It holds the menus, the
+window title and the minimize, maximize and close buttons. Drag the title bar
+to move the window, double-click it to maximize, and drag the window edges to
+resize.
+
+| Menu | Contents |
+| --- | --- |
+| **File** | New note, new notebook, import, save, export as PDF, close note, library folder, settings, exit |
+| **Edit** | Undo, redo, select all on page, delete selection, deselect |
+| **View** | Pages panel, zoom in / out, actual size, fit width / page, toolbar position, full screen |
+| **Page** | Insert a page before / after the current one, delete it, paper style, page setup |
+| **Help** | Keyboard shortcuts, about InkNote |
+
+If you prefer the system title bar, turn off **Custom title bar** in the
+settings. The menus then appear below it.
+
 ### Editor
 
-The floating toolbar holds the **Library** button, the tools (Pen,
-Highlighter, Eraser, Select, Text), undo/redo, the page panel and the settings. Its position (top or bottom) can be
-changed in the settings.
+The editor keeps its controls in two notches attached to the top corners and
+a floating toolbar. All buttons are icons; hover over one to see its name.
+
+| Where | Buttons |
+| --- | --- |
+| Top-left notch | **Library** (save and go back), **Pages** (toggle the page panel) |
+| Top-right notch | **Settings** |
+| Floating toolbar, bottom (or top) centre | Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size, Undo, Redo |
+
+The floating toolbar can sit at the top or the bottom (**View** menu or
+settings).
+
+**Right-click** the canvas for a context menu that matches what is under the
+pointer:
+
+- on a text box: edit it or delete it
+- on the selection: delete it or deselect
+- anywhere: undo, redo and a tool switch
+- on a page: select everything on it, insert a page before or after, or delete it
+
+To pan, drag on the grey area around the pages, or use the scrollbars, the
+mouse wheel or a touchpad. Flick the drag and the view keeps gliding.
 
 The settings panel includes zoom, paper size and orientation, paper style and
-line spacing, pen prediction, PDF export options and **Save now**. Notes save
-automatically, so you don't need to save before closing. **Library** saves
-the note and goes back to the library.
+line spacing, pen prediction, the title bar style, PDF export options and
+**Save now**. Notes save automatically, so you don't need to save before
+closing. **Library** saves the note and goes back to the library.
 
 ### Keyboard shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+Z` | Undo |
-| `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
+| `Ctrl+N` | New note (in the same notebook or section) |
 | `Ctrl+S` | Save now |
 | `Ctrl+E` | Export the note as PDF |
+| `Ctrl+W` | Close the note and go back to the library |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
+| `Ctrl+A` | Select everything on the current page |
 | `Delete` or `Backspace` | Delete the selection |
-| `Escape` | Clear the selection |
-| `Page Up` / `Page Down` | Scroll by one screen |
-| `Home` / `End` | Go to the first / last page |
+| `Escape` | Clear the selection, or close the context menu |
+| `Ctrl+Plus` / `Ctrl+Minus` | Zoom in / out |
+| `Ctrl+0` | Actual size (100 %) |
 | `Ctrl` + mouse wheel, or pinch | Zoom around the pointer |
+| `Page Up` / `Page Down` | Scroll by one screen (animated) |
+| `Home` / `End` | Go to the first / last page |
 | `F11` | Toggle fullscreen |
+| `Ctrl+Q` | Exit |
 
-On macOS, use `Cmd` instead of `Ctrl`.
+On macOS, use `Cmd` instead of `Ctrl`. The list is also under **Help >
+Keyboard shortcuts**.
 
 ### PDF export
 
@@ -180,7 +234,8 @@ crates/
 │           model, history (undo/redo), stroke_builder, stroke_path,
 │           storage (.ink files), library (notebooks/notes), pdf_export
 └── ui/     inknote-ui: the `inknote` executable (egui + wgpu)
-            app, view, render, stroke_mesh, toolbar, scrollbar, settings,
+            app (editor, library, menus), chrome (title bar), view, render,
+            stroke_mesh, toolbar, kinetic (scrolling), scrollbar, settings,
             input (Wayland tablet / Windows pen)
 ```
 
@@ -194,6 +249,11 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md)
 first. Because InkNote is dual-licensed, contributors sign the
 [Contributor License Agreement](CLA.md) once, in their first pull request. You
 keep the copyright in your work.
+
+## Acknowledgements
+
+Toolbar icons come from [Phosphor Icons](https://phosphoricons.com) through the
+[egui-phosphor](https://github.com/amPerl/egui-phosphor) crate (MIT license).
 
 ## License
 

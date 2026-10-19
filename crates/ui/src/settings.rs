@@ -73,6 +73,8 @@ pub struct Settings {
     pub pdf_rules: bool,
     /// Folder that holds all notebooks and notes.
     pub library_root: String,
+    /// Draw our own title bar with the menus (system decorations off).
+    pub custom_title_bar: bool,
 }
 
 impl Default for Settings {
@@ -88,6 +90,7 @@ impl Default for Settings {
             pages_panel_open: false,
             pdf_rules: true,
             library_root: inknote_core::library::default_root().to_string_lossy().into_owned(),
+            custom_title_bar: true,
         }
     }
 }

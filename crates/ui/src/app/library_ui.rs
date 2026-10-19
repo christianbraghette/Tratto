@@ -102,11 +102,7 @@ impl InkApp {
             .as_ref()
             .and_then(|p| self.library.notebooks.iter().find(|n| &n.path == p))
             .cloned();
-        let target_dir = match (&notebook, &self.lib_ui.section) {
-            (Some(_), Some(sec)) => sec.clone(),
-            (Some(nb), None) => nb.path.clone(),
-            _ => root.clone(),
-        };
+        let target_dir = self.library_target_dir();
         let searching = !self.lib_ui.search.trim().is_empty();
 
         egui::TopBottomPanel::top("lib_top")
@@ -325,17 +321,36 @@ impl InkApp {
 
     // ------------------------------------------------------------ actions
 
+    /// Folder that new notes go to: the open section or notebook, else the root.
+    pub(super) fn library_target_dir(&self) -> PathBuf {
+        let notebook = self
+            .lib_ui
+            .notebook
+            .as_ref()
+            .and_then(|p| self.library.notebooks.iter().find(|n| &n.path == p));
+        match (notebook, &self.lib_ui.section) {
+            (Some(_), Some(sec)) => sec.clone(),
+            (Some(nb), None) => nb.path.clone(),
+            _ => self.library_root(),
+        }
+    }
+
+    /// Creates an untitled note in `dir` and opens it.
+    pub(super) fn new_note(&mut self, dir: &Path) {
+        match library::create_note(dir, "Untitled note") {
+            Ok(p) => {
+                self.refresh_library();
+                self.open_note(&p);
+            }
+            Err(e) => self.toast(format!("Cannot create note: {e}")),
+        }
+    }
+
     fn apply_act(&mut self, a: Act) {
         let root = self.library_root();
         match a {
             Act::Open(p) => self.open_note(&p),
-            Act::NewNote(dir) => match library::create_note(&dir, "Untitled note") {
-                Ok(p) => {
-                    self.refresh_library();
-                    self.open_note(&p);
-                }
-                Err(e) => self.toast(format!("Cannot create note: {e}")),
-            },
+            Act::NewNote(dir) => self.new_note(&dir),
             Act::OpenNotebook(p) => {
                 self.lib_ui.notebook = Some(p);
                 self.lib_ui.section = None;

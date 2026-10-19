@@ -8,16 +8,20 @@
 //!
 //! Module layout:
 //! - `app`            application state and per-frame orchestration
+//! - `chrome`         custom title bar, window buttons and resize borders
 //! - `view`           page layout + page/content/screen coordinate transforms
 //! - `render`         painting of page background and strokes
 //! - `stroke_mesh`    anti-aliased stroke tessellation
+//! - `kinetic`        scroll momentum, wheel acceleration and eased jumps
 //! - `scrollbar`      large pen-friendly scrollbars
-//! - `toolbar`        the floating pill toolbar
+//! - `toolbar`        the floating toolbars (tools, navigation, settings)
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `input`          native pen input (Wayland tablet, Windows pen buttons)
 
 mod app;
+mod chrome;
 mod input;
+mod kinetic;
 mod render;
 mod scrollbar;
 mod settings;
@@ -41,6 +45,10 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        // Always start maximized and windowed: don't save the window state.
+        // (eframe still *loads* a saved one, see `InkApp::window_chrome`.)
+        // App settings are persisted separately.
+        persist_window: false,
         vsync,
         multisampling: msaa,
         wgpu_options: egui_wgpu::WgpuConfiguration {
@@ -55,7 +63,9 @@ fn main() -> eframe::Result<()> {
         },
         viewport: egui::ViewportBuilder::default()
             .with_title("InkNote")
-            .with_decorations(true) // keep system window buttons
+            // The app draws its own title bar; switching to the system one
+            // (Settings) turns decorations back on at runtime.
+            .with_decorations(false)
             .with_maximized(true) // F11 toggles fullscreen at runtime
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
