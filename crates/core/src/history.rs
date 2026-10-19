@@ -11,7 +11,8 @@
 //! * `AddText` / `RemoveText` / `ReplaceText`   the same for text boxes; a
 //!   replace swaps the whole box (edit, move, restyle) and returns the old one.
 //! * `InsertPage` / `RemovePage`    change the page list (strokes and text boxes
-//!   of later pages are renumbered).
+//!   of later pages are renumbered). A page written on a PDF keeps its PDF
+//!   page through every page action and its inverse.
 //! * `MoveStrokes`  moves strokes, possibly to another page.
 //! * `MovePage`     reorders pages (their content follows).
 //! * `DeletePage` / `RestorePage`   delete a page with its content and bring it
@@ -31,7 +32,8 @@ pub enum Action {
     RemoveText { id: u64 },
     /// Replace the text box that has the same id.
     ReplaceText { text: TextBox },
-    InsertPage { index: u32 },
+    /// `pdf_page`: the PDF page under the new page (notes on a PDF).
+    InsertPage { index: u32, pdf_page: Option<u32> },
     RemovePage { index: u32 },
     /// Translate the strokes by (dx, dy) in page space and put them on `to_page`.
     MoveStrokes { ids: Vec<u64>, to_page: u32, dx: f32, dy: f32 },
@@ -46,6 +48,7 @@ pub enum Action {
         strokes: Vec<(usize, Stroke)>,
         texts: Vec<(usize, TextBox)>,
         insert_page: bool,
+        pdf_page: Option<u32>,
     },
     Batch(Vec<Action>),
 }
@@ -58,6 +61,11 @@ fn remap_pages(doc: &mut Document, f: impl Fn(u32) -> u32) {
     for t in doc.texts.iter_mut() {
         t.page = f(t.page);
     }
+}
+
+/// The per-page PDF list of a note written on a PDF.
+fn pdf_pages(doc: &mut Document) -> Option<&mut Vec<Option<u32>>> {
+    doc.pdf.as_mut().map(|p| &mut p.pages)
 }
 
 /// Splits `items` into (kept, removed-with-original-index).
@@ -111,9 +119,12 @@ impl Action {
                 }
                 None => Action::Batch(Vec::new()),
             },
-            Action::InsertPage { index } => {
+            Action::InsertPage { index, pdf_page } => {
                 let index = index.min(doc.page_count);
                 remap_pages(doc, |p| if p >= index { p + 1 } else { p });
+                if let Some(pages) = pdf_pages(doc) {
+                    pages.insert((index as usize).min(pages.len()), pdf_page);
+                }
                 doc.page_count += 1;
                 Action::RemovePage { index }
             }
@@ -132,8 +143,11 @@ impl Action {
                         p
                     }
                 });
+                let pdf_page = pdf_pages(doc).and_then(|pages| {
+                    ((index as usize) < pages.len()).then(|| pages.remove(index as usize)).flatten()
+                });
                 doc.page_count -= 1;
-                Action::InsertPage { index }
+                Action::InsertPage { index, pdf_page }
             }
             Action::MoveStrokes { ids, to_page, dx, dy } => {
                 let set: HashSet<u64> = ids.iter().copied().collect();
@@ -165,6 +179,12 @@ impl Action {
                         p
                     }
                 });
+                if let Some(pages) = pdf_pages(doc) {
+                    if (from as usize) < pages.len() && (to as usize) < pages.len() {
+                        let moved = pages.remove(from as usize);
+                        pages.insert(to as usize, moved);
+                    }
+                }
                 Action::MovePage { from: to, to: from }
             }
             Action::DeletePage { index } => {
@@ -176,16 +196,25 @@ impl Action {
                 doc.strokes = kept_s;
                 doc.texts = kept_t;
                 let remove_page = doc.page_count > 1;
+                let mut pdf_page = None;
                 if remove_page {
                     remap_pages(doc, |p| if p > index { p - 1 } else { p });
+                    if let Some(pages) = pdf_pages(doc) {
+                        if (index as usize) < pages.len() {
+                            pdf_page = pages.remove(index as usize);
+                        }
+                    }
                     doc.page_count -= 1;
                 }
-                Action::RestorePage { index, strokes, texts, insert_page: remove_page }
+                Action::RestorePage { index, strokes, texts, insert_page: remove_page, pdf_page }
             }
-            Action::RestorePage { index, strokes, texts, insert_page } => {
+            Action::RestorePage { index, strokes, texts, insert_page, pdf_page } => {
                 if insert_page {
                     let at = index.min(doc.page_count);
                     remap_pages(doc, |p| if p >= at { p + 1 } else { p });
+                    if let Some(pages) = pdf_pages(doc) {
+                        pages.insert((at as usize).min(pages.len()), pdf_page);
+                    }
                     doc.page_count += 1;
                 }
                 // Ascending original positions reproduce the old order.
@@ -370,7 +399,7 @@ mod tests {
         s1.page = 1;
         h.exec(&mut doc, Action::AddStroke { index: 0, stroke: s0 });
         h.exec(&mut doc, Action::AddStroke { index: 1, stroke: s1 });
-        h.exec(&mut doc, Action::InsertPage { index: 1 });
+        h.exec(&mut doc, Action::InsertPage { index: 1, pdf_page: None });
         assert_eq!(doc.page_count, 3);
         assert_eq!(doc.strokes.iter().map(|s| s.page).collect::<Vec<_>>(), vec![0, 2]);
         h.undo(&mut doc);
@@ -378,6 +407,42 @@ mod tests {
         assert_eq!(doc.strokes.iter().map(|s| s.page).collect::<Vec<_>>(), vec![0, 1]);
         h.redo(&mut doc);
         assert_eq!(doc.strokes[1].page, 2);
+    }
+
+    #[test]
+    fn pdf_pages_follow_every_page_action() {
+        use crate::model::PdfBackground;
+        let mut doc = Document::default();
+        doc.page_count = 3;
+        doc.pdf = Some(PdfBackground { sizes: vec![[600.0, 800.0]; 3], pages: vec![Some(0), Some(1), Some(2)], file: None });
+        let pages = |d: &Document| d.pdf.as_ref().unwrap().pages.clone();
+        let mut h = History::default();
+
+        h.exec(&mut doc, Action::InsertPage { index: 1, pdf_page: None });
+        assert_eq!(pages(&doc), [Some(0), None, Some(1), Some(2)]);
+        h.exec(&mut doc, Action::MovePage { from: 3, to: 0 });
+        assert_eq!(pages(&doc), [Some(2), Some(0), None, Some(1)]);
+        h.exec(&mut doc, Action::DeletePage { index: 1 });
+        assert_eq!(pages(&doc), [Some(2), None, Some(1)]);
+        h.exec(&mut doc, Action::RemovePage { index: 0 });
+        assert_eq!(pages(&doc), [None, Some(1)]);
+        assert_eq!(doc.pdf_page(1), Some(1));
+
+        // Undo everything, then redo it: the PDF pages come back each time.
+        for expected in [
+            vec![Some(2), None, Some(1)],
+            vec![Some(2), Some(0), None, Some(1)],
+            vec![Some(0), None, Some(1), Some(2)],
+            vec![Some(0), Some(1), Some(2)],
+        ] {
+            h.undo(&mut doc);
+            assert_eq!(pages(&doc), expected);
+            assert_eq!(doc.page_count as usize, expected.len());
+        }
+        for _ in 0..4 {
+            h.redo(&mut doc);
+        }
+        assert_eq!(pages(&doc), [None, Some(1)]);
     }
 
     #[test]

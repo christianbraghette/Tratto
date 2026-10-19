@@ -11,6 +11,8 @@
 //! - `chrome`         custom title bar, window buttons and resize borders
 //! - `view`           page layout + page/content/screen coordinate transforms
 //! - `render`         painting of page background and strokes
+//! - `pdf_view`       the PDF pages under the ink (background-rendered textures)
+//! - `highlight_gpu`  highlighter strokes with a darken blend (wgpu pipeline)
 //! - `stroke_mesh`    anti-aliased stroke tessellation
 //! - `kinetic`        scroll momentum, wheel acceleration and eased jumps
 //! - `scrollbar`      large pen-friendly scrollbars
@@ -26,7 +28,9 @@
 mod app;
 mod chrome;
 mod input;
+mod highlight_gpu;
 mod kinetic;
+mod pdf_view;
 mod render;
 mod scrollbar;
 mod settings;
@@ -103,7 +107,12 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "InkNote",
         options,
-        Box::new(|cc| Ok(Box::new(app::InkApp::new(cc)))),
+        Box::new(move |cc| {
+            if let Some(render_state) = cc.wgpu_render_state.as_ref() {
+                highlight_gpu::install(render_state, msaa.into());
+            }
+            Ok(Box::new(app::InkApp::new(cc)))
+        }),
     )
 }
 

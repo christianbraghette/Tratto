@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-use eframe::egui::{self, pos2, vec2, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui};
+use eframe::egui::{self, epaint::Mesh, pos2, vec2, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui};
 use egui_phosphor::regular as icon;
 use inknote_core::library::NoteInfo;
 use inknote_core::model::{Document, PageKind, StrokeKind, PAPERS};
@@ -30,6 +30,9 @@ use inknote_core::pdf_export::{self, InkColors, PdfNote, PdfOptions};
 use inknote_core::{storage, stroke_path};
 
 use super::InkApp;
+use crate::pdf_view::PdfTextures;
+use crate::render::{self, Layer};
+use crate::stroke_mesh;
 use crate::theme::{self, color, radius, space};
 
 /// What to export.
@@ -222,6 +225,7 @@ impl InkApp {
             pages,
             include_highlighter: s.pdf_highlighter,
             include_text: s.pdf_text,
+            include_pdf_pages: s.pdf_pages,
             paper_background: s.pdf_paper_background,
             ink: s.pdf_ink,
             page_size: s.pdf_page_size,
@@ -376,8 +380,13 @@ impl InkApp {
             Scope::Selection => self.note_checklist(ui, d),
         }
 
+        let on_pdf = self.doc.pdf.is_some() || d.loaded.values().flatten().any(|doc| doc.pdf.is_some());
         let s = &mut self.settings;
         section(ui, "Content");
+        if on_pdf {
+            ui.checkbox(&mut s.pdf_pages, "PDF pages under the ink")
+                .on_hover_text("Notes written on a PDF: its pages, as they are (text stays selectable)");
+        }
         ui.checkbox(&mut s.pdf_rules, "Ruled lines and grid");
         ui.checkbox(&mut s.pdf_highlighter, "Highlighter strokes");
         ui.checkbox(&mut s.pdf_text, "Text boxes");
@@ -500,7 +509,14 @@ impl InkApp {
 
     // ----------------------------------------------------------- preview
 
-    fn export_preview(&self, ui: &mut Ui, d: &mut ExportDialog, list: &[(PathBuf, String)]) {
+    fn export_preview(&mut self, ui: &mut Ui, d: &mut ExportDialog, list: &[(PathBuf, String)]) {
+        // The PDF pages' textures, lent for the preview (the rest only reads).
+        let mut textures = std::mem::take(&mut self.pdf_textures);
+        self.preview_pages(ui, d, list, &mut textures);
+        self.pdf_textures = textures;
+    }
+
+    fn preview_pages(&self, ui: &mut Ui, d: &mut ExportDialog, list: &[(PathBuf, String)], textures: &mut PdfTextures) {
         theme::caption(ui, "Preview");
         ui.add_space(space::XS);
         let docs: Vec<(&Document, &str)> = list
@@ -518,7 +534,7 @@ impl InkApp {
         }
         d.preview = d.preview.min(pages.len() - 1);
         let (note, page) = pages[d.preview];
-        paint_page(ui, area, notes[note].doc, page, &opts);
+        paint_page(ui, area, notes[note].doc, page, &opts, textures);
 
         ui.add_space(space::S);
         ui.horizontal(|ui| {
@@ -602,9 +618,9 @@ impl InkApp {
 
 /// One exported page as the PDF will show it, fitted into `area`: the output
 /// page (white), the note's page scaled and centred on it; then, as in the
-/// PDF, paper, highlighters, rules, text boxes and pen strokes with the
-/// chosen ink colours.
-fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions) {
+/// PDF, paper (or the PDF page it is written on), highlighters, rules, text
+/// boxes and pen strokes with the chosen ink colours.
+fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions, textures: &mut PdfTextures) {
     let ((out_w, out_h), s, (ox, oy)) = opts.placement(doc);
     let k = (area.width() / out_w).min(area.height() / out_h);
     let sheet = Rect::from_center_size(area.center(), vec2(out_w * k, out_h * k));
@@ -617,7 +633,10 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions)
     let at = |x: f32, y: f32| pos2(origin.x + x * f, origin.y + y * f);
     let paper = Rect::from_min_max(at(0.0, 0.0), at(doc.page_width, doc.page_height));
     let p = ui.painter_at(paper);
-    if opts.paper_background {
+    let on_pdf = opts.include_pdf_pages && doc.pdf_page(page).is_some();
+    if on_pdf {
+        textures.paint(&p, doc, page, paper, true);
+    } else if opts.paper_background {
         p.rect_filled(paper, 0.0, color::PAGE);
     }
     let rgb = |(r, g, b): (f32, f32, f32)| Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
@@ -639,8 +658,17 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions)
             }
         }
     };
+    // Highlighters darken what is under them, as in the PDF.
     if opts.include_highlighter {
-        paint_strokes(StrokeKind::Highlighter);
+        let mut mesh = Mesh::default();
+        let aa = 1.0 / ui.ctx().pixels_per_point();
+        for st in doc.strokes.iter().filter(|st| st.page == page && st.kind == StrokeKind::Highlighter) {
+            let (r, g, b) = opts.stroke_rgb(st);
+            let rgba = [r, g, b].map(|v| (v * 255.0).round() as u8);
+            stroke_mesh::tessellate(&mut mesh, st.kind, [rgba[0], rgba[1], rgba[2], 255], st.width, &st.points, f, aa);
+        }
+        mesh.translate(origin.to_vec2());
+        render::paint_mesh(&p, Layer::Highlight, mesh);
     }
     if opts.include_rules && doc.page.kind != PageKind::Blank {
         let spacing = doc.page.spacing.max(8.0);

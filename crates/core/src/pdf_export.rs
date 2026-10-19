@@ -12,10 +12,14 @@
 //! * Pen strokes are the same smoothed curve that is drawn on screen. Constant
 //!   pressure -> one stroked path; variable pressure -> runs of segments with
 //!   the same (quantised) width, joined by round caps.
-//! * Highlighter strokes are a single stroked path in the opaque colour they
-//!   leave on the background (`model::highlight_on`), painted first: page
-//!   order is background, highlighters, rules, text, pen strokes, as on
-//!   screen. Overlapping highlighters never darken, nothing is covered.
+//! * Highlighter strokes are a single stroked path in the colour they leave
+//!   on the paper (`model::highlight_on`), with the Darken blend mode: each
+//!   point keeps the darker of the highlighter and what is under it, so
+//!   overlapping highlighters never darken and nothing is covered (as on
+//!   screen). Page order: background, highlighters, rules, text, pen strokes.
+//! * Notes written on a PDF: the PDF's pages go under the pages as vector
+//!   form XObjects (`pdf_pages::underlay`, PDFium), so their text stays
+//!   text; such pages get no paper fill.
 
 use std::fs;
 use std::io::{self, Write};
@@ -26,6 +30,7 @@ use flate2::{write::ZlibEncoder, Compression};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{self, Document, PageKind, Stroke, StrokeKind, TextBox};
+use crate::pdf_pages::{self, Underlay};
 use crate::stroke_path::{self, Sample};
 
 /// 1 px (1/96 in) in PDF points (1/72 in).
@@ -51,6 +56,8 @@ pub struct PdfOptions {
     pub pages: Option<RangeInclusive<u32>>,
     pub include_highlighter: bool,
     pub include_text: bool,
+    /// Notes written on a PDF: put the PDF's pages under them.
+    pub include_pdf_pages: bool,
     /// Fill the note's page with the paper colour (otherwise white).
     pub paper_background: bool,
     pub ink: InkColors,
@@ -71,6 +78,7 @@ impl Default for PdfOptions {
             pages: None,
             include_highlighter: true,
             include_text: true,
+            include_pdf_pages: true,
             paper_background: false,
             ink: InkColors::Original,
             page_size: None,
@@ -157,10 +165,44 @@ pub struct PdfNote<'a> {
 /// applies to a single note). With more than one note the PDF gets a
 /// bookmark per note. Via a temp file, like `export_pdf`.
 pub fn export_notes(notes: &[PdfNote], path: &Path, opts: &PdfOptions) -> io::Result<()> {
-    let bytes = build_pdf(notes, opts)?;
+    let mut bytes = build_pdf(notes, opts)?;
+    let under = underlays(notes, opts);
+    if !under.is_empty() {
+        bytes = pdf_pages::underlay(bytes, under).map_err(io::Error::other)?;
+    }
     let tmp = path.with_extension("pdf.tmp");
     fs::write(&tmp, &bytes)?;
     fs::rename(&tmp, path)
+}
+
+/// The PDF page under a note page that is exported on its PDF page, if any.
+fn pdf_under(doc: &Document, page: u32, opts: &PdfOptions) -> Option<u32> {
+    let pdf = doc.pdf.as_ref().filter(|p| opts.include_pdf_pages && p.file.is_some())?;
+    let source = doc.pdf_page(page)?;
+    pdf.placement(source, doc.page_width, doc.page_height).map(|_| source)
+}
+
+/// The PDF pages to put under the exported pages (notes written on a PDF),
+/// placed like the note pages they belong to.
+fn underlays(notes: &[PdfNote], opts: &PdfOptions) -> Vec<Underlay> {
+    let mut out = Vec::new();
+    for (p, &(note, page)) in export_pages(notes, opts).iter().enumerate() {
+        let doc = notes[note].doc;
+        let Some(source) = pdf_under(doc, page, opts) else { continue };
+        let pdf = doc.pdf.as_ref().expect("pdf_under checked it");
+        let [x, y, w, h] = pdf.placement(source, doc.page_width, doc.page_height).expect("pdf_under checked it");
+        let ((_, out_h), s, (ox, oy)) = opts.placement(doc);
+        // Page units (y down) to PDF points (y up) on the output page.
+        let (left, top) = ((ox + x * s) * PX_TO_PT, (oy + y * s) * PX_TO_PT);
+        let (width, height) = (w * s * PX_TO_PT, h * s * PX_TO_PT);
+        out.push(Underlay {
+            page: p as u32,
+            file: pdf.file.clone().expect("pdf_under checked it"),
+            source_page: source,
+            rect: [left, out_h * PX_TO_PT - top - height, width, height],
+        });
+    }
+    out
 }
 
 /// The (note, page) pairs that become the PDF's pages, in order.
@@ -182,9 +224,10 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     let pages = page_list.len();
 
     // Object numbers: 1 catalog, 2 page tree, 3 resources, 4 info, 5 the
-    // font, then (page, content) pairs, then (several notes only) the
-    // outline root and one bookmark per note.
-    let font_obj = 5;
+    // highlighters' graphics state, 6 the font, then (page, content) pairs,
+    // then (several notes only) the outline root and one bookmark per note.
+    let gs_obj = 5;
+    let font_obj = 6;
     let first_page_obj = font_obj + 1;
     let outline_obj = first_page_obj + 2 * pages;
     let outlined = notes.len() > 1;
@@ -201,7 +244,7 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", first_page_obj + 2 * i)).collect();
     pdf.obj(2, &format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" ")));
 
-    pdf.obj(3, &format!("<< /Font << /F1 {font_obj} 0 R >> >>"));
+    pdf.obj(3, &format!("<< /ExtGState << /GSH {gs_obj} 0 R >> /Font << /F1 {font_obj} 0 R >> >>"));
 
     let author = if opts.author.trim().is_empty() {
         String::new()
@@ -209,6 +252,7 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
         format!("/Author ({}) ", pdf_string(opts.author.trim()))
     };
     pdf.obj(4, &format!("<< /Title ({}) {author}/Producer (InkNote) >>", pdf_string(&opts.title)));
+    pdf.obj(gs_obj, "<< /Type /ExtGState /BM /Darken >>");
 
     // Text boxes use the standard Helvetica (no font embedding needed).
     pdf.obj(
@@ -339,7 +383,8 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
         num((out_h - oy) * PX_TO_PT, 3),
     ));
 
-    if opts.paper_background {
+    // On its PDF page the page needs no paper: the PDF is the paper.
+    if opts.paper_background && pdf_under(doc, page, opts).is_none() {
         // The paper colour of the screen.
         let [r, g, b] = model::PAPER_RGB.map(|v| v as f32 / 255.0);
         c.push_str(&format!(
@@ -469,6 +514,9 @@ fn write_stroke(c: &mut String, s: &Stroke, opts: &PdfOptions) {
         g = num(g, 3),
         b = num(b, 3)
     ));
+    if s.kind == StrokeKind::Highlighter {
+        c.push_str("/GSH gs\n");
+    }
 
     if samples.len() == 1 {
         dot(c, samples[0]);
@@ -680,7 +728,8 @@ mod tests {
         let at = |what: &str| page.find(what).unwrap_or_else(|| panic!("{what} missing"));
         // Under the rules and the pen ink (black).
         assert!(at(&colour) < at("0.784 0.839 0.902 RG") && at(&colour) < at("0 0 0 RG"));
-        assert!(!pdf_text(&opts).contains("ExtGState"));
+        assert!(pdf_text(&opts).contains("/BM /Darken"));
+        assert!(page.contains("/GSH gs"));
         let no_hl = PdfOptions { include_highlighter: false, ..Default::default() };
         assert!(!page_content(&doc, 1, &no_hl).contains(&colour));
     }

@@ -14,7 +14,7 @@ use eframe::egui::{
 
 use inknote_core::geometry::point_in_polygon;
 use inknote_core::history::{Action, History};
-use inknote_core::library::Library;
+use inknote_core::library::{self, Library};
 use inknote_core::model::{
     Document, Point, Stroke, StrokeKind, TextBox,
 };
@@ -24,6 +24,7 @@ use inknote_core::stroke_builder::StrokeBuilder;
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
 use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
+use crate::pdf_view::PdfTextures;
 use crate::render::{self, Layer, Moved, StrokeCache};
 use crate::scrollbar;
 use crate::settings::{LeftPanel, Settings, ZoomMode};
@@ -170,6 +171,8 @@ pub struct InkApp {
     cache: StrokeCache,
     /// Same, at page-preview scale.
     thumb_cache: StrokeCache,
+    /// Notes written on a PDF: its pages as textures.
+    pdf_textures: PdfTextures,
     /// Page being dragged in the preview panel.
     page_drag: Option<u32>,
     /// Current page the pages panel last scrolled to.
@@ -268,6 +271,7 @@ impl InkApp {
             moving: None,
             cache: StrokeCache::default(),
             thumb_cache: StrokeCache::default(),
+            pdf_textures: PdfTextures::default(),
             page_drag: None,
             panel_page: None,
             scroll_to: None,
@@ -405,9 +409,48 @@ impl InkApp {
         self.refresh_library();
     }
 
+    /// A PDF dropped onto the window becomes a note to write on, next to the
+    /// open note (or in the notebook / section shown in the library), and is
+    /// opened. While a file is dragged over the window, a hint says so.
+    fn dropped_pdf(&mut self, ctx: &egui::Context) {
+        let is_pdf = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+        let (hovering, dropped) = ctx.input(|i| {
+            let hovering = i.raw.hovered_files.iter().any(|f| f.path.as_deref().map_or(true, is_pdf));
+            let dropped = i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).find(|p| is_pdf(p));
+            (hovering, dropped)
+        });
+        if hovering {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("pdf_drop_hint")));
+            let screen = ctx.screen_rect();
+            painter.rect_filled(screen, 0.0, Color32::from_black_alpha(120));
+            theme::paint_toast(&painter, screen.center(), "Drop the PDF to write on it");
+        }
+        let Some(src) = dropped else { return };
+        let dir = match self.screen {
+            Screen::Editor => self.note_path.as_deref().and_then(Path::parent).map(Path::to_path_buf),
+            Screen::Library => None,
+        };
+        // The open note is saved and closed first; stays put if that fails.
+        if self.screen == Screen::Editor {
+            self.close_note(ctx);
+            if self.screen == Screen::Editor {
+                return;
+            }
+        }
+        let dir = dir.unwrap_or_else(|| self.library_target_dir());
+        match library::import_pdf(&dir, &src) {
+            Ok(path) => {
+                self.refresh_library();
+                self.open_note(&path);
+            }
+            Err(e) => self.toast(format!("Cannot import the PDF: {e}")),
+        }
+    }
+
     fn reset_editing_state(&mut self) {
         self.cache.clear();
         self.thumb_cache.clear();
+        self.pdf_textures.clear();
         self.page_drag = None;
         self.edit = None;
         self.text_press = None;
@@ -785,7 +828,7 @@ impl InkApp {
     fn insert_page(&mut self, index: u32) {
         self.clear_selection();
         self.history
-            .exec(&mut self.doc, Action::InsertPage { index });
+            .exec(&mut self.doc, Action::InsertPage { index, pdf_page: None });
     }
 
     /// Deletes a page with its content (undoable).
@@ -1445,6 +1488,10 @@ impl InkApp {
         // Bottom to top: paper, highlighters, rules, text, pen (see `render`).
         let painter = ui.painter_at(canvas);
         render::paint_paper(&painter, &view);
+        // A note written on a PDF: its pages, right on the paper.
+        for page in view.visible_pages() {
+            self.pdf_textures.paint(&painter, &self.doc, page, view.page_screen_rect(page), true);
+        }
         let ppp = ui.ctx().pixels_per_point();
         let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
         let moved = self.selection.as_ref().map(|s| Moved {
@@ -1749,9 +1796,11 @@ impl InkApp {
         let blue = color::ACCENT;
 
         // Disjoint field borrows, released again after `show`.
+        let doc = &self.doc;
         let strokes = &self.doc.strokes;
         let texts = &self.doc.texts;
         let cache = &mut self.thumb_cache;
+        let pdf_textures = &mut self.pdf_textures;
         let drag = &mut self.page_drag;
 
         // Scroll the list to the current page when it changes.
@@ -1830,6 +1879,7 @@ impl InkApp {
                                 );
                                 p.rect_filled(rect, 0.0, render::PAGE_COLOR);
                                 let clipped = ui.painter_at(rect);
+                                pdf_textures.paint(&clipped, doc, i, rect, false);
                                 render::paint_page_strokes(
                                     &clipped,
                                     rect.min.to_vec2(),
@@ -2188,6 +2238,11 @@ impl eframe::App for InkApp {
         if (ctx.zoom_factor() - scale).abs() > 1e-3 && !ctx.input(|i| i.pointer.any_down()) {
             ctx.set_zoom_factor(scale);
         }
+        self.pdf_textures.begin_frame(ctx);
+        if let Some(e) = self.pdf_textures.error.take() {
+            self.toast(format!("The PDF pages cannot be shown: {e}"));
+        }
+        self.dropped_pdf(ctx);
         self.menu_shortcuts(ctx);
         self.window_chrome(ctx);
         match self.screen {

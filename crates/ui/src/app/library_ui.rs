@@ -41,6 +41,8 @@ pub enum Dialog {
     EmptyTrash(usize),
     Move { path: PathBuf },
     Import(String),
+    /// A PDF to write on (its path).
+    ImportPdf(String),
     Folder(String),
 }
 
@@ -76,6 +78,8 @@ pub(super) enum Act {
     Duplicate(PathBuf),
     MoveNote(PathBuf, PathBuf),
     Import(PathBuf, String),
+    /// A PDF to write on: the folder of the new note, the PDF's path.
+    ImportPdf(PathBuf, String),
     SetRoot(String),
     Refresh,
 }
@@ -139,6 +143,10 @@ impl InkApp {
                         ui.add_space(space::S);
                         if ui.button(theme::icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Import a note file").clicked() {
                             acts.push(Act::Dialog(Dialog::Import(String::new())));
+                        }
+                        let tip = "Import a PDF to write on (or drop it onto the window)";
+                        if ui.button(theme::icon(icon::FILE_ARROW_DOWN)).on_hover_text(tip).clicked() {
+                            acts.push(Act::Dialog(Dialog::ImportPdf(String::new())));
                         }
                         if ui.button(theme::icon(icon::ARROWS_CLOCKWISE)).on_hover_text("Refresh (re-read the folder, e.g. after a sync)").clicked() {
                             acts.push(Act::Refresh);
@@ -230,6 +238,7 @@ impl InkApp {
             Dialog::EmptyTrash(_) => "Empty trash",
             Dialog::Move { .. } => "Move note to",
             Dialog::Import(_) => "Import a note file",
+            Dialog::ImportPdf(_) => "Write on a PDF",
             Dialog::Folder(_) => "Library folder",
         };
 
@@ -306,6 +315,13 @@ impl InkApp {
                         submit |= name_row(ui, text, "/path/to/notes.ink");
                         ui.label(theme::muted("It is copied into the current notebook or section.").small());
                         primary = Some(("Import", false, named(text).then(|| Act::Import(target_dir.to_path_buf(), text.clone()))));
+                    }
+                    Dialog::ImportPdf(text) => {
+                        ui.label("Full path of a PDF file:");
+                        submit |= name_row(ui, text, "/path/to/slides.pdf");
+                        ui.label(theme::muted("It becomes a note in the current notebook or section, one page per PDF page.").small());
+                        ui.label(theme::muted("You can also drop a PDF onto the window.").small());
+                        primary = Some(("Import", false, named(text).then(|| Act::ImportPdf(target_dir.to_path_buf(), text.clone()))));
                     }
                     Dialog::Folder(text) => {
                         ui.label("All notebooks and notes live in this folder:");
@@ -497,6 +513,16 @@ impl InkApp {
                         self.toast("Imported");
                     }
                     Err(e) => self.toast(format!("Import failed: {e}")),
+                }
+            }
+            Act::ImportPdf(dir, text) => {
+                let src = PathBuf::from(text.trim().trim_matches('"'));
+                match library::import_pdf(&dir, &src) {
+                    Ok(path) => {
+                        self.refresh_library();
+                        self.open_note(&path);
+                    }
+                    Err(e) => self.toast(format!("Cannot import the PDF: {e}")),
                 }
             }
             Act::SetRoot(text) => {

@@ -24,6 +24,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::model::Document;
+use crate::pdf_pages::{self, PdfFile};
 use crate::storage::{self, NoteMeta};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -537,6 +538,22 @@ pub fn empty_trash(root: &Path) -> Result<usize> {
         delete_forever(root, &item.path)?;
     }
     Ok(items.len())
+}
+
+/// Creates a note written on the PDF at `src` in `dir` (one page per PDF
+/// page, titled after the file) and returns its path.
+pub fn import_pdf(dir: &Path, src: &Path) -> Result<PathBuf> {
+    let file = PdfFile::new(fs::read(src)?);
+    let sizes = pdf_pages::page_sizes(&file)?;
+    if sizes.is_empty() {
+        return Err("the PDF has no pages".into());
+    }
+    let title = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "PDF".into());
+    let mut meta = NoteMeta::new(&title, false);
+    fs::create_dir_all(dir)?;
+    let target = unique_path(dir, &sanitize(&title), Some(NOTE_EXT));
+    storage::save_note(&target, &mut meta, &Document::on_pdf(file, sizes))?;
+    Ok(target)
 }
 
 /// Copies a note file from anywhere (any format version) into the library.

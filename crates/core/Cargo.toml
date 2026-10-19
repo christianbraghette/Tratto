@@ -13,3 +13,6 @@ emath.workspace = true
 serde.workspace = true
 bincode = "1.3"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# PDFium bindings, for notes written on a PDF. The library itself is loaded at
+# runtime (see pdf_pages.rs); no image crate needed.
+pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_latest", "thread_safe"] }

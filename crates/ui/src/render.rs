@@ -3,10 +3,11 @@
 
 //! Painting: pages, cached anti-aliased stroke meshes, eraser cursor.
 //!
-//! A page is painted bottom to top: paper, highlighter strokes, rules, text
-//! boxes, pen strokes. Highlighters are opaque, in the colour they leave on
-//! the paper (`model::highlight_on`): overlapping highlighter strokes never
-//! darken each other, and nothing written is ever covered.
+//! A page is painted bottom to top: paper, the PDF page it is written on (if
+//! any), highlighter strokes, rules, text boxes, pen strokes. Highlighters
+//! are in the colour they leave on the paper (`model::highlight_on`) and
+//! darken what is under them (`highlight_gpu`): overlapping highlighter
+//! strokes never get darker, and nothing written or printed is covered.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,6 +18,7 @@ use eframe::egui::{
 
 use inknote_core::model::{self, PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
 
+use crate::highlight_gpu;
 use crate::stroke_mesh;
 use crate::theme::color;
 use crate::view::View;
@@ -40,7 +42,7 @@ pub enum Layer {
 }
 
 impl Layer {
-    fn of(kind: StrokeKind) -> Self {
+    pub fn of(kind: StrokeKind) -> Self {
         match kind {
             StrokeKind::Highlighter => Layer::Highlight,
             StrokeKind::Pen => Layer::Ink,
@@ -157,10 +159,10 @@ pub fn paint_strokes(
             }
             batch.append_ref(cache.get(s, view.scale, aa));
             if batch.vertices.len() > MAX_BATCH_VERTS {
-                flush(painter, &mut batch, offset);
+                flush(painter, layer, &mut batch, offset);
             }
         }
-        flush(painter, &mut batch, offset);
+        flush(painter, layer, &mut batch, offset);
     }
 
     if let Some(m) = moved {
@@ -170,10 +172,10 @@ pub fn paint_strokes(
         for s in strokes.iter().filter(in_layer) {
             batch.append_ref(cache.get(s, view.scale, aa));
             if batch.vertices.len() > MAX_BATCH_VERTS {
-                flush(painter, &mut batch, offset);
+                flush(painter, layer, &mut batch, offset);
             }
         }
-        flush(painter, &mut batch, offset);
+        flush(painter, layer, &mut batch, offset);
     }
 }
 
@@ -195,10 +197,10 @@ pub fn paint_page_strokes(
         for s in strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer) {
             batch.append_ref(cache.get(s, scale, aa));
             if batch.vertices.len() > MAX_BATCH_VERTS {
-                flush(painter, &mut batch, offset);
+                flush(painter, layer, &mut batch, offset);
             }
         }
-        flush(painter, &mut batch, offset);
+        flush(painter, layer, &mut batch, offset);
     }
 }
 
@@ -290,18 +292,27 @@ pub fn paint_live(
     let mut mesh = Mesh::default();
     stroke_mesh::tessellate(&mut mesh, kind, paint_rgba(kind, rgba), width, pts, view.scale, 1.0 / ppp);
     mesh.translate(view.page_origin_screen(page).to_vec2());
-    if !mesh.is_empty() {
-        painter.add(Shape::mesh(mesh));
+    paint_mesh(painter, Layer::of(kind), mesh);
+}
+
+/// Paints stroke triangles of `layer`: highlighters with the darken blend.
+pub fn paint_mesh(painter: &Painter, layer: Layer, mesh: Mesh) {
+    match layer {
+        _ if mesh.is_empty() => {}
+        Layer::Highlight => highlight_gpu::paint(painter, mesh),
+        Layer::Ink => {
+            painter.add(Shape::mesh(mesh));
+        }
     }
 }
 
-fn flush(painter: &Painter, batch: &mut Mesh, offset: Vec2) {
+fn flush(painter: &Painter, layer: Layer, batch: &mut Mesh, offset: Vec2) {
     if batch.is_empty() {
         return;
     }
     let mut m = std::mem::take(batch);
     m.translate(offset);
-    painter.add(Shape::mesh(m));
+    paint_mesh(painter, layer, m);
 }
 
 // -------------------------------------------------------- background

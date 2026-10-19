@@ -4,10 +4,13 @@
 //! Serializable document model. Stroke coordinates are in *page space*:
 //! document units relative to the top-left corner of the stroke's page.
 
+use std::sync::Arc;
+
 use emath::{pos2, vec2, Pos2, Rect};
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::point_segment_distance;
+use crate::pdf_pages::PdfFile;
 
 /// A4 at 96 dpi.
 pub const DEFAULT_PAGE_WIDTH: f32 = 794.0;
@@ -42,10 +45,11 @@ pub const PAPER_RGB: [u8; 3] = [252, 251, 247];
 /// The opaque colour a highlighter of colour `rgba` (its alpha is the ink's
 /// strength) leaves on a background `under`.
 ///
-/// Highlighters are painted with this colour, below everything else on the
-/// page: strokes overlapping each other (or themselves) can then never
-/// darken twice, and ink, text and rules always stay on top, as with a real
-/// highlighter.
+/// Highlighters are painted in this colour with a darken blend (each point
+/// keeps the darker of the highlighter and what is under it, on screen and
+/// in exported PDFs): strokes overlapping each other (or themselves) never
+/// darken twice, and ink, text and the pages of a PDF under them stay
+/// visible, as with a real highlighter.
 pub fn highlight_on(rgba: [u8; 4], under: [u8; 3]) -> [u8; 3] {
     let a = rgba[3] as f32 / 255.0;
     let mix = |c: u8, u: u8| (u as f32 + (c as f32 - u as f32) * a).round() as u8;
@@ -217,6 +221,35 @@ impl Default for PageStyle {
     }
 }
 
+/// A PDF the note is written on: its pages are drawn under the ink of the
+/// note's pages.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PdfBackground {
+    /// Size of every page of the PDF, in points (1/72 in).
+    pub sizes: Vec<[f32; 2]>,
+    /// For every page of the note, the PDF page under it (`None`: plain
+    /// paper, e.g. a page added later). Always `page_count` long.
+    pub pages: Vec<Option<u32>>,
+    /// The PDF itself. Not part of the encoded document: the file stores it
+    /// raw after it (see `storage`).
+    #[serde(skip)]
+    pub file: Option<Arc<PdfFile>>,
+}
+
+impl PdfBackground {
+    /// Where PDF page `pdf_page` sits on a note page of `page_w` x `page_h`:
+    /// scaled to fit and centred, as `(x, y, width, height)` in page units.
+    pub fn placement(&self, pdf_page: u32, page_w: f32, page_h: f32) -> Option<[f32; 4]> {
+        let [w, h] = *self.sizes.get(pdf_page as usize)?;
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        let s = (page_w / w).min(page_h / h);
+        let (dw, dh) = (w * s, h * s);
+        Some([(page_w - dw) * 0.5, (page_h - dh) * 0.5, dw, dh])
+    }
+}
+
 /// The whole note: `page_count` pages of `page_width` x `page_height`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
@@ -229,7 +262,12 @@ pub struct Document {
     /// Typed text boxes.
     pub texts: Vec<TextBox>,
     next_id: u64,
+    /// The PDF the note is written on, if any.
+    pub pdf: Option<PdfBackground>,
 }
+
+/// Points (1/72 in) to document units (1/96 in).
+pub const PT_TO_PX: f32 = 96.0 / 72.0;
 
 impl Default for Document {
     fn default() -> Self {
@@ -241,6 +279,7 @@ impl Default for Document {
             strokes: Vec::new(),
             texts: Vec::new(),
             next_id: 1,
+            pdf: None,
         }
     }
 }
@@ -255,7 +294,41 @@ impl Document {
         strokes: Vec<Stroke>,
         next_id: u64,
     ) -> Self {
-        Self { page_width, page_height, page_count, page, strokes, texts: Vec::new(), next_id }
+        Self { page_width, page_height, page_count, page, strokes, texts: Vec::new(), next_id, pdf: None }
+    }
+
+    /// Builds a document from the fields of the v3 / v4 file formats (no PDF).
+    pub fn migrated_from_v4(
+        page_width: f32,
+        page_height: f32,
+        page_count: u32,
+        page: PageStyle,
+        strokes: Vec<Stroke>,
+        texts: Vec<TextBox>,
+        next_id: u64,
+    ) -> Self {
+        Self { page_width, page_height, page_count, page, strokes, texts, next_id, pdf: None }
+    }
+
+    /// A note written on `file`: one page per PDF page, the note's pages as
+    /// large as the first PDF page (others are fitted into them), blank
+    /// paper (the PDF has its own lines).
+    pub fn on_pdf(file: Arc<PdfFile>, sizes: Vec<[f32; 2]>) -> Self {
+        let [w, h] = sizes.first().copied().unwrap_or([DEFAULT_PAGE_WIDTH / PT_TO_PX, DEFAULT_PAGE_HEIGHT / PT_TO_PX]);
+        let count = sizes.len().max(1) as u32;
+        Self {
+            page_width: w * PT_TO_PX,
+            page_height: h * PT_TO_PX,
+            page_count: count,
+            page: PageStyle { kind: PageKind::Blank, ..PageStyle::default() },
+            pdf: Some(PdfBackground { sizes, pages: (0..count).map(Some).collect(), file: Some(file) }),
+            ..Self::default()
+        }
+    }
+
+    /// The PDF page under note page `page`, if any.
+    pub fn pdf_page(&self, page: u32) -> Option<u32> {
+        self.pdf.as_ref()?.pages.get(page as usize).copied().flatten()
     }
 
     /// Allocates a document-unique stroke id.

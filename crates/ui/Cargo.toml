@@ -22,6 +22,12 @@ raw-window-handle = "0.6"
 # Icon font (MIT OR Apache-2.0); 0.7 is the release built for egui 0.29.
 egui-phosphor = "0.7.3"
 windows-sys = "0.61.2"
+# Uploads egui's vertices to the highlighter pipeline (already used by egui).
+bytemuck = "1.25.2"
+
+[dev-dependencies]
+# Waits for wgpu's async device setup in the highlighter pipeline test.
+pollster = "0.3.0"
 
 # Native Wayland tablet (pen) support. Versions match what winit 0.30 uses so
 # there is a single wayland-client in the dependency tree.

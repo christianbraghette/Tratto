@@ -116,6 +116,8 @@ pub struct Settings {
     /// PDF export (the Export dialog remembers these).
     pub pdf_highlighter: bool,
     pub pdf_text: bool,
+    /// Notes written on a PDF: export the PDF's pages under the ink.
+    pub pdf_pages: bool,
     pub pdf_paper_background: bool,
     pub pdf_ink: InkColors,
     /// Output page size in px; `None` = the note's own size.
@@ -155,6 +157,7 @@ impl Default for Settings {
             recent_count: 12,
             pdf_highlighter: true,
             pdf_text: true,
+            pdf_pages: true,
             pdf_paper_background: false,
             pdf_ink: InkColors::Original,
             pdf_page_size: None,

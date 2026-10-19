@@ -35,6 +35,7 @@ pub(super) enum Command {
     NewNote,
     NewNotebook,
     Import,
+    ImportPdf,
     LibraryFolder,
     Save,
     ExportPdf,
@@ -274,6 +275,7 @@ impl InkApp {
             push(entry(ui, icon::NOTE_PENCIL, "New note", &shortcut(&ctx, cmd, Key::N), true), ui, Command::NewNote);
             push(entry(ui, icon::NOTEBOOK, "New notebook...", "", true), ui, Command::NewNotebook);
             push(entry(ui, icon::DOWNLOAD_SIMPLE, "Import note file...", "", true), ui, Command::Import);
+            push(entry(ui, icon::FILE_ARROW_DOWN, "Write on a PDF...", "", true), ui, Command::ImportPdf);
             ui.separator();
             push(entry(ui, icon::FLOPPY_DISK, "Save", &shortcut(&ctx, cmd, Key::S), editor), ui, Command::Save);
             push(entry(ui, icon::FILE_PDF, "Export as PDF...", &shortcut(&ctx, cmd, Key::E), editor), ui, Command::ExportPdf);
@@ -507,7 +509,7 @@ impl InkApp {
                     self.new_note(&dir);
                 }
             }
-            Command::NewNotebook | Command::Import | Command::LibraryFolder => {
+            Command::NewNotebook | Command::Import | Command::ImportPdf | Command::LibraryFolder => {
                 if editor {
                     self.close_note(ctx);
                 }
@@ -515,6 +517,7 @@ impl InkApp {
                     self.lib_ui.dialog = Some(match cmd {
                         Command::NewNotebook => Dialog::NewNotebook(String::new()),
                         Command::Import => Dialog::Import(String::new()),
+                        Command::ImportPdf => Dialog::ImportPdf(String::new()),
                         _ => Dialog::Folder(self.settings.library_root.clone()),
                     });
                 }

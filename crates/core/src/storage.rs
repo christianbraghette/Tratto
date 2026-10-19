@@ -3,15 +3,18 @@
 
 //! Note files.
 //!
-//! v4 layout:
+//! v5 layout:
 //!
 //! ```text
-//! "INK1" | version u32 LE (= 4) | meta_len u32 LE | bincode(NoteMeta) | bincode(Document)
+//! "INK1" | version u32 LE (= 5) | meta_len u32 LE | bincode(NoteMeta)
+//!        | doc_len u64 LE | bincode(Document) | PDF bytes (notes on a PDF)
 //! ```
 //!
 //! The small meta block (title, dates, page count and a light vector preview
 //! of page 1) can be read without touching the document, which is what keeps
-//! the library screen fast. v2 / v3 files (document only) still load.
+//! the library screen fast. The PDF a note is written on is stored raw at the
+//! end, so the note stays one self-contained file. v4 (no document length,
+//! no PDF) and v2 / v3 files (document only) still load.
 //!
 //! Writes are atomic (temp file + rename) and the previous version is copied
 //! to `<note>.ink.bak` at most every ten minutes, so an autosave bug or a
@@ -25,10 +28,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Document, PageStyle, Stroke};
+use crate::model::{Document, PageStyle, Stroke, TextBox};
+use crate::pdf_pages::PdfFile;
 
 const MAGIC: &[u8; 4] = b"INK1";
-const FORMAT_VERSION: u32 = 4;
+const FORMAT_VERSION: u32 = 5;
+/// Meta block first, document only (no length, no PDF).
+const V4: u32 = 4;
 /// Magic + version.
 const HEADER_LEN: usize = 8;
 /// Magic + version + meta length.
@@ -177,12 +183,15 @@ impl From<bincode::Error> for StorageError {
 fn encode(meta: &NoteMeta, doc: &Document) -> Result<Vec<u8>, StorageError> {
     let meta_bytes = bincode::serialize(meta)?;
     let doc_bytes = bincode::serialize(doc)?;
-    let mut out = Vec::with_capacity(META_PREFIX + meta_bytes.len() + doc_bytes.len());
+    let pdf: &[u8] = doc.pdf.as_ref().and_then(|p| p.file.as_deref()).map_or(&[], |f| &f.bytes);
+    let mut out = Vec::with_capacity(META_PREFIX + meta_bytes.len() + 8 + doc_bytes.len() + pdf.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&(meta_bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&meta_bytes);
+    out.extend_from_slice(&(doc_bytes.len() as u64).to_le_bytes());
     out.extend_from_slice(&doc_bytes);
+    out.extend_from_slice(pdf);
     Ok(out)
 }
 
@@ -226,6 +235,37 @@ pub fn save_note(path: &Path, meta: &mut NoteMeta, doc: &Document) -> Result<(),
 
 // --------------------------------------------------------------- reading
 
+/// Layout of the document of version-3 and version-4 files.
+#[derive(Deserialize)]
+struct DocumentV4 {
+    page_width: f32,
+    page_height: f32,
+    page_count: u32,
+    page: PageStyle,
+    strokes: Vec<Stroke>,
+    texts: Vec<TextBox>,
+    next_id: u64,
+}
+
+impl From<DocumentV4> for Document {
+    fn from(d: DocumentV4) -> Self {
+        Document::migrated_from_v4(d.page_width, d.page_height, d.page_count, d.page, d.strokes, d.texts, d.next_id)
+    }
+}
+
+/// The meta block of a v4 / v5 file and where it ends.
+fn meta_block(bytes: &[u8]) -> Result<(NoteMeta, usize), StorageError> {
+    if bytes.len() < META_PREFIX {
+        return Err(StorageError::Corrupt);
+    }
+    let len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    let end = META_PREFIX + len as usize;
+    if len > MAX_META_LEN || end > bytes.len() {
+        return Err(StorageError::Corrupt);
+    }
+    Ok((bincode::deserialize(&bytes[META_PREFIX..end])?, end))
+}
+
 /// Layout of a version-2 file.
 #[derive(Deserialize)]
 struct DocumentV2 {
@@ -262,20 +302,31 @@ pub fn load_note(path: &Path) -> Result<(NoteMeta, Document), StorageError> {
     let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
     match version {
         FORMAT_VERSION => {
-            if bytes.len() < META_PREFIX {
+            let (meta, end) = meta_block(&bytes)?;
+            let rest = &bytes[end..];
+            if rest.len() < 8 {
                 return Err(StorageError::Corrupt);
             }
-            let len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-            let end = META_PREFIX + len as usize;
-            if len > MAX_META_LEN || end > bytes.len() {
-                return Err(StorageError::Corrupt);
+            let doc_len = u64::from_le_bytes(rest[..8].try_into().expect("8 bytes"));
+            let doc_end = usize::try_from(doc_len).ok().and_then(|l| l.checked_add(8)).filter(|&e| e <= rest.len());
+            let doc_end = doc_end.ok_or(StorageError::Corrupt)?;
+            let mut doc: Document = bincode::deserialize(&rest[8..doc_end])?;
+            if let Some(pdf) = doc.pdf.as_mut() {
+                let raw = &rest[doc_end..];
+                if raw.is_empty() {
+                    return Err(StorageError::Corrupt);
+                }
+                pdf.file = Some(PdfFile::new(raw.to_vec()));
             }
-            let meta: NoteMeta = bincode::deserialize(&bytes[META_PREFIX..end])?;
-            let doc: Document = bincode::deserialize(&bytes[end..])?;
             Ok((meta, doc))
         }
+        V4 => {
+            let (meta, end) = meta_block(&bytes)?;
+            let doc: DocumentV4 = bincode::deserialize(&bytes[end..])?;
+            Ok((meta, doc.into()))
+        }
         3 => {
-            let doc: Document = bincode::deserialize(&bytes[HEADER_LEN..])?;
+            let doc: Document = bincode::deserialize::<DocumentV4>(&bytes[HEADER_LEN..])?.into();
             Ok((legacy_meta(path, &doc), doc))
         }
         2 => {
@@ -300,7 +351,7 @@ pub fn read_meta(path: &Path) -> Result<NoteMeta, StorageError> {
     let mut head = [0u8; META_PREFIX];
     if f.read_exact(&mut head).is_ok() && &head[..4] == MAGIC {
         let version = u32::from_le_bytes([head[4], head[5], head[6], head[7]]);
-        if version == FORMAT_VERSION {
+        if version == FORMAT_VERSION || version == V4 {
             let len = u32::from_le_bytes([head[8], head[9], head[10], head[11]]);
             if len > MAX_META_LEN {
                 return Err(StorageError::Corrupt);
@@ -314,28 +365,24 @@ pub fn read_meta(path: &Path) -> Result<NoteMeta, StorageError> {
     load_note(path).map(|(m, _)| m)
 }
 
-/// Changes the meta block (e.g. the title) without re-encoding the document.
+/// Changes the meta block (e.g. the title) without re-encoding the document;
+/// the file keeps its version (v4 or v5). Older files are converted.
 pub fn rewrite_meta(path: &Path, change: impl FnOnce(&mut NoteMeta)) -> Result<(), StorageError> {
     let bytes = fs::read(path)?;
-    let is_v4 = bytes.len() >= META_PREFIX
-        && &bytes[..4] == MAGIC
-        && u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) == FORMAT_VERSION;
-    if !is_v4 {
+    let version = (bytes.len() >= META_PREFIX && &bytes[..4] == MAGIC)
+        .then(|| u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]))
+        .filter(|&v| v == FORMAT_VERSION || v == V4);
+    let Some(version) = version else {
         let (mut meta, doc) = load_note(path)?;
         change(&mut meta);
         return write_atomic(path, &encode(&meta, &doc)?);
-    }
-    let len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    let end = META_PREFIX + len as usize;
-    if len > MAX_META_LEN || end > bytes.len() {
-        return Err(StorageError::Corrupt);
-    }
-    let mut meta: NoteMeta = bincode::deserialize(&bytes[META_PREFIX..end])?;
+    };
+    let (mut meta, end) = meta_block(&bytes)?;
     change(&mut meta);
     let new_meta = bincode::serialize(&meta)?;
     let mut out = Vec::with_capacity(META_PREFIX + new_meta.len() + bytes.len() - end);
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&(new_meta.len() as u32).to_le_bytes());
     out.extend_from_slice(&new_meta);
     out.extend_from_slice(&bytes[end..]);
@@ -403,13 +450,91 @@ mod tests {
         let _ = fs::remove_file(path.with_extension("ink.bak"));
     }
 
+    /// A document in the v3 / v4 layout.
+    #[derive(Serialize)]
+    struct OldDocument<'a> {
+        page_width: f32,
+        page_height: f32,
+        page_count: u32,
+        page: PageStyle,
+        strokes: &'a [Stroke],
+        texts: &'a [TextBox],
+        next_id: u64,
+    }
+
+    fn old_layout(doc: &Document) -> Vec<u8> {
+        let old = OldDocument {
+            page_width: doc.page_width,
+            page_height: doc.page_height,
+            page_count: doc.page_count,
+            page: doc.page,
+            strokes: &doc.strokes,
+            texts: &doc.texts,
+            next_id: 100,
+        };
+        bincode::serialize(&old).unwrap()
+    }
+
+    #[test]
+    fn v4_files_still_load_and_keep_their_version() {
+        let doc = sample_doc();
+        let path = std::env::temp_dir().join("inknote_legacy_v4.ink");
+        let meta = bincode::serialize(&NoteMeta::new("Old note", false)).unwrap();
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&V4.to_le_bytes());
+        bytes.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&meta);
+        bytes.extend_from_slice(&old_layout(&doc));
+        fs::write(&path, bytes).unwrap();
+
+        let (meta, loaded) = load_note(&path).unwrap();
+        assert_eq!(meta.title, "Old note");
+        assert_eq!((loaded.strokes.len(), loaded.texts.len()), (1, 1));
+        assert!(loaded.pdf.is_none());
+        // Renaming rewrites only the meta block: still a valid v4 file.
+        rewrite_meta(&path, |m| m.title = "Renamed".into()).unwrap();
+        assert_eq!(fs::read(&path).unwrap()[4..8], V4.to_le_bytes());
+        let (meta, loaded) = load_note(&path).unwrap();
+        assert_eq!((meta.title.as_str(), loaded.strokes.len()), ("Renamed", 1));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn notes_on_a_pdf_keep_it() {
+        let path = std::env::temp_dir().join("inknote_on_pdf.ink");
+        let file = PdfFile::new(b"%PDF-1.5 pretend".to_vec());
+        let mut doc = Document::on_pdf(file.clone(), vec![[612.0, 792.0], [792.0, 612.0]]);
+        let id = doc.alloc_id();
+        doc.strokes.push(sample_doc().strokes[0].clone());
+        doc.strokes[0].id = id;
+        let mut meta = NoteMeta::new("Slides", false);
+        save_note(&path, &mut meta, &doc).unwrap();
+
+        let (meta, loaded) = load_note(&path).unwrap();
+        assert_eq!((meta.title.as_str(), loaded.page_count), ("Slides", 2));
+        // US Letter in document units.
+        assert!((loaded.page_width - 816.0).abs() < 0.01 && (loaded.page_height - 1056.0).abs() < 0.01);
+        let pdf = loaded.pdf.as_ref().unwrap();
+        assert_eq!(pdf.pages, [Some(0), Some(1)]);
+        let stored = pdf.file.as_ref().unwrap();
+        assert_eq!((stored.bytes.as_slice(), stored.key), (file.bytes.as_slice(), file.key));
+        assert_eq!(loaded.strokes.len(), 1);
+        // The title can still be changed without re-encoding.
+        rewrite_meta(&path, |m| m.title = "Lecture".into()).unwrap();
+        let (meta, again) = load_note(&path).unwrap();
+        assert_eq!(meta.title, "Lecture");
+        assert_eq!(again.pdf.unwrap().file.unwrap().bytes, file.bytes);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("ink.bak"));
+    }
+
     #[test]
     fn v3_files_still_load() {
         let doc = sample_doc();
         let path = std::env::temp_dir().join("inknote_legacy_v3.ink");
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(&3u32.to_le_bytes());
-        bytes.extend_from_slice(&bincode::serialize(&doc).unwrap());
+        bytes.extend_from_slice(&old_layout(&doc));
         fs::write(&path, bytes).unwrap();
 
         let (meta, loaded) = load_note(&path).unwrap();

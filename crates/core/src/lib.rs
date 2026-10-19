@@ -11,12 +11,14 @@
 //! - `storage`        bincode save/load of `.ink` files
 //! - `library`        notebooks / sections / notes as folders and files
 //! - `pdf_export`     vector PDF export (hand-written PDF writer)
+//! - `pdf_pages`      reading and rasterising PDF pages to write on (PDFium)
 
 pub mod geometry;
 pub mod history;
 pub mod library;
 pub mod model;
 pub mod pdf_export;
+pub mod pdf_pages;
 pub mod storage;
 pub mod stroke_builder;
 pub mod stroke_path;

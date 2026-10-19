@@ -2,3 +2,5 @@ target/
 
 *.pdf
 *.ink
+# PDFium binaries (fetched, see crates/ui/pdfium/README.md)
+crates/ui/pdfium/*/
