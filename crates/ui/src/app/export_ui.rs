@@ -12,9 +12,15 @@
 //!
 //! The choices that describe *how* to export are remembered in the settings;
 //! the ones about *this* export (what, pages, title, file) start fresh.
+//!
+//! The PDF is written on a background thread from copies of the notes, so a
+//! long export never freezes the editor; one export runs at a time.
 
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 
 use eframe::egui::{self, pos2, vec2, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui};
 use egui_phosphor::regular as icon;
@@ -61,6 +67,14 @@ pub(super) struct ExportDialog {
     loaded: HashMap<PathBuf, Option<Document>>,
     /// Index of the previewed page among the exported pages.
     preview: usize,
+}
+
+/// A PDF being written in the background.
+pub(super) struct ExportJob {
+    done: Receiver<io::Result<()>>,
+    path: PathBuf,
+    /// Unreadable notes left out.
+    skipped: usize,
 }
 
 /// A group of notes as the notebook panel shows it.
@@ -299,18 +313,26 @@ impl InkApp {
                 ui.add_space(space::M);
                 ui.horizontal(|ui| {
                     let label = format!("{}  Export", icon::FILE_PDF);
-                    let ready = !dialog.path.trim().is_empty() && !list.is_empty();
+                    let running = self.export_job.is_some();
+                    let ready = !dialog.path.trim().is_empty() && !list.is_empty() && !running;
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.ctx().wants_keyboard_input();
-                    if (ui.add_enabled(ready, theme::primary_button(label)).clicked() || enter) && ready {
+                    let resp = ui
+                        .add_enabled(ready, theme::primary_button(label))
+                        .on_disabled_hover_text(if running { "Another export is still running" } else { "Nothing to export" });
+                    if (resp.clicked() || enter) && ready {
                         export = true;
                     }
                     if ui.button("Cancel").clicked() {
                         cancel = true;
                     }
+                    if running {
+                        ui.spinner();
+                        ui.label(theme::muted("Exporting..."));
+                    }
                 });
             });
         if export {
-            self.run_export(&dialog, &list);
+            self.run_export(ctx, &dialog, &list);
         } else if open && !cancel {
             self.export_dialog = Some(dialog);
         }
@@ -519,20 +541,47 @@ impl InkApp {
         }
     }
 
-    fn run_export(&mut self, d: &ExportDialog, list: &[(PathBuf, String)]) {
-        let docs: Vec<(&Document, &str)> = list
+    /// Starts writing the PDF on a background thread, from copies of the
+    /// notes: the open note can be edited (and saved) meanwhile.
+    fn run_export(&mut self, ctx: &egui::Context, d: &ExportDialog, list: &[(PathBuf, String)]) {
+        let docs: Vec<(Document, String)> = list
             .iter()
-            .filter_map(|(p, t)| self.export_doc(&d.loaded, p).map(|doc| (doc, t.as_str())))
+            .filter_map(|(p, t)| self.export_doc(&d.loaded, p).map(|doc| (doc.clone(), t.clone())))
             .collect();
-        let notes: Vec<PdfNote> = docs.iter().map(|(doc, t)| PdfNote { doc, title: (*t).to_owned() }).collect();
         let title = if d.title.trim().is_empty() { self.scope_title(d.scope) } else { d.title.trim().to_owned() };
         let opts = self.pdf_options(d, &title);
         let mut path = PathBuf::from(d.path.trim().trim_matches('"'));
         if path.extension().is_none() {
             path.set_extension("pdf");
         }
-        let skipped = list.len() - notes.len();
-        let result = pdf_export::export_notes(&notes, &path, &opts);
+        let skipped = list.len() - docs.len();
+
+        let (tx, done) = mpsc::channel();
+        let (ctx, target) = (ctx.clone(), path.clone());
+        let spawned = thread::Builder::new().name("pdf-export".into()).spawn(move || {
+            let notes: Vec<PdfNote> = docs.iter().map(|(doc, t)| PdfNote { doc, title: t.clone() }).collect();
+            let _ = tx.send(pdf_export::export_notes(&notes, &target, &opts));
+            // Wake the UI to show the result.
+            ctx.request_repaint();
+        });
+        match spawned {
+            Ok(_) => {
+                self.export_job = Some(ExportJob { done, path, skipped });
+                self.toast("Exporting PDF...");
+            }
+            Err(e) => self.toast(format!("PDF export failed: {e}")),
+        }
+    }
+
+    /// Reports a finished background export (once per frame).
+    pub(super) fn poll_export(&mut self) {
+        let Some(job) = &self.export_job else { return };
+        let result = match job.done.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(io::Error::other("the export stopped unexpectedly")),
+        };
+        let Some(ExportJob { path, skipped, .. }) = self.export_job.take() else { return };
         match result {
             Ok(()) => {
                 let mut msg = format!("Exported PDF to {}", path.display());

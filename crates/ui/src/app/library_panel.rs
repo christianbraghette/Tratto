@@ -19,16 +19,17 @@
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, vec2, Align, Color32, Id, Layout, Sense, Ui};
+use eframe::egui::collapsing_header::CollapsingState;
+use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, Id, Layout, Rect, Sense, Ui};
 use egui_phosphor::regular as icon;
 
-use inknote_core::library::{self, NoteInfo, NotebookInfo};
+use inknote_core::library::{self, NoteInfo, NotebookInfo, SectionInfo, TrashItem};
 
-use super::library_ui::{Act, Dialog};
-use super::menus::entry;
+use super::library_ui::{when, Act, Dialog};
+use super::menus::{button_menu, entry};
 use super::InkApp;
 use crate::scrollbar;
-use crate::theme::{self, color, size, space};
+use crate::theme::{self, color, radius, size, space};
 use crate::toolbar;
 
 const PANEL_WIDTH: f32 = 260.0;
@@ -42,12 +43,15 @@ enum Pick {
     Act(Act),
     /// New order of the notes of a folder.
     Reorder(PathBuf, Vec<PathBuf>),
+    /// Ask before emptying the trash.
+    EmptyTrash,
 }
 
 /// A note being dragged to a new place in its group.
 pub(super) struct NoteDrag {
     /// The group's folder.
     dir: PathBuf,
+    path: PathBuf,
     from: usize,
     title: String,
 }
@@ -74,6 +78,7 @@ impl InkApp {
         let mut open = true;
         let mut picks: Vec<Pick> = Vec::new();
         let mut drag = self.note_drag.take();
+        let mut drop_to: Option<(PathBuf, String)> = None;
         let root = self.library_root();
 
         egui::SidePanel::right("library_panel")
@@ -137,21 +142,26 @@ impl InkApp {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         // Long titles are cut with "…" instead of wrapping.
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        let mut tree = Tree { current: current.as_deref(), picks: &mut picks, drag: &mut drag, drop_to: None };
+                        // The trash items that came from here: the notebook's
+                        // notes and sections, or the library's own items.
+                        let trash = &self.library.trash;
                         match &notebook {
-                            Some(nb) => notebook_tree(ui, nb, current.as_deref(), &mut picks, &mut drag),
-                            None => note_list(ui, &root, &self.library.quick, current.as_deref(), &mut picks, &mut drag),
-                        }
-                        // New note next to the open one (same notebook / section).
-                        if let Some(dir) = current.as_deref().and_then(Path::parent) {
-                            ui.add_space(space::S);
-                            let (tile, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
-                            if theme::add_tile(ui, tile, Id::new("new_note_tile"), "New note here")
-                                .on_hover_text("Ctrl+N")
-                                .clicked()
-                            {
-                                picks.push(Pick::NewNote(dir.to_path_buf()));
+                            Some(nb) => {
+                                let inside = |o: &Path| o.starts_with(&nb.path) && o != nb.path;
+                                let items: Vec<&TrashItem> =
+                                    trash.iter().filter(|i| i.origin.as_deref().is_some_and(inside)).collect();
+                                notebook_tree(ui, nb, &items, &mut tree);
+                            }
+                            None => {
+                                let items: Vec<&TrashItem> = trash
+                                    .iter()
+                                    .filter(|i| i.origin.as_deref().map_or(true, |o| o.parent() == Some(root.as_path())))
+                                    .collect();
+                                quick_tree(ui, &root, &self.library.quick, &items, &mut tree);
                             }
                         }
+                        drop_to = tree.drop_to;
                         // The rest of the panel: actions for the notebook.
                         let rest = ui.allocate_response(vec2(ui.available_width(), ui.available_height().max(48.0)), Sense::click());
                         let dir = notebook.as_ref().map(|nb| nb.path.clone()).unwrap_or_else(|| self.library_root());
@@ -185,9 +195,25 @@ impl InkApp {
         }
         self.notebook_buf = name;
 
-        // A drag released outside every group just ends.
-        if ctx.input(|i| !i.pointer.any_down()) {
-            drag = None;
+        // A dragged note: a label follows the pointer, naming the group it
+        // would move to. Released over another group it moves there; anywhere
+        // else (but its own list) the drag just ends.
+        if let Some(d) = &drag {
+            if let Some(p) = ctx.input(|i| i.pointer.interact_pos()) {
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                let label = match &drop_to {
+                    Some((_, name)) => format!("{}  {}  {name}", d.title, icon::ARROW_RIGHT),
+                    None => d.title.clone(),
+                };
+                let ghost = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("note_drag_ghost")));
+                theme::paint_toast(&ghost, p + vec2(64.0, 22.0), &label);
+            }
+            if ctx.input(|i| !i.pointer.any_down()) {
+                if let Some((dir, _)) = drop_to {
+                    picks.push(Pick::Act(Act::MoveNote(d.path.clone(), dir)));
+                }
+                drag = None;
+            }
         }
         self.note_drag = drag;
 
@@ -215,115 +241,339 @@ impl InkApp {
                     Ok(()) => self.refresh_library(),
                     Err(e) => self.toast(format!("Cannot save the order: {e}")),
                 },
+                Pick::EmptyTrash => self.lib_ui.dialog = Some(Dialog::EmptyTrash(self.library.trash.len())),
             }
         }
     }
 }
 
-/// "General" (notes directly in the notebook), then one group per section.
-fn notebook_tree(
-    ui: &mut Ui,
-    nb: &NotebookInfo,
-    current: Option<&Path>,
-    picks: &mut Vec<Pick>,
-    drag: &mut Option<NoteDrag>,
-) {
-    let contains = |notes: &[NoteInfo]| notes.iter().any(|n| Some(n.path.as_path()) == current);
+/// What drawing the tree needs and collects.
+struct Tree<'a> {
+    current: Option<&'a Path>,
+    picks: &'a mut Vec<Pick>,
+    drag: &'a mut Option<NoteDrag>,
+    /// The group under a note dragged out of its own group (folder, name):
+    /// the note moves there when released.
+    drop_to: Option<(PathBuf, String)>,
+}
+
+/// One collapsible group of notes.
+struct Group<'a> {
+    /// The folder of its notes.
+    dir: &'a Path,
+    glyph: &'a str,
+    name: &'a str,
+    notes: &'a [NoteInfo],
+    tint: Color32,
+    /// Set for a section: it can be renamed and deleted.
+    section: Option<&'a SectionInfo>,
+    default_open: bool,
+}
+
+/// "General" (notes directly in the notebook), one group per section, a row
+/// to add a section, and the notebook's trash.
+fn notebook_tree(ui: &mut Ui, nb: &NotebookInfo, trash: &[&TrashItem], t: &mut Tree) {
     let tint = Color32::from_rgb(nb.color[0], nb.color[1], nb.color[2]);
-
-    if !nb.loose.is_empty() || nb.sections.is_empty() {
-        let header = group_label(icon::TRAY, "General", nb.loose.len(), contains(&nb.loose));
-        let group = egui::CollapsingHeader::new(header)
-            .id_salt(("general", &nb.path))
-            .default_open(true)
-            .icon(move |ui, openness, resp| tree_icon(ui, openness, resp, tint))
-            .show(ui, |ui| {
-                if nb.loose.is_empty() {
-                    ui.label(theme::muted("No notes").small());
-                }
-                note_list(ui, &nb.path, &nb.loose, current, picks, drag);
-            });
-        group.header_response.context_menu(|ui| {
-            if entry(ui, icon::NOTE_PENCIL, "New note here", "", true) {
-                picks.push(Pick::NewNote(nb.path.clone()));
-                ui.close_menu();
-            }
-        });
+    // While a note is dragged, an empty "General" is a place to drop it.
+    if !nb.loose.is_empty() || nb.sections.is_empty() || t.drag.is_some() {
+        let g = Group {
+            dir: &nb.path,
+            glyph: icon::TRAY,
+            name: "General",
+            notes: &nb.loose,
+            tint,
+            section: None,
+            default_open: true,
+        };
+        group(ui, &g, t);
     }
-
     for s in &nb.sections {
-        let has_current = contains(&s.notes);
-        let header = group_label(icon::FOLDER_SIMPLE, &s.name, s.notes.len(), has_current);
-        let group = egui::CollapsingHeader::new(header)
-            .id_salt(&s.path)
-            .default_open(has_current)
-            .icon(move |ui, openness, resp| tree_icon(ui, openness, resp, tint))
-            .show(ui, |ui| {
-                if s.notes.is_empty() {
-                    ui.label(theme::muted("No notes").small());
-                }
-                note_list(ui, &s.path, &s.notes, current, picks, drag);
-            });
-        group.header_response.context_menu(|ui| {
-            if entry(ui, icon::NOTE_PENCIL, "New note here", "", true) {
-                picks.push(Pick::NewNote(s.path.clone()));
-                ui.close_menu();
-            }
-            if entry(ui, icon::PENCIL_SIMPLE, "Rename section...", "", true) {
-                let d = Dialog::RenameDir { path: s.path.clone(), text: s.name.clone() };
-                picks.push(Pick::Act(Act::Dialog(d)));
-                ui.close_menu();
-            }
-            ui.separator();
-            let resp = ui.add_enabled_ui(!has_current, |ui| entry(ui, icon::TRASH, "Delete section...", "", true));
-            if resp.inner {
-                let d = Dialog::Trash { path: s.path.clone(), label: s.name.clone() };
-                picks.push(Pick::Act(Act::Dialog(d)));
-                ui.close_menu();
-            }
-            if has_current {
-                resp.response.on_hover_text("It contains the open note");
-            }
-        });
+        let g = Group {
+            dir: &s.path,
+            glyph: icon::FOLDER_SIMPLE,
+            name: &s.name,
+            notes: &s.notes,
+            tint,
+            section: Some(s),
+            default_open: false,
+        };
+        group(ui, &g, t);
+    }
+    // Quiet rows for the panel's own actions.
+    new_note_row(ui, t);
+    if ghost_row(ui, icon::FOLDER_SIMPLE_PLUS, "New section").clicked() {
+        let d = Dialog::NewSection { notebook: nb.path.clone(), text: String::new() };
+        t.picks.push(Pick::Act(Act::Dialog(d)));
+    }
+    trash_group(ui, &nb.path, trash, t);
+}
+
+/// The quick notes (outside any notebook) and the library's own trash.
+fn quick_tree(ui: &mut Ui, root: &Path, notes: &[NoteInfo], trash: &[&TrashItem], t: &mut Tree) {
+    let g = Group {
+        dir: root,
+        glyph: icon::LIGHTNING,
+        name: "Quick notes",
+        notes,
+        tint: color::TEXT_MUTED,
+        section: None,
+        default_open: true,
+    };
+    group(ui, &g, t);
+    new_note_row(ui, t);
+    trash_group(ui, root, trash, t);
+}
+
+/// A new note next to the open one (same notebook / section).
+fn new_note_row(ui: &mut Ui, t: &mut Tree) {
+    let Some(dir) = t.current.and_then(Path::parent) else { return };
+    if ghost_row(ui, icon::NOTE_PENCIL, "New note here").on_hover_text("Ctrl+N").clicked() {
+        t.picks.push(Pick::NewNote(dir.to_path_buf()));
     }
 }
 
-/// The notes of one folder; drag a row to reorder them.
-fn note_list(
-    ui: &mut Ui,
-    dir: &Path,
-    notes: &[NoteInfo],
-    current: Option<&Path>,
-    picks: &mut Vec<Pick>,
-    drag: &mut Option<NoteDrag>,
+/// A group: header (caret, icon, name, count; on hover "+" and, for a
+/// section, "⋯"), then its notes. A note dragged in from another group drops
+/// into it.
+fn group(ui: &mut Ui, g: &Group, t: &mut Tree) {
+    let id = Id::new(("panel_group", g.dir));
+    let has_current = g.notes.iter().any(|n| Some(n.path.as_path()) == t.current);
+    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, g.default_open || has_current);
+    let dragging = t.drag.is_some();
+    let menu_id = id.with("menu");
+    let menu_open = ui.memory(|m| m.is_popup_open(menu_id));
+
+    let area = ui
+        .scope(|ui| {
+            let (row, header) = ui.allocate_exact_size(vec2(ui.available_width(), theme::ROW_HEIGHT), Sense::click());
+            let show_actions = !dragging && (ui.rect_contains_pointer(row) || menu_open);
+            let actions = if g.section.is_some() { 2 } else { 1 };
+            let count = g.notes.len().to_string();
+            let reserve = if show_actions { actions } else { 0 };
+            paint_header(ui, row, g.glyph, g.name, &count, g.tint, state.openness(ui.ctx()), has_current, reserve);
+            if header.clicked() {
+                state.toggle(ui);
+            }
+            let header = header.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+            // The same actions on right-click and behind "⋯".
+            header.context_menu(|ui| group_menu(ui, g, has_current, t.picks));
+            if show_actions {
+                let new = theme::row_button(ui, row, actions - 1, id.with("new"), icon::PLUS, "New note here", false);
+                if new.clicked() {
+                    t.picks.push(Pick::NewNote(g.dir.to_path_buf()));
+                }
+                if g.section.is_some() {
+                    let more = theme::row_button(ui, row, 0, id.with("more"), icon::DOTS_THREE, "Section actions", false);
+                    if more.clicked() {
+                        ui.memory_mut(|m| m.toggle_popup(menu_id));
+                    }
+                    button_menu(ui, menu_id, &more, |ui| group_menu(ui, g, has_current, t.picks));
+                }
+            }
+
+            state.show_body_indented(&header, ui, |ui| {
+                if g.notes.is_empty() {
+                    ui.add_space(2.0);
+                    ui.label(theme::muted(if dragging { "Drop a note here" } else { "No notes" }).small());
+                    ui.add_space(2.0);
+                }
+                note_list(ui, g.dir, g.notes, t);
+            });
+        })
+        .response
+        .rect;
+
+    // Drop target for a note from another group.
+    let from_elsewhere = t.drag.as_ref().is_some_and(|d| d.dir != g.dir);
+    if from_elsewhere && ui.rect_contains_pointer(area) {
+        ui.painter().rect(area, radius::SMALL, color::accent_alpha(24), egui::Stroke::new(1.0, color::ACCENT));
+        t.drop_to = Some((g.dir.to_path_buf(), g.name.to_owned()));
+    }
+}
+
+/// A group header: caret in the group's colour, icon, name (cut with "…")
+/// and a count, with a hover fill. With `actions` row buttons shown, the
+/// count gives way to them.
+#[allow(clippy::too_many_arguments)]
+fn paint_header(
+    ui: &Ui,
+    row: Rect,
+    glyph: &str,
+    name: &str,
+    count: &str,
+    tint: Color32,
+    openness: f32,
+    has_current: bool,
+    actions: usize,
 ) {
+    let hovered = ui.rect_contains_pointer(row);
+    let p = ui.painter();
+    if hovered {
+        p.rect_filled(row, radius::SMALL, color::HOVER);
+    }
+    let y = row.center().y;
+    let caret = if openness > 0.5 { icon::CARET_DOWN } else { icon::CARET_RIGHT };
+    p.text(pos2(row.left() + 10.0, y), Align2::CENTER_CENTER, caret, theme::font(12.0), tint);
+    p.text(pos2(row.left() + 22.0, y), Align2::LEFT_CENTER, glyph, theme::font(size::BODY), color::TEXT_MUTED);
+
+    let text = if has_current || hovered { color::TEXT_STRONG } else { color::TEXT };
+    let left = row.left() + 44.0;
+    let count_w = if actions > 0 {
+        0.0
+    } else {
+        ui.fonts(|f| f.layout_no_wrap(count.to_owned(), theme::font(size::CAPTION), color::TEXT_FAINT).size().x) + space::S
+    };
+    let right = row.right() - space::S - actions as f32 * theme::ROW_BUTTON - count_w;
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_owned(), theme::font(size::BODY), text);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(0.0));
+    let galley = ui.fonts(|f| f.layout_job(job));
+    let name_w = galley.size().x;
+    p.galley(pos2(left, y - galley.size().y * 0.5), galley, text);
+    if actions == 0 {
+        let at = pos2(left + name_w + space::S, y);
+        p.text(at, Align2::LEFT_CENTER, count, theme::font(size::CAPTION), color::TEXT_FAINT);
+    }
+}
+
+fn group_menu(ui: &mut Ui, g: &Group, has_current: bool, picks: &mut Vec<Pick>) {
+    if entry(ui, icon::NOTE_PENCIL, "New note here", "", true) {
+        picks.push(Pick::NewNote(g.dir.to_path_buf()));
+        ui.close_menu();
+    }
+    let Some(s) = g.section else { return };
+    if entry(ui, icon::PENCIL_SIMPLE, "Rename section...", "", true) {
+        let d = Dialog::RenameDir { path: s.path.clone(), text: s.name.clone() };
+        picks.push(Pick::Act(Act::Dialog(d)));
+        ui.close_menu();
+    }
+    ui.separator();
+    let resp = ui.add_enabled_ui(!has_current, |ui| entry(ui, icon::TRASH, "Delete section...", "", true));
+    if resp.inner {
+        let d = Dialog::Trash { path: s.path.clone(), label: s.name.clone() };
+        picks.push(Pick::Act(Act::Dialog(d)));
+        ui.close_menu();
+    }
+    if has_current {
+        resp.response.on_hover_text("It contains the open note");
+    }
+}
+
+/// A muted full-width row with an icon, for secondary actions.
+fn ghost_row(ui: &mut Ui, glyph: &str, label: &str) -> egui::Response {
+    let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), theme::ROW_HEIGHT), Sense::click());
+    let hovered = resp.hovered();
+    let p = ui.painter();
+    if hovered {
+        p.rect_filled(row, radius::SMALL, color::HOVER);
+    }
+    let fg = if hovered { color::ACCENT_HOVER } else { color::TEXT_FAINT };
+    let y = row.center().y;
+    p.text(pos2(row.left() + 22.0, y), Align2::LEFT_CENTER, glyph, theme::font(size::BODY), fg);
+    p.text(pos2(row.left() + 44.0, y), Align2::LEFT_CENTER, label, theme::font(size::BODY), fg);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The trash of this notebook (or of the library, for quick notes): hidden
+/// when empty, closed by default. Each item can be restored or erased.
+fn trash_group(ui: &mut Ui, scope: &Path, items: &[&TrashItem], t: &mut Tree) {
+    if items.is_empty() {
+        return;
+    }
+    ui.add_space(space::S);
+    let id = Id::new(("panel_trash", scope));
+    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let (row, header) = ui.allocate_exact_size(vec2(ui.available_width(), theme::ROW_HEIGHT), Sense::click());
+    let hovered = t.drag.is_none() && ui.rect_contains_pointer(row);
+    let count = items.len().to_string();
+    let openness = state.openness(ui.ctx());
+    paint_header(ui, row, icon::TRASH, "Trash", &count, color::TEXT_FAINT, openness, false, usize::from(hovered));
+    if header.clicked() {
+        state.toggle(ui);
+    }
+    let header = header.on_hover_cursor(egui::CursorIcon::PointingHand);
+    header.context_menu(|ui| {
+        if entry(ui, icon::BROOM, "Empty trash...", "", true) {
+            t.picks.push(Pick::EmptyTrash);
+            ui.close_menu();
+        }
+    });
+    let tip = "Empty the trash (of the whole library)";
+    if hovered && theme::row_button(ui, row, 0, id.with("empty"), icon::BROOM, tip, true).clicked() {
+        t.picks.push(Pick::EmptyTrash);
+    }
+    state.show_body_indented(&header, ui, |ui| {
+        for item in items {
+            trash_row(ui, item, t.picks);
+        }
+        ui.add_space(2.0);
+        ui.label(theme::muted("Deleted notes and sections stay here until you erase them.").small());
+    });
+}
+
+/// A trash item: on hover restore and erase buttons, its origin and date as
+/// a tooltip; the same actions on right-click.
+fn trash_row(ui: &mut Ui, item: &TrashItem, picks: &mut Vec<Pick>) {
+    let glyph = if item.is_folder { icon::FOLDER_SIMPLE } else { icon::NOTE_BLANK };
+    let resp = theme::list_row(ui, glyph, &item.name, false, 2.0 * theme::ROW_BUTTON);
+    let id = Id::new(("trash_item", &item.path));
+    let erase = || Pick::Act(Act::Dialog(Dialog::DeleteForever { path: item.path.clone(), label: item.name.clone() }));
+    let restore = || Pick::Act(Act::Restore(item.path.clone()));
+    if ui.rect_contains_pointer(resp.rect) {
+        let tip = "Restore to where it was";
+        if theme::row_button(ui, resp.rect, 1, id.with("restore"), icon::ARROW_COUNTER_CLOCKWISE, tip, false).clicked() {
+            picks.push(restore());
+            return;
+        }
+        if theme::row_button(ui, resp.rect, 0, id.with("erase"), icon::X, "Delete permanently", true).clicked() {
+            picks.push(erase());
+            return;
+        }
+    }
+    let mut hint = format!("Deleted {}", when(item.deleted));
+    if let Some(from) = item.origin.as_ref().and_then(|o| o.parent()).and_then(|p| p.file_name()) {
+        hint = format!("From \"{}\" · {hint}", from.to_string_lossy());
+    }
+    resp.on_hover_text(hint).context_menu(|ui| {
+        if entry(ui, icon::ARROW_COUNTER_CLOCKWISE, "Restore", "", true) {
+            picks.push(restore());
+            ui.close_menu();
+        }
+        ui.separator();
+        if entry(ui, icon::X, "Delete permanently...", "", true) {
+            picks.push(erase());
+            ui.close_menu();
+        }
+    });
+}
+
+/// The notes of one folder; drag a row to reorder them, or onto another
+/// group to move it there.
+fn note_list(ui: &mut Ui, dir: &Path, notes: &[NoteInfo], t: &mut Tree) {
     let mut rects = Vec::with_capacity(notes.len());
     for (i, n) in notes.iter().enumerate() {
-        let resp = note_row(ui, n, current, picks);
+        let resp = note_row(ui, n, t.current, t.picks);
         if resp.drag_started() {
-            *drag = Some(NoteDrag { dir: dir.to_path_buf(), from: i, title: n.meta.title.clone() });
+            *t.drag = Some(NoteDrag { dir: dir.to_path_buf(), from: i, title: n.meta.title.clone(), path: n.path.clone() });
         }
         rects.push(resp.rect);
     }
-    let Some(d) = drag.as_ref().filter(|d| d.dir == dir) else { return };
-    let (Some(p), Some(first)) = (ui.input(|i| i.pointer.interact_pos()), rects.first()) else { return };
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    let Some(d) = t.drag.as_ref().filter(|d| d.dir == dir) else { return };
+    let (Some(p), Some(first), Some(last)) = (ui.input(|i| i.pointer.interact_pos()), rects.first(), rects.last()) else {
+        return;
+    };
+    // Reordering only while the pointer is over the list itself; elsewhere
+    // the note may be on its way to another group.
+    let half = vec2(0.0, theme::ROW_HEIGHT * 0.5);
+    if !Rect::from_min_max(first.min - half, last.max + half).contains(p) {
+        return;
+    }
 
     // Where it would land: an accent line between the rows.
     let slot = rects.iter().filter(|r| r.center().y < p.y).count();
-    let y = if slot < rects.len() { rects[slot].top() - 1.0 } else { rects[rects.len() - 1].bottom() + 1.0 };
-    let line = egui::Rect::from_min_max(egui::pos2(first.left(), y - 1.0), egui::pos2(first.right(), y + 1.0));
+    let y = if slot < rects.len() { rects[slot].top() - 1.0 } else { last.bottom() + 1.0 };
+    let line = Rect::from_min_max(pos2(first.left(), y - 1.0), pos2(first.right(), y + 1.0));
     ui.painter().rect_filled(line, 1.0, color::ACCENT);
-
-    // Scroll the list near its edges; a label follows the pointer.
-    let clip = ui.clip_rect();
-    if p.y < clip.top() + 24.0 {
-        ui.scroll_with_delta(vec2(0.0, 10.0));
-    } else if p.y > clip.bottom() - 24.0 {
-        ui.scroll_with_delta(vec2(0.0, -10.0));
-    }
-    let ghost = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("note_drag_ghost")));
-    theme::paint_toast(&ghost, p + vec2(64.0, 22.0), &d.title);
 
     if ui.input(|i| !i.pointer.any_down()) {
         let to = if slot > d.from { slot - 1 } else { slot };
@@ -331,16 +581,26 @@ fn note_list(
             let mut order: Vec<PathBuf> = notes.iter().map(|n| n.path.clone()).collect();
             let moved = order.remove(d.from);
             order.insert(to, moved);
-            picks.push(Pick::Reorder(dir.to_path_buf(), order));
+            t.picks.push(Pick::Reorder(dir.to_path_buf(), order));
         }
-        *drag = None;
     }
 }
 
-/// One note; the open note is highlighted. Right-click for its actions.
+/// One note; the open note is highlighted. On hover a delete button (not
+/// for the open note); right-click for all its actions.
 fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Vec<Pick>) -> egui::Response {
     let is_current = Some(note.path.as_path()) == current;
-    let resp = theme::list_row(ui, icon::NOTE_BLANK, &note.meta.title, is_current);
+    let actions = if is_current { 0.0 } else { theme::ROW_BUTTON };
+    let resp = theme::list_row(ui, icon::NOTE_BLANK, &note.meta.title, is_current, actions);
+    let trash = || Pick::Act(Act::Dialog(Dialog::Trash { path: note.path.clone(), label: note.meta.title.clone() }));
+    let dragging = ui.ctx().dragged_id().is_some();
+    if !is_current && !dragging && ui.rect_contains_pointer(resp.rect) {
+        let id = Id::new(("note_trash", &note.path));
+        if theme::row_button(ui, resp.rect, 0, id, icon::TRASH, "Delete", true).clicked() {
+            picks.push(trash());
+            return resp;
+        }
+    }
     if resp.clicked() && !is_current {
         picks.push(Pick::Open(note.path.clone()));
     }
@@ -358,11 +618,14 @@ fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Ve
             picks.push(Pick::Act(Act::Duplicate(note.path.clone())));
             ui.close_menu();
         }
+        if entry(ui, icon::ARROW_BEND_UP_RIGHT, "Move to...", "", true) {
+            picks.push(Pick::Act(Act::Dialog(Dialog::Move { path: note.path.clone() })));
+            ui.close_menu();
+        }
         ui.separator();
         let resp = ui.add_enabled_ui(!is_current, |ui| entry(ui, icon::TRASH, "Delete...", "", true));
         if resp.inner {
-            let d = Dialog::Trash { path: note.path.clone(), label: note.meta.title.clone() };
-            picks.push(Pick::Act(Act::Dialog(d)));
+            picks.push(trash());
             ui.close_menu();
         }
         if is_current {
@@ -370,24 +633,4 @@ fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Ve
         }
     });
     resp
-}
-
-/// A group header: icon and name, then the number of notes, muted.
-fn group_label(glyph: &str, name: &str, count: usize, has_current: bool) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    let main = egui::TextFormat {
-        font_id: theme::font(size::BODY),
-        color: if has_current { color::TEXT_STRONG } else { color::TEXT },
-        ..Default::default()
-    };
-    job.append(&format!("{glyph}  {name}"), 0.0, main);
-    let faint = egui::TextFormat { font_id: theme::font(size::CAPTION), color: color::TEXT_FAINT, ..Default::default() };
-    job.append(&count.to_string(), 8.0, faint);
-    job
-}
-
-/// Disclosure triangle in the notebook's colour.
-fn tree_icon(ui: &mut Ui, openness: f32, resp: &egui::Response, tint: Color32) {
-    let glyph = if openness > 0.5 { icon::CARET_DOWN } else { icon::CARET_RIGHT };
-    ui.painter().text(resp.rect.center(), egui::Align2::CENTER_CENTER, glyph, theme::font(12.0), tint);
 }

@@ -11,7 +11,8 @@
 //!     Section 1/               a section (sub-folder)
 //!       Some note.ink
 //!     Loose note.ink           notes directly in a notebook ("General")
-//!   .trash/                    deleted items (nothing is ever removed for good)
+//!   .trash/                    deleted items, until erased from the trash
+//!     .index                     where each item came from (for restoring)
 //! ```
 //!
 //! Plain files and folders on purpose: they work with any sync tool or backup,
@@ -71,6 +72,8 @@ pub struct Library {
     pub notebooks: Vec<NotebookInfo>,
     /// Notes directly in the library folder.
     pub quick: Vec<NoteInfo>,
+    /// What is in `.trash`, most recently deleted first.
+    pub trash: Vec<TrashItem>,
 }
 
 pub fn default_root() -> PathBuf {
@@ -88,7 +91,7 @@ pub fn default_root() -> PathBuf {
 
 impl Library {
     pub fn empty(root: PathBuf) -> Self {
-        Self { root, notebooks: Vec::new(), quick: Vec::new() }
+        Self { root, notebooks: Vec::new(), quick: Vec::new(), trash: Vec::new() }
     }
 
     /// Reads the folder structure and the meta block of every note.
@@ -112,6 +115,7 @@ impl Library {
         }
         lib.notebooks.sort_by_key(|n| n.name.to_lowercase());
         sort_notes(root, &mut lib.quick);
+        lib.trash = list_trash(root);
         Ok(lib)
     }
 
@@ -283,27 +287,72 @@ pub fn create_section(notebook: &Path, name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Renames a notebook or section folder; returns the new path.
-pub fn rename_dir(path: &Path, new_name: &str) -> Result<PathBuf> {
-    let clean = sanitize(new_name);
-    let current = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if clean == current {
-        return Ok(path.to_path_buf());
+/// Where `path` goes when renamed to `stem` (already sanitized), or `None`
+/// if the name does not change. A change of case only keeps the name as it
+/// is: on case-insensitive file systems (Windows, macOS) the old name would
+/// otherwise count as taken and give "Name (2)".
+fn rename_target(path: &Path, stem: &str, ext: Option<&str>) -> Option<PathBuf> {
+    let current = match ext {
+        Some(_) => path.file_stem(),
+        None => path.file_name(),
+    };
+    let current = current.map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if stem == current {
+        return None;
     }
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let target = unique_path(parent, &clean, None);
+    if stem.to_lowercase() == current.to_lowercase() {
+        let file = match ext {
+            Some(e) => format!("{stem}.{e}"),
+            None => stem.to_owned(),
+        };
+        return Some(parent.join(file));
+    }
+    Some(unique_path(parent, stem, ext))
+}
+
+/// Renames a notebook or section folder; returns the new path.
+pub fn rename_dir(path: &Path, new_name: &str) -> Result<PathBuf> {
+    let Some(target) = rename_target(path, &sanitize(new_name), None) else {
+        return Ok(path.to_path_buf());
+    };
     fs::rename(path, &target)?;
     Ok(target)
 }
 
-/// Only the title in the file header changes; the file name stays.
-pub fn rename_note(path: &Path, new_title: &str) -> Result<()> {
+/// Sets the note's title (header and file name); returns the new path.
+pub fn rename_note(path: &Path, new_title: &str) -> Result<PathBuf> {
     let title = new_title.trim().to_owned();
-    storage::rewrite_meta(path, move |m| {
-        m.title = title;
+    storage::rewrite_meta(path, |m| {
+        m.title = title.clone();
         m.auto_title = false;
     })?;
-    Ok(())
+    rename_note_file(path, &title)
+}
+
+/// Renames the note's file after `title` (the header is left alone), along
+/// with its rolling backup and its place in the folder's manual order.
+/// Returns the new path.
+pub fn rename_note_file(path: &Path, title: &str) -> Result<PathBuf> {
+    let Some(target) = rename_target(path, &sanitize(title), Some(NOTE_EXT)) else {
+        return Ok(path.to_path_buf());
+    };
+    fs::rename(path, &target)?;
+    let bak = path.with_extension("ink.bak");
+    if bak.exists() {
+        let _ = fs::rename(&bak, target.with_extension("ink.bak"));
+    }
+    if let Some(dir) = path.parent() {
+        let name = |p: &Path| p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let (old, new) = (name(path), name(&target));
+        let order = read_order(dir);
+        if order.contains(&old) {
+            let order: Vec<PathBuf> =
+                order.into_iter().map(|o| dir.join(if o == old { &new } else { &o })).collect();
+            set_note_order(dir, &order)?;
+        }
+    }
+    Ok(target)
 }
 
 pub fn duplicate_note(path: &Path) -> Result<PathBuf> {
@@ -322,19 +371,172 @@ pub fn move_note(path: &Path, to_dir: &Path) -> Result<PathBuf> {
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let target = unique_path(to_dir, &stem, Some(NOTE_EXT));
     fs::rename(path, &target)?;
+    let bak = path.with_extension("ink.bak");
+    if bak.exists() {
+        let _ = fs::rename(&bak, target.with_extension("ink.bak"));
+    }
     Ok(target)
 }
 
-/// Moves a note, notebook or section into `<root>/.trash`.
+/// Moves a note, notebook or section into `<root>/.trash`, remembering where
+/// it was (for `restore`).
 pub fn trash(root: &Path, path: &Path) -> Result<()> {
     let dir = root.join(TRASH_DIR);
     fs::create_dir_all(&dir)?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "item".into());
-    let target = unique_path(&dir, &name, None);
+    let target = if is_note(path) {
+        let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "note".into());
+        unique_path(&dir, &stem, Some(NOTE_EXT))
+    } else {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "item".into());
+        unique_path(&dir, &name, None)
+    };
     fs::rename(path, &target)?;
     // The rolling backup of a deleted note is not needed any more.
     let _ = fs::remove_file(path.with_extension("ink.bak"));
+    let mut index = read_trash_index(root);
+    let origin = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+    index.push(TrashEntry { name: file_name(&target), origin, deleted: storage::now_secs() });
+    write_trash_index(root, &index)?;
     Ok(())
+}
+
+// ------------------------------------------------------------------ trash
+
+/// Where the items of the trash came from: one line per item,
+/// `name \t deleted (secs) \t original path relative to the root`.
+const TRASH_INDEX: &str = ".index";
+
+/// Something in the trash.
+#[derive(Clone)]
+pub struct TrashItem {
+    /// Where it is now, inside `.trash`.
+    pub path: PathBuf,
+    /// The note's title, or the folder's name.
+    pub name: String,
+    /// A folder (notebook or section) rather than a note.
+    pub is_folder: bool,
+    /// Where it was, if known (items trashed before the index existed are not).
+    pub origin: Option<PathBuf>,
+    /// Seconds since the Unix epoch.
+    pub deleted: u64,
+}
+
+struct TrashEntry {
+    name: String,
+    origin: PathBuf,
+    deleted: u64,
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn read_trash_index(root: &Path) -> Vec<TrashEntry> {
+    let text = fs::read_to_string(root.join(TRASH_DIR).join(TRASH_INDEX)).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\t');
+            let (name, deleted, origin) = (parts.next()?, parts.next()?, parts.next()?);
+            Some(TrashEntry { name: name.to_owned(), deleted: deleted.parse().ok()?, origin: PathBuf::from(origin) })
+        })
+        .collect()
+}
+
+fn write_trash_index(root: &Path, index: &[TrashEntry]) -> Result<()> {
+    let text: String = index
+        .iter()
+        .map(|e| format!("{}\t{}\t{}\n", e.name, e.deleted, e.origin.to_string_lossy()))
+        .collect();
+    fs::write(root.join(TRASH_DIR).join(TRASH_INDEX), text)?;
+    Ok(())
+}
+
+/// Drops the index line of a trash item that left the trash.
+fn forget_trashed(root: &Path, item: &Path) -> Result<()> {
+    let name = file_name(item);
+    let mut index = read_trash_index(root);
+    let before = index.len();
+    index.retain(|e| e.name != name);
+    if index.len() != before {
+        write_trash_index(root, &index)?;
+    }
+    Ok(())
+}
+
+/// The trash's items, most recently deleted first.
+pub fn list_trash(root: &Path) -> Vec<TrashItem> {
+    let dir = root.join(TRASH_DIR);
+    let index = read_trash_index(root);
+    let Ok(rd) = fs::read_dir(&dir) else { return Vec::new() };
+    let mut items: Vec<TrashItem> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| !file_name(p).starts_with('.') && (p.is_dir() || is_note(p)))
+        .map(|path| {
+            let entry = index.iter().find(|e| e.name == file_name(&path));
+            let is_folder = path.is_dir();
+            let name = if is_folder {
+                file_name(&path)
+            } else {
+                storage::read_meta(&path).map(|m| m.title).unwrap_or_else(|_| file_name(&path))
+            };
+            let deleted = entry.map(|e| e.deleted).unwrap_or_else(|| {
+                fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs())
+            });
+            TrashItem { name, is_folder, origin: entry.map(|e| root.join(&e.origin)), deleted, path }
+        })
+        .collect();
+    items.sort_by(|a, b| b.deleted.cmp(&a.deleted).then_with(|| a.name.cmp(&b.name)));
+    items
+}
+
+/// Puts a trash item back where it was (its folder is created again if it is
+/// gone; without a known origin it goes to the root). A name taken meanwhile
+/// gets " (2)". Returns the new path.
+pub fn restore(root: &Path, item: &Path) -> Result<PathBuf> {
+    let origin = read_trash_index(root)
+        .into_iter()
+        .find(|e| e.name == file_name(item))
+        .map(|e| root.join(e.origin))
+        .unwrap_or_else(|| root.join(file_name(item)));
+    let parent = origin.parent().unwrap_or(root);
+    fs::create_dir_all(parent)?;
+    let target = if item.is_dir() {
+        unique_path(parent, &file_name(&origin), None)
+    } else {
+        let stem = origin.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        unique_path(parent, &stem, Some(NOTE_EXT))
+    };
+    fs::rename(item, &target)?;
+    forget_trashed(root, item)?;
+    Ok(target)
+}
+
+/// Erases a trash item for good.
+pub fn delete_forever(root: &Path, item: &Path) -> Result<()> {
+    // Only ever inside the trash.
+    if item.parent() != Some(root.join(TRASH_DIR).as_path()) {
+        return Err("not in the trash".into());
+    }
+    if item.is_dir() {
+        fs::remove_dir_all(item)?;
+    } else {
+        fs::remove_file(item)?;
+    }
+    forget_trashed(root, item)
+}
+
+/// Erases everything in the trash; returns how many items were erased.
+pub fn empty_trash(root: &Path) -> Result<usize> {
+    let items = list_trash(root);
+    for item in &items {
+        delete_forever(root, &item.path)?;
+    }
+    Ok(items.len())
 }
 
 /// Copies a note file from anywhere (any format version) into the library.
@@ -404,13 +606,74 @@ mod tests {
         assert_eq!(lib.quick.len(), 1);
         assert_eq!(lib.recent(10).len(), 2);
 
-        rename_note(&note, "Meeting").unwrap();
+        let note = rename_note(&note, "Meeting").unwrap();
+        assert_eq!(note.file_name().unwrap(), "Meeting.ink");
         let moved = move_note(&note, &root).unwrap();
         assert_eq!(storage::read_meta(&moved).unwrap().title, "Meeting");
 
         trash(&root, &quick).unwrap();
         let lib = Library::scan(&root).unwrap();
         assert_eq!(lib.quick.len(), 1); // only the moved note is left
+
+        // A change of case renames in place instead of giving "work (2)".
+        let renamed = rename_dir(&nb, "work").unwrap();
+        assert_eq!(renamed.file_name().unwrap(), "work");
+        let section = rename_dir(&renamed.join("Section 1"), "Ideas").unwrap();
+        assert!(section.is_dir() && !renamed.join("Section 1").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn trash_restore_and_erase() {
+        let root = std::env::temp_dir().join("inknote_trash_test");
+        let _ = fs::remove_dir_all(&root);
+        let nb = create_notebook(&root, "Work").unwrap();
+        let section = nb.join("Section 1");
+        let note = create_note(&section, "Plan").unwrap();
+        rename_note(&note, "Plan v2").unwrap();
+        let note = section.join("Plan v2.ink");
+
+        trash(&root, &note).unwrap();
+        trash(&root, &section).unwrap();
+        let items = list_trash(&root);
+        assert_eq!(items.len(), 2);
+        let n = items.iter().find(|i| !i.is_folder).unwrap();
+        assert_eq!(n.name, "Plan v2");
+        assert_eq!(n.origin.as_deref(), Some(note.as_path()));
+        assert!(n.path.extension().is_some_and(|e| e == "ink"));
+
+        // The note goes back even though its section is in the trash too.
+        assert_eq!(restore(&root, &n.path).unwrap(), note);
+        assert!(note.exists());
+        let sec = list_trash(&root).into_iter().find(|i| i.is_folder).unwrap();
+        // Its old name is taken now (by the folder re-created for the note).
+        assert_eq!(restore(&root, &sec.path).unwrap(), nb.join("Section 1 (2)"));
+        assert!(list_trash(&root).is_empty());
+
+        trash(&root, &note).unwrap();
+        assert!(delete_forever(&root, &note).is_err()); // not in the trash
+        assert_eq!(empty_trash(&root).unwrap(), 1);
+        assert!(list_trash(&root).is_empty() && !note.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn renaming_a_note_keeps_its_order_and_backup() {
+        let dir = std::env::temp_dir().join("inknote_rename_note_test");
+        let _ = fs::remove_dir_all(&dir);
+        let a = create_note(&dir, "A").unwrap();
+        let b = create_note(&dir, "B").unwrap();
+        fs::write(b.with_extension("ink.bak"), b"old").unwrap();
+        set_note_order(&dir, &[b.clone(), a.clone()]).unwrap();
+
+        let c = rename_note(&b, "C: draft").unwrap();
+        assert_eq!(c, dir.join("C_ draft.ink"));
+        assert!(!b.exists() && c.with_extension("ink.bak").exists());
+        assert_eq!(storage::read_meta(&c).unwrap().title, "C: draft");
+        assert_eq!(read_order(&dir), ["C_ draft.ink", "A.ink"]);
+
+        // Another note's name is never overwritten.
+        assert_eq!(rename_note(&c, "A").unwrap(), dir.join("A (2).ink"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -29,7 +29,7 @@ use crate::scrollbar;
 use crate::settings::{LeftPanel, Settings, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
-use crate::view::{Layout, MARGIN, View};
+use crate::view::{Layout, MARGIN, TOP_PAD_PX, View};
 
 mod library_panel;
 mod library_ui;
@@ -43,7 +43,8 @@ use menus::{Command, ContextMenu, HelpWindows};
 /// Left panel views: default width and resize range of each (each view
 /// remembers its own width).
 const PAGES_WIDTH: f32 = 164.0;
-const PAGES_WIDTHS: std::ops::RangeInclusive<f32> = 120.0..=360.0;
+/// The narrowest width still fits the "Add page" tile's label.
+const PAGES_WIDTHS: std::ops::RangeInclusive<f32> = 150.0..=360.0;
 /// Page previews never get wider than this, however wide the panel.
 const THUMB_MAX_W: f32 = 200.0;
 /// Autosave this long after the last change.
@@ -209,6 +210,8 @@ pub struct InkApp {
     global_settings_open: bool,
     /// Export PDF dialog, if open.
     export_dialog: Option<export_ui::ExportDialog>,
+    /// PDF being written in the background, if any.
+    export_job: Option<export_ui::ExportJob>,
     /// Note being dragged in the notebook panel.
     note_drag: Option<library_panel::NoteDrag>,
     /// Same for the notebook name in the notebook panel.
@@ -287,6 +290,7 @@ impl InkApp {
             title_focused: false,
             global_settings_open: false,
             export_dialog: None,
+            export_job: None,
             note_drag: None,
             notebook_buf: String::new(),
             notebook_focused: false,
@@ -1244,7 +1248,7 @@ impl InkApp {
                 (canvas, scale, hbar) = self.canvas_geometry(full, &layout);
                 let pad = View::pad_x_for(canvas.width(), layout.content_w(), scale);
                 self.scroll.x = c.x - (anchor.x - canvas.left() - pad) / scale;
-                self.scroll.y = c.y - (anchor.y - canvas.top()) / scale;
+                self.scroll.y = c.y - (anchor.y - canvas.top() - TOP_PAD_PX) / scale;
                 self.kinetic.stop();
             }
         }
@@ -1599,86 +1603,16 @@ impl InkApp {
             self.commit_edit(ui.ctx());
         }
 
-        // "Add page" button below the last page.
+        // "Add page" below the last page, the same dashed tile as in the
+        // pages panel, as wide as the page.
         let last = view.page_screen_rect(layout.count - 1);
-        let btn = Rect::from_center_size(
-            pos2(last.center().x, last.bottom() + 36.0),
-            vec2(160.0, 36.0),
-        );
+        let btn = Rect::from_min_size(pos2(last.left(), last.bottom() + 18.0), vec2(last.width(), 40.0));
         if btn.intersects(canvas) {
-            let resp = ui.interact(btn.intersect(canvas), Id::new("add_page"), Sense::click());
-            let (fill, text) = if resp.hovered() {
-                (color::HOVER, color::TEXT_STRONG)
-            } else {
-                (color::CHROME, color::TEXT)
-            };
-            painter.rect(
-                btn,
-                radius::MEDIUM,
-                fill,
-                egui::Stroke::new(1.0, color::BORDER),
-            );
-            painter.text(
-                btn.center(),
-                Align2::CENTER_CENTER,
-                format!("{}  Add page", egui_phosphor::regular::PLUS),
-                theme::font(theme::size::BODY),
-                text,
-            );
-            if resp.clicked() {
+            let mut tile = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
+            tile.set_clip_rect(canvas);
+            if theme::add_tile(&mut tile, btn, Id::new("add_page"), "Add page").clicked() {
                 self.insert_page(self.doc.page_count);
             }
-        }
-
-        // Small "+" in the gap between two pages: insert a page right there.
-        let mut insert_at = None;
-        for i in view.visible_pages() {
-            if i + 1 >= layout.count {
-                continue;
-            }
-            let (a, b) = (view.page_screen_rect(i), view.page_screen_rect(i + 1));
-            let d = ((b.top() - a.bottom()) * 0.8).clamp(12.0, 22.0);
-            let r = Rect::from_center_size(
-                pos2(a.center().x, (a.bottom() + b.top()) * 0.5),
-                vec2(d, d),
-            );
-            if !r.intersects(canvas) {
-                continue;
-            }
-            let resp = ui
-                .interact(
-                    r.intersect(canvas),
-                    Id::new(("insert_page", i)),
-                    Sense::click(),
-                )
-                .on_hover_text("Insert a page here");
-            let (fill, fg) = if resp.hovered() {
-                (color::ACCENT, color::ON_ACCENT)
-            } else {
-                (color::CHROME, color::TEXT_MUTED)
-            };
-            painter.circle(
-                r.center(),
-                d * 0.5,
-                fill,
-                egui::Stroke::new(1.0, color::BORDER),
-            );
-            let arm = d * 0.25;
-            let plus = egui::Stroke::new(1.6, fg);
-            painter.line_segment(
-                [r.center() - vec2(arm, 0.0), r.center() + vec2(arm, 0.0)],
-                plus,
-            );
-            painter.line_segment(
-                [r.center() - vec2(0.0, arm), r.center() + vec2(0.0, arm)],
-                plus,
-            );
-            if resp.clicked() {
-                insert_at = Some(i + 1);
-            }
-        }
-        if let Some(index) = insert_at {
-            self.insert_page(index);
         }
 
         // Transient status message (saved / exported / errors).
@@ -1694,7 +1628,7 @@ impl InkApp {
         }
 
         // Scrollbars on top; the vertical one shows a page indicator while dragged.
-        let center_y = self.scroll.y + canvas.height() / scale * 0.5;
+        let center_y = view.screen_to_content(canvas.center()).y;
         let cur = layout.page_index_at_y(center_y);
         self.current_page = cur;
         let label = format!("Page {} / {}", cur + 1, layout.count);

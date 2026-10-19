@@ -10,7 +10,9 @@
 //!   pixel at 100 % zoom, so A4 is 794 x 1123).
 //! * **content space** – all pages stacked vertically, separated by `PAGE_GAP`,
 //!   surrounded by `MARGIN`. Scrolling is an offset in this space.
-//! * **screen space**  – egui points.
+//! * **screen space**  – egui points. The content starts `TOP_PAD_PX` below
+//!   the top of the view (room for the tool notch), and that space scrolls
+//!   away with the pages.
 //!
 //! Because strokes are stored in page space, changing the paper size or the
 //! number of pages never moves existing ink relative to its page.
@@ -27,6 +29,9 @@ pub const MARGIN: f32 = 28.0;
 pub const PAGE_GAP: f32 = 28.0;
 /// Space below the last page (room for the "Add page" button), in screen px.
 const BOTTOM_PAD_PX: f32 = 72.0;
+/// Space above the first page, in screen px, on top of `MARGIN`: the tool
+/// notch must not cover the page when scrolled to the top.
+pub const TOP_PAD_PX: f32 = 48.0;
 
 /// Geometry of the stacked pages.
 #[derive(Clone, Copy, Debug)]
@@ -42,7 +47,8 @@ impl Layout {
     }
 
     pub fn content_h(&self, scale: f32) -> f32 {
-        MARGIN
+        TOP_PAD_PX / scale
+            + MARGIN
             + self.count as f32 * self.page_h
             + self.count.saturating_sub(1) as f32 * PAGE_GAP
             + (BOTTOM_PAD_PX / scale).max(MARGIN)
@@ -106,7 +112,7 @@ impl View {
         let fit_w = rect.width() / layout.content_w();
         let s = match zoom {
             ZoomMode::FitWidth => fit_w,
-            ZoomMode::FitPage => fit_w.min(rect.height() / (layout.page_h + 2.0 * MARGIN)),
+            ZoomMode::FitPage => fit_w.min((rect.height() - TOP_PAD_PX).max(1.0) / (layout.page_h + 2.0 * MARGIN)),
             ZoomMode::Percent(p) => p as f32 / 100.0,
         };
         s.clamp(0.1, 8.0)
@@ -131,14 +137,14 @@ impl View {
     pub fn content_to_screen(&self, c: Pos2) -> Pos2 {
         pos2(
             self.rect.left() + self.pad_x + (c.x - self.scroll.x) * self.scale,
-            self.rect.top() + (c.y - self.scroll.y) * self.scale,
+            self.rect.top() + TOP_PAD_PX + (c.y - self.scroll.y) * self.scale,
         )
     }
 
     pub fn screen_to_content(&self, p: Pos2) -> Pos2 {
         pos2(
             (p.x - self.rect.left() - self.pad_x) / self.scale + self.scroll.x,
-            (p.y - self.rect.top()) / self.scale + self.scroll.y,
+            (p.y - self.rect.top() - TOP_PAD_PX) / self.scale + self.scroll.y,
         )
     }
 
@@ -154,9 +160,15 @@ impl View {
         )
     }
 
+    /// Content-space y range shown in the view.
+    pub fn visible_y(&self) -> (f32, f32) {
+        let top = self.scroll.y - TOP_PAD_PX / self.scale;
+        (top, top + self.rect.height() / self.scale)
+    }
+
     pub fn visible_pages(&self) -> RangeInclusive<u32> {
-        let top = self.scroll.y;
-        self.layout.pages_overlapping(top, top + self.rect.height() / self.scale)
+        let (top, bottom) = self.visible_y();
+        self.layout.pages_overlapping(top, bottom)
     }
 }
 
@@ -188,5 +200,17 @@ mod tests {
         let p = pos2(640.0, 333.0);
         let back = v.content_to_screen(v.screen_to_content(p));
         assert!((back - p).length() < 1e-3);
+    }
+
+    #[test]
+    fn first_page_clears_the_top_pad() {
+        let l = layout();
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 700.0));
+        let v = View::new(rect, Vec2::ZERO, 0.5, l);
+        assert!((v.page_screen_rect(0).top() - (TOP_PAD_PX + MARGIN * 0.5)).abs() < 1e-3);
+        // Scrolled to the bottom, the last page still ends inside the view.
+        let max = View::max_scroll(rect, 0.5, &l);
+        let v = View::new(rect, max, 0.5, l);
+        assert!(v.page_screen_rect(2).bottom() < rect.bottom());
     }
 }

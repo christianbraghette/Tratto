@@ -12,15 +12,25 @@ automatically, and you can export any note as a vector PDF.
 It is designed for low-latency inking. Strokes are smoothed, anti-aliased on
 the GPU and, optionally, predicted slightly ahead of the pen tip.
 
-- [Features](#features)
-- [Getting Started](#getting-started)
-- [Using InkNote](#using-inknote)
-- [Your Data](#your-data)
-- [Configuration](#configuration)
-- [Project Structure](#project-structure)
-- [Contributing](#contributing)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
+- [InkNote](#inknote)
+  - [Features](#features)
+  - [Getting Started](#getting-started)
+    - [Requirements](#requirements)
+    - [Build and run](#build-and-run)
+    - [Tests](#tests)
+  - [Using InkNote](#using-inknote)
+    - [Library](#library)
+    - [Window and menus](#window-and-menus)
+    - [Editor](#editor)
+    - [Settings](#settings)
+    - [Keyboard shortcuts](#keyboard-shortcuts)
+    - [PDF export](#pdf-export)
+  - [Your Data](#your-data)
+  - [Configuration](#configuration)
+  - [Project Structure](#project-structure)
+  - [Contributing](#contributing)
+  - [Acknowledgements](#acknowledgements)
+  - [License](#license)
 
 ## Features
 
@@ -110,12 +120,9 @@ resize.
 | --- | --- |
 | **File** | New note, new notebook, import, save, export as PDF, close note, library folder, settings, exit |
 | **Edit** | Undo, redo, select all on page, delete selection, deselect |
-| **View** | Custom title bar, zoom in / out, actual size, fit width / page, toolbar position, full screen |
+| **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen |
 | **Page** | Insert a page before / after the current one, delete it, paper style, page setup |
 | **Help** | Keyboard shortcuts, about InkNote |
-
-If you prefer the system title bar, turn off **View > Custom title bar**. The
-menus then appear below it.
 
 ### Editor
 

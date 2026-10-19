@@ -310,18 +310,22 @@ pub fn inline_edit(
 }
 
 /// Height of a [`list_row`].
-const ROW_HEIGHT: f32 = 28.0;
+pub const ROW_HEIGHT: f32 = 28.0;
+/// Width of a [`row_button`].
+pub const ROW_BUTTON: f32 = 24.0;
 
 /// A full-width list row (notes in the notebook panel): icon and label, a
 /// hover fill, and for the selected row a soft accent fill with an accent bar.
-/// Long labels end with "…".
-pub fn list_row(ui: &mut Ui, glyph: &str, label: &str, selected: bool) -> egui::Response {
+/// Long labels end with "…". While hovered, the label keeps clear of the last
+/// `actions` points, where the caller puts its [`row_button`]s.
+pub fn list_row(ui: &mut Ui, glyph: &str, label: &str, selected: bool, actions: f32) -> egui::Response {
     // Draggable too (reordering); a click is still a click.
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
         return resp;
     }
-    let hovered = resp.hovered();
+    // Over the row's own buttons it still counts as hovered.
+    let hovered = ui.rect_contains_pointer(rect);
     let p = ui.painter();
     if selected {
         p.rect_filled(rect, radius::SMALL, color::accent_alpha(46));
@@ -338,11 +342,30 @@ pub fn list_row(ui: &mut Ui, glyph: &str, label: &str, selected: bool) -> egui::
     let y = rect.center().y;
     p.text(pos2(rect.left() + space::M, y), egui::Align2::LEFT_CENTER, glyph, font(size::BODY), icon_color);
     let text_left = rect.left() + space::M + 22.0;
+    let right = rect.right() - space::S - if hovered { actions } else { 0.0 };
     let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font(size::BODY), text_color);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - space::S - text_left).max(0.0));
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - text_left).max(0.0));
     let galley = ui.fonts(|f| f.layout_job(job));
     ui.painter().galley(pos2(text_left, y - galley.size().y * 0.5), galley, text_color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A small icon button at the right end of a row: `slot` 0 is the last one,
+/// 1 the one before it, and so on. `danger` turns it red on hover.
+pub fn row_button(ui: &mut Ui, row: Rect, slot: usize, id: egui::Id, glyph: &str, tip: &str, danger: bool) -> egui::Response {
+    let center = pos2(row.right() - space::XS - ROW_BUTTON * (slot as f32 + 0.5), row.center().y);
+    let rect = Rect::from_center_size(center, vec2(ROW_BUTTON - 2.0, ROW_BUTTON - 2.0));
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    let fg = match (resp.hovered(), danger) {
+        (true, true) => color::DANGER,
+        (true, false) => color::TEXT_STRONG,
+        (false, _) => color::TEXT_MUTED,
+    };
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, radius::SMALL, color::PRESSED);
+    }
+    ui.painter().text(center, egui::Align2::CENTER_CENTER, glyph, font(size::BODY), fg);
+    resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A dashed "add" placeholder (add a page, a note): outline and label turn

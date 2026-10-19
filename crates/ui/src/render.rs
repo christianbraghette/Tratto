@@ -108,8 +108,8 @@ pub fn paint_strokes(
     for page in view.visible_pages() {
         let offset = view.page_origin_screen(page).to_vec2();
         // Visible vertical range in this page's space.
-        let y0 = view.scroll.y - view.layout.page_top(page);
-        let y1 = y0 + view.rect.height() / view.scale;
+        let (top, bottom) = view.visible_y();
+        let (y0, y1) = (top - view.layout.page_top(page), bottom - view.layout.page_top(page));
 
         let mut batch = Mesh::default();
         for s in strokes.iter().filter(|s| s.page == page && !is_moved(s.id)) {

@@ -14,6 +14,7 @@ use eframe::egui::{
 };
 use egui_phosphor::regular as icon;
 use inknote_core::history::Action;
+use inknote_core::library;
 use inknote_core::model::PageKind;
 
 use super::library_ui::Dialog;
@@ -48,7 +49,6 @@ pub(super) enum Command {
     EditText(u64),
     DeleteText(u64),
     Tool(Tool),
-    ToggleTitleBar,
     ZoomIn,
     ZoomOut,
     Zoom(ZoomMode),
@@ -101,6 +101,35 @@ pub(super) fn entry(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabl
     job.append(icon_glyph, 0.0, format(icon_color));
     job.append(label, 10.0, format(egui::Color32::PLACEHOLDER));
     ui.add_enabled(enabled, Button::new(job).shortcut_text(shortcut)).clicked()
+}
+
+/// A menu opened by a button (a "⋯"), drawn exactly like egui's right-click
+/// menus (same frame, style and layout), so both look the same. Open and
+/// close it with `toggle_popup(id)` when `button` is clicked; any other click
+/// closes it.
+pub(super) fn button_menu(ui: &Ui, id: Id, button: &egui::Response, add_contents: impl FnOnce(&mut Ui)) {
+    if !ui.memory(|m| m.is_popup_open(id)) {
+        return;
+    }
+    egui::Area::new(id)
+        .kind(egui::UiKind::Menu)
+        .order(Order::Foreground)
+        .fixed_pos(button.rect.left_bottom() + egui::vec2(0.0, 2.0))
+        .show(ui.ctx(), |ui| {
+            // What egui's menus set (`menu::set_menu_style`, private).
+            let s = ui.style_mut();
+            s.spacing.button_padding = egui::vec2(2.0, 0.0);
+            s.visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+            s.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+            s.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+            s.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+            Frame::menu(ui.style()).show(ui, |ui| {
+                ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), add_contents);
+            });
+        });
+    if !button.clicked() && ui.input(|i| i.pointer.any_click()) {
+        ui.memory_mut(|m| m.close_popup());
+    }
 }
 
 /// A checkable / radio entry (shows a check mark when `on`).
@@ -176,7 +205,7 @@ impl InkApp {
         self.pending.extend(cmds);
     }
 
-    /// Renames the open note (title only; the file keeps its name).
+    /// Renames the open note: the title in memory, then the file on disk.
     pub(super) fn rename_open_note(&mut self, title: &str) {
         let title = title.trim();
         if title.is_empty() || title == self.note_meta.title {
@@ -185,14 +214,22 @@ impl InkApp {
         self.note_meta.title = title.to_owned();
         // A title chosen by the user no longer follows the first text box.
         self.note_meta.auto_title = false;
-        if self.save_note(false) {
-            self.refresh_library();
+        if !self.save_note(false) {
+            return;
         }
+        if let Some(path) = self.note_path.clone() {
+            match library::rename_note_file(&path, title) {
+                Ok(new) => self.note_path = Some(new),
+                Err(e) => self.toast(format!("Renamed, but the file keeps its name: {e}")),
+            }
+        }
+        self.refresh_library();
     }
 
     /// Runs the queued commands, draws the help windows and the resize
     /// borders: once per frame, after the screen.
     pub(super) fn finish_chrome(&mut self, ctx: &egui::Context) {
+        self.poll_export();
         self.help_windows(ctx);
         self.global_settings_window(ctx);
         chrome::window_frame(ctx, self.window_state(ctx));
@@ -236,8 +273,6 @@ impl InkApp {
         }
 
         ui.menu_button("View", |ui| {
-            push(check(ui, self.settings.custom_title_bar, "Custom title bar", ""), ui, Command::ToggleTitleBar);
-            ui.separator();
             if editor {
                 push(entry(ui, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", &shortcut(&ctx, cmd, Key::Plus), true), ui, Command::ZoomIn);
                 push(entry(ui, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", &shortcut(&ctx, cmd, Key::Minus), true), ui, Command::ZoomOut);
@@ -485,7 +520,6 @@ impl InkApp {
                 self.history.exec(&mut self.doc, Action::RemoveText { id });
             }
             Command::Tool(t) => self.tool = t,
-            Command::ToggleTitleBar => self.settings.custom_title_bar ^= true,
             Command::ZoomIn | Command::ZoomOut => {
                 let now = (self.view_scale * 100.0).round() as u32;
                 let next = if cmd == Command::ZoomIn {

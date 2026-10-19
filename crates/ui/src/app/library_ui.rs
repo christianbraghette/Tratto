@@ -35,6 +35,10 @@ pub enum Dialog {
     RenameNote { path: PathBuf, text: String },
     RenameDir { path: PathBuf, text: String },
     Trash { path: PathBuf, label: String },
+    /// Erase a trash item for good.
+    DeleteForever { path: PathBuf, label: String },
+    /// Erase everything in the trash (the number of items).
+    EmptyTrash(usize),
     Move { path: PathBuf },
     Import(String),
     Folder(String),
@@ -65,6 +69,10 @@ pub(super) enum Act {
     RenameNote(PathBuf, String),
     RenameDir(PathBuf, String),
     Trash(PathBuf),
+    /// Put a trash item back where it was.
+    Restore(PathBuf),
+    DeleteForever(PathBuf),
+    EmptyTrash,
     Duplicate(PathBuf),
     MoveNote(PathBuf, PathBuf),
     Import(PathBuf, String),
@@ -218,6 +226,8 @@ impl InkApp {
             Dialog::NewSection { .. } => "New section",
             Dialog::RenameNote { .. } | Dialog::RenameDir { .. } => "Rename",
             Dialog::Trash { .. } => "Delete",
+            Dialog::DeleteForever { .. } => "Delete permanently",
+            Dialog::EmptyTrash(_) => "Empty trash",
             Dialog::Move { .. } => "Move note to",
             Dialog::Import(_) => "Import a note file",
             Dialog::Folder(_) => "Library folder",
@@ -254,8 +264,19 @@ impl InkApp {
                     }
                     Dialog::Trash { path, label } => {
                         ui.label(format!("Move \"{label}\" to the library's .trash folder?"));
-                        ui.label(theme::muted("Nothing is erased for good; you can copy it back from .trash.").small());
+                        ui.label(theme::muted("You can restore it later from the Trash.").small());
                         primary = Some(("Delete", true, Some(Act::Trash(path.clone()))));
+                    }
+                    Dialog::DeleteForever { path, label } => {
+                        ui.label(format!("Erase \"{label}\" for good?"));
+                        ui.label(theme::muted("This cannot be undone.").small());
+                        primary = Some(("Delete permanently", true, Some(Act::DeleteForever(path.clone()))));
+                    }
+                    Dialog::EmptyTrash(n) => {
+                        let what = if *n == 1 { "the item".to_owned() } else { format!("all {n} items") };
+                        ui.label(format!("Erase {what} in the trash for good?"));
+                        ui.label(theme::muted("This cannot be undone.").small());
+                        primary = Some(("Empty trash", true, Some(Act::EmptyTrash)));
                     }
                     Dialog::Move { path } => {
                         let from = path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -390,7 +411,7 @@ impl InkApp {
             }
             Act::RenameNote(path, title) => {
                 match library::rename_note(&path, &title) {
-                    Ok(()) => self.refresh_library(),
+                    Ok(_) => self.refresh_library(),
                     Err(e) => self.toast(format!("Rename failed: {e}")),
                 }
             }
@@ -430,9 +451,43 @@ impl InkApp {
                 Ok(_) => self.refresh_library(),
                 Err(e) => self.toast(format!("Duplicate failed: {e}")),
             },
-            Act::MoveNote(path, dir) => match library::move_note(&path, &dir) {
-                Ok(_) => self.refresh_library(),
-                Err(e) => self.toast(format!("Move failed: {e}")),
+            Act::MoveNote(path, dir) => {
+                // The open note is saved first and followed to its new place.
+                let open = self.note_path.as_ref() == Some(&path);
+                self.sync_dirty();
+                if open && self.dirty && !self.save_note(false) {
+                    return;
+                }
+                match library::move_note(&path, &dir) {
+                    Ok(new) => {
+                        if open {
+                            self.note_path = Some(new);
+                        }
+                        self.refresh_library();
+                    }
+                    Err(e) => self.toast(format!("Move failed: {e}")),
+                }
+            }
+            Act::Restore(item) => match library::restore(&root, &item) {
+                Ok(_) => {
+                    self.refresh_library();
+                    self.toast("Restored");
+                }
+                Err(e) => self.toast(format!("Restore failed: {e}")),
+            },
+            Act::DeleteForever(item) => match library::delete_forever(&root, &item) {
+                Ok(()) => self.refresh_library(),
+                Err(e) => self.toast(format!("Delete failed: {e}")),
+            },
+            Act::EmptyTrash => match library::empty_trash(&root) {
+                Ok(_) => {
+                    self.refresh_library();
+                    self.toast("Trash emptied");
+                }
+                Err(e) => {
+                    self.refresh_library();
+                    self.toast(format!("Cannot empty the trash: {e}"));
+                }
             },
             Act::Import(dir, text) => {
                 let src = PathBuf::from(text.trim().trim_matches('"'));
