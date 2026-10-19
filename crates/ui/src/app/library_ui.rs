@@ -10,22 +10,22 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CursorIcon, FontId, Frame, Margin, Rect, RichText, Rounding,
-    Sense, Shape, Stroke, TextEdit, Ui,
+    self, pos2, vec2, Align2, Color32, CursorIcon, Frame, Margin, Rect, RichText, Rounding, Sense,
+    Shape, Stroke, TextEdit, Ui,
 };
+use egui_phosphor::regular as icon;
 
 use inknote_core::library::{self, NoteInfo, NotebookInfo};
 use inknote_core::storage::{now_secs, Preview};
 
+use super::menus::entry;
 use super::InkApp;
-use crate::render::PAGE_COLOR;
+use crate::theme::{self, color, radius, size, space};
 
 const CARD_W: f32 = 168.0;
 const COVER_W: f32 = 168.0;
 const COVER_H: f32 = 118.0;
 const RECENT_COUNT: usize = 12;
-const BG: Color32 = Color32::from_gray(28);
-const PANEL: Color32 = Color32::from_gray(38);
 
 // ------------------------------------------------------------------ state
 
@@ -106,43 +106,45 @@ impl InkApp {
         let searching = !self.lib_ui.search.trim().is_empty();
 
         egui::TopBottomPanel::top("lib_top")
-            .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(18.0, 12.0)))
+            .frame(Frame::none().fill(color::CHROME).inner_margin(Margin::symmetric(space::XXL, space::M)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("InkNote").size(22.0).strong());
-                    ui.add_space(14.0);
+                    ui.label(theme::title("Library"));
+                    ui.add_space(space::XL);
                     ui.add(
                         TextEdit::singleline(&mut self.lib_ui.search)
-                            .hint_text("Search notes")
-                            .desired_width(230.0),
+                            .hint_text(format!("{}  Search notes", icon::MAGNIFYING_GLASS))
+                            .margin(vec2(space::S, 6.0))
+                            .desired_width(260.0),
                     );
-                    if searching && ui.small_button("Clear").clicked() {
+                    theme::ghost_buttons(ui);
+                    if searching && ui.button(icon::X).on_hover_text("Clear the search").clicked() {
                         self.lib_ui.search.clear();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Library folder").clicked() {
-                            acts.push(Act::Dialog(Dialog::Folder(self.settings.library_root.clone())));
+                        let new_note = theme::primary_button(format!("{}  New note", icon::NOTE_PENCIL));
+                        if ui.add(new_note).on_hover_text("Ctrl+N").clicked() {
+                            acts.push(Act::NewNote(target_dir.clone()));
                         }
-                        if ui.button("Refresh").on_hover_text("Re-read the folder (e.g. after a sync)").clicked() {
-                            acts.push(Act::Refresh);
-                        }
-                        if ui.button("Import").clicked() {
-                            acts.push(Act::Dialog(Dialog::Import(String::new())));
-                        }
-                        if ui.button("+ New notebook").clicked() {
+                        if ui.button(format!("{}  New notebook", icon::NOTEBOOK)).clicked() {
                             acts.push(Act::Dialog(Dialog::NewNotebook(String::new())));
                         }
-                        let new_note = egui::Button::new(RichText::new("+ New note").strong())
-                            .fill(Color32::from_rgb(40, 100, 220));
-                        if ui.add(new_note).clicked() {
-                            acts.push(Act::NewNote(target_dir.clone()));
+                        ui.add_space(space::S);
+                        if ui.button(theme::icon(icon::DOWNLOAD_SIMPLE)).on_hover_text("Import a note file").clicked() {
+                            acts.push(Act::Dialog(Dialog::Import(String::new())));
+                        }
+                        if ui.button(theme::icon(icon::ARROWS_CLOCKWISE)).on_hover_text("Refresh (re-read the folder, e.g. after a sync)").clicked() {
+                            acts.push(Act::Refresh);
+                        }
+                        if ui.button(theme::icon(icon::FOLDER_OPEN)).on_hover_text("Library folder").clicked() {
+                            acts.push(Act::Dialog(Dialog::Folder(self.settings.library_root.clone())));
                         }
                     });
                 });
             });
 
         egui::CentralPanel::default()
-            .frame(Frame::none().fill(BG).inner_margin(Margin::symmetric(24.0, 16.0)))
+            .frame(Frame::none().fill(color::DESK).inner_margin(Margin::symmetric(space::XXL, space::XL)))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if searching {
@@ -178,16 +180,8 @@ impl InkApp {
         if self.status.is_empty() || t.elapsed() >= Duration::from_millis(3500) {
             return;
         }
-        egui::Area::new(egui::Id::new("lib_toast"))
-            .order(egui::Order::Foreground)
-            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -24.0))
-            .show(ctx, |ui| {
-                Frame::none()
-                    .fill(Color32::from_black_alpha(225))
-                    .rounding(Rounding::same(10.0))
-                    .inner_margin(Margin::symmetric(14.0, 8.0))
-                    .show(ui, |ui| ui.colored_label(Color32::WHITE, &self.status));
-            });
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("lib_toast")));
+        theme::paint_toast(&painter, ctx.screen_rect().center_bottom() - vec2(0.0, 48.0), &self.status);
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 
@@ -222,48 +216,32 @@ impl InkApp {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                // Main button: label, destructive, action (None = disabled).
+                let mut primary: Option<(&str, bool, Option<Act>)> = None;
+                let mut submit = enter;
+                let named = |text: &String| !text.trim().is_empty();
                 match dialog {
                     Dialog::NewNotebook(text) => {
-                        let submit = name_row(ui, text, "Notebook name");
-                        if ui.button("Create").clicked() || submit || enter {
-                            if !text.trim().is_empty() {
-                                result = Some(Act::CreateNotebook(text.clone()));
-                            }
-                        }
+                        submit |= name_row(ui, text, "Notebook name");
+                        primary = Some(("Create", false, named(text).then(|| Act::CreateNotebook(text.clone()))));
                     }
                     Dialog::NewSection { notebook, text } => {
-                        let submit = name_row(ui, text, "Section name");
-                        if ui.button("Create").clicked() || submit || enter {
-                            if !text.trim().is_empty() {
-                                result = Some(Act::CreateSection(notebook.clone(), text.clone()));
-                            }
-                        }
+                        submit |= name_row(ui, text, "Section name");
+                        primary = Some(("Create", false, named(text).then(|| Act::CreateSection(notebook.clone(), text.clone()))));
                     }
                     Dialog::RenameNote { path, text } => {
-                        let submit = name_row(ui, text, "Title");
-                        if ui.button("Rename").clicked() || submit || enter {
-                            if !text.trim().is_empty() {
-                                result = Some(Act::RenameNote(path.clone(), text.clone()));
-                            }
-                        }
+                        submit |= name_row(ui, text, "Title");
+                        primary = Some(("Rename", false, named(text).then(|| Act::RenameNote(path.clone(), text.clone()))));
                     }
                     Dialog::RenameDir { path, text } => {
-                        let submit = name_row(ui, text, "Name");
-                        if ui.button("Rename").clicked() || submit || enter {
-                            if !text.trim().is_empty() {
-                                result = Some(Act::RenameDir(path.clone(), text.clone()));
-                            }
-                        }
+                        submit |= name_row(ui, text, "Name");
+                        primary = Some(("Rename", false, named(text).then(|| Act::RenameDir(path.clone(), text.clone()))));
                     }
                     Dialog::Trash { path, label } => {
                         ui.label(format!("Move \"{label}\" to the library's .trash folder?"));
-                        ui.small("Nothing is erased for good; you can copy it back from .trash.");
-                        ui.horizontal(|ui| {
-                            let del = egui::Button::new("Delete").fill(Color32::from_rgb(170, 50, 50));
-                            if ui.add(del).clicked() || enter {
-                                result = Some(Act::Trash(path.clone()));
-                            }
-                        });
+                        ui.label(theme::muted("Nothing is erased for good; you can copy it back from .trash.").small());
+                        primary = Some(("Delete", true, Some(Act::Trash(path.clone()))));
                     }
                     Dialog::Move { path } => {
                         let from = path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -274,41 +252,46 @@ impl InkApp {
                                 dest.push((format!("{} › {}", nb.name, s.name), s.path.clone()));
                             }
                         }
+                        ui.visuals_mut().button_frame = false;
                         egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                             for (label, dir) in dest {
                                 if dir == from {
                                     continue;
                                 }
-                                if ui.button(label).clicked() {
+                                if entry(ui, icon::FOLDER_SIMPLE, &label, "", true) {
                                     result = Some(Act::MoveNote(path.clone(), dir));
                                 }
                             }
                         });
+                        ui.visuals_mut().button_frame = true;
+                        submit = false;
                     }
                     Dialog::Import(text) => {
                         ui.label("Full path of an .ink file (any version):");
-                        let submit = name_row(ui, text, "/path/to/notes.ink");
-                        ui.small("It is copied into the current notebook / section.");
-                        if ui.button("Import").clicked() || submit || enter {
-                            if !text.trim().is_empty() {
-                                result = Some(Act::Import(target_dir.to_path_buf(), text.clone()));
-                            }
-                        }
+                        submit |= name_row(ui, text, "/path/to/notes.ink");
+                        ui.label(theme::muted("It is copied into the current notebook or section.").small());
+                        primary = Some(("Import", false, named(text).then(|| Act::Import(target_dir.to_path_buf(), text.clone()))));
                     }
                     Dialog::Folder(text) => {
                         ui.label("All notebooks and notes live in this folder:");
-                        let submit = name_row(ui, text, "Folder path");
-                        ui.small("Existing notes are not moved; the new folder is read instead.");
-                        if ui.button("Use this folder").clicked() || submit || enter {
-                            if !text.trim().is_empty() {
-                                result = Some(Act::SetRoot(text.clone()));
-                            }
-                        }
+                        submit |= name_row(ui, text, "Folder path");
+                        ui.label(theme::muted("Existing notes are not moved; the new folder is read instead.").small());
+                        primary = Some(("Use this folder", false, named(text).then(|| Act::SetRoot(text.clone()))));
                     }
                 }
-                if ui.button("Cancel").clicked() {
-                    close = true;
-                }
+                ui.add_space(space::M);
+                ui.horizontal(|ui| {
+                    if let Some((label, danger, act)) = primary {
+                        let button = if danger { theme::danger_button(label) } else { theme::primary_button(label) };
+                        let enabled = act.is_some();
+                        if (ui.add_enabled(enabled, button).clicked() || submit) && enabled {
+                            result = act;
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
             });
 
         if let Some(r) = result {
@@ -447,43 +430,45 @@ impl InkApp {
 // ------------------------------------------------------------------ views
 
 fn heading(ui: &mut Ui, text: &str) {
-    ui.add_space(6.0);
-    ui.label(RichText::new(text).size(18.0).strong());
-    ui.add_space(8.0);
+    ui.add_space(space::S);
+    ui.label(theme::heading(text));
+    ui.add_space(space::M);
 }
 
 fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, acts: &mut Vec<Act>) {
     let recent = lib.recent(RECENT_COUNT);
     if recent.is_empty() && lib.notebooks.is_empty() {
-        ui.add_space(60.0);
+        ui.add_space(80.0);
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new("Your library is empty").size(22.0));
-            ui.add_space(6.0);
-            ui.weak("Create a note or a notebook, or import an existing .ink file.");
+            ui.label(RichText::new(icon::BOOK_OPEN_TEXT).size(56.0).color(color::TEXT_FAINT));
+            ui.add_space(space::M);
+            ui.label(theme::title("Your library is empty"));
+            ui.add_space(space::XS);
+            ui.label(theme::muted("Create a note or a notebook, or import an existing .ink file."));
         });
         return;
     }
 
     heading(ui, "Recent");
     if recent.is_empty() {
-        ui.weak("Nothing here yet.");
+        ui.label(theme::muted("Nothing here yet."));
     }
     note_grid(ui, &recent, root, true, acts);
 
-    ui.add_space(14.0);
+    ui.add_space(space::XL);
     heading(ui, "Notebooks");
     if lib.notebooks.is_empty() {
-        ui.weak("No notebooks yet. Use \"+ New notebook\" to group your notes in sections.");
+        ui.label(theme::muted("No notebooks yet. Use \"New notebook\" to group your notes in sections."));
     }
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(16.0, 16.0);
+        ui.spacing_mut().item_spacing = vec2(space::L, space::L);
         for nb in &lib.notebooks {
             notebook_cover(ui, nb, acts);
         }
     });
 
     if !lib.quick.is_empty() {
-        ui.add_space(14.0);
+        ui.add_space(space::XL);
         heading(ui, "Quick notes");
         let quick: Vec<&NoteInfo> = lib.quick.iter().collect();
         note_grid(ui, &quick, root, false, acts);
@@ -498,19 +483,23 @@ fn notebook_view(
     acts: &mut Vec<Act>,
 ) {
     ui.horizontal(|ui| {
-        if ui.button("<  Library").clicked() {
+        theme::ghost_buttons(ui);
+        if ui.button(format!("{}  Library", icon::CARET_LEFT)).clicked() {
             acts.push(Act::Home);
         }
+        ui.add_space(space::S);
         let c = nb.color;
-        ui.label(RichText::new(&nb.name).size(22.0).strong().color(Color32::from_rgb(c[0], c[1], c[2])));
-        if ui.small_button("Rename").clicked() {
+        ui.label(RichText::new(icon::NOTEBOOK).size(size::TITLE).color(Color32::from_rgb(c[0], c[1], c[2])));
+        ui.label(theme::title(&nb.name));
+        ui.add_space(space::S);
+        if ui.button(icon::PENCIL_SIMPLE).on_hover_text("Rename notebook").clicked() {
             acts.push(Act::Dialog(Dialog::RenameDir { path: nb.path.clone(), text: nb.name.clone() }));
         }
-        if ui.small_button("Delete").clicked() {
+        if ui.button(icon::TRASH).on_hover_text("Delete notebook").clicked() {
             acts.push(Act::Dialog(Dialog::Trash { path: nb.path.clone(), label: nb.name.clone() }));
         }
     });
-    ui.add_space(10.0);
+    ui.add_space(space::L);
 
     // Section tabs.
     ui.horizontal_wrapped(|ui| {
@@ -532,28 +521,29 @@ fn notebook_view(
                 acts.push(Act::SelectSection(Some(s.path.clone())));
             }
             resp.context_menu(|ui| {
-                if ui.button("Rename section").clicked() {
+                if entry(ui, icon::PENCIL_SIMPLE, "Rename section", "", true) {
                     acts.push(Act::Dialog(Dialog::RenameDir { path: s.path.clone(), text: s.name.clone() }));
                     ui.close_menu();
                 }
-                if ui.button("Delete section").clicked() {
+                if entry(ui, icon::TRASH, "Delete section", "", true) {
                     acts.push(Act::Dialog(Dialog::Trash { path: s.path.clone(), label: s.name.clone() }));
                     ui.close_menu();
                 }
             });
         }
-        if ui.button("+ Section").clicked() {
+        theme::ghost_buttons(ui);
+        if ui.button(format!("{}  Section", icon::PLUS)).clicked() {
             acts.push(Act::Dialog(Dialog::NewSection { notebook: nb.path.clone(), text: String::new() }));
         }
     });
-    ui.add_space(12.0);
+    ui.add_space(space::L);
 
     let notes: Vec<&NoteInfo> = match section {
         Some(p) => nb.sections.iter().find(|s| &s.path == p).map(|s| s.notes.iter().collect()).unwrap_or_default(),
         None => nb.loose.iter().collect(),
     };
     if notes.is_empty() {
-        ui.weak("No notes here yet. Use \"+ New note\".");
+        ui.label(theme::muted("No notes here yet. Use \"New note\"."));
     }
     note_grid(ui, &notes, root, false, acts);
 }
@@ -562,7 +552,7 @@ fn notebook_view(
 
 fn note_grid(ui: &mut Ui, notes: &[&NoteInfo], root: &Path, show_location: bool, acts: &mut Vec<Act>) {
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(16.0, 18.0);
+        ui.spacing_mut().item_spacing = vec2(space::L, space::L);
         for n in notes {
             note_card(ui, n, root, show_location, acts);
         }
@@ -580,47 +570,48 @@ fn note_card(ui: &mut Ui, note: &NoteInfo, root: &Path, show_location: bool, act
     ui.vertical(|ui| {
         ui.set_width(CARD_W);
         let (rect, resp) = ui.allocate_exact_size(vec2(CARD_W, thumb_h), Sense::click());
+        let p = ui.painter();
+        p.add(theme::card_shadow().as_shape(rect, Rounding::same(radius::SMALL)));
         paint_preview(&ui.painter_at(rect), rect, &note.meta.preview);
-        let border = if resp.hovered() {
-            Stroke::new(2.0, Color32::from_rgb(70, 140, 255))
-        } else {
-            Stroke::new(1.0, Color32::from_gray(70))
-        };
-        ui.painter().rect_stroke(rect, 2.0, border);
+        if resp.hovered() {
+            ui.painter().rect_stroke(rect.expand(1.0), radius::SMALL, Stroke::new(2.0, color::ACCENT));
+        }
         let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
 
         if resp.clicked() {
             acts.push(Act::Open(note.path.clone()));
         }
         resp.context_menu(|ui| {
-            if ui.button("Open").clicked() {
+            if entry(ui, icon::ARROW_SQUARE_OUT, "Open", "", true) {
                 acts.push(Act::Open(note.path.clone()));
                 ui.close_menu();
             }
-            if ui.button("Rename").clicked() {
+            if entry(ui, icon::PENCIL_SIMPLE, "Rename", "", true) {
                 acts.push(Act::Dialog(Dialog::RenameNote { path: note.path.clone(), text: note.meta.title.clone() }));
                 ui.close_menu();
             }
-            if ui.button("Duplicate").clicked() {
+            if entry(ui, icon::COPY, "Duplicate", "", true) {
                 acts.push(Act::Duplicate(note.path.clone()));
                 ui.close_menu();
             }
-            if ui.button("Move to...").clicked() {
+            if entry(ui, icon::FOLDER_SIMPLE, "Move to...", "", true) {
                 acts.push(Act::Dialog(Dialog::Move { path: note.path.clone() }));
                 ui.close_menu();
             }
             ui.separator();
-            if ui.button("Delete").clicked() {
+            if entry(ui, icon::TRASH, "Delete", "", true) {
                 acts.push(Act::Dialog(Dialog::Trash { path: note.path.clone(), label: note.meta.title.clone() }));
                 ui.close_menu();
             }
         });
 
-        ui.add(egui::Label::new(RichText::new(&note.meta.title).strong()).truncate());
-        let pages = if note.meta.pages == 1 { "1 page".to_owned() } else { format!("{} pages", note.meta.pages) };
-        ui.weak(format!("{} · {}", when(note.meta.modified), pages));
+        ui.add_space(space::XS);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.add(egui::Label::new(RichText::new(&note.meta.title).font(theme::font_strong(size::BODY)).color(color::TEXT_STRONG)).truncate());
+        let pages = count(note.meta.pages as usize, "page");
+        ui.label(RichText::new(format!("{} · {}", when(note.meta.modified), pages)).small().color(color::TEXT_MUTED));
         if show_location {
-            ui.weak(RichText::new(location(root, &note.path)).size(11.0));
+            ui.add(egui::Label::new(RichText::new(location(root, &note.path)).small().color(color::TEXT_FAINT)).truncate());
         }
     });
 }
@@ -630,53 +621,59 @@ fn notebook_cover(ui: &mut Ui, nb: &NotebookInfo, acts: &mut Vec<Act>) {
     let c = nb.color;
     let base = Color32::from_rgb(c[0], c[1], c[2]);
     let p = ui.painter();
-    p.rect_filled(rect.translate(vec2(2.0, 3.0)), 8.0, Color32::from_black_alpha(90));
-    p.rect_filled(rect, 8.0, base);
+    let r = radius::MEDIUM;
+    p.add(theme::card_shadow().as_shape(rect, Rounding::same(r)));
+    p.rect_filled(rect, r, base);
     // Spine.
     let spine = Rect::from_min_max(rect.min, pos2(rect.min.x + 14.0, rect.max.y));
-    p.rect_filled(spine, Rounding { nw: 8.0, sw: 8.0, ne: 0.0, se: 0.0 }, base.gamma_multiply(0.7));
+    p.rect_filled(spine, Rounding { nw: r, sw: r, ne: 0.0, se: 0.0 }, base.gamma_multiply(0.7));
     p.text(
         pos2(rect.min.x + 26.0, rect.min.y + 14.0),
         Align2::LEFT_TOP,
         truncate(&nb.name, 16),
-        FontId::proportional(17.0),
+        theme::font_strong(size::HEADING),
         Color32::WHITE,
     );
     let total: usize = nb.loose.len() + nb.sections.iter().map(|s| s.notes.len()).sum::<usize>();
     p.text(
         pos2(rect.min.x + 26.0, rect.max.y - 12.0),
         Align2::LEFT_BOTTOM,
-        format!("{} sections · {} notes", nb.sections.len(), total),
-        FontId::proportional(12.0),
+        format!("{} · {}", count(nb.sections.len(), "section"), count(total, "note")),
+        theme::font(size::CAPTION),
         Color32::from_white_alpha(210),
     );
     if resp.hovered() {
-        p.rect_stroke(rect, 8.0, Stroke::new(2.0, Color32::WHITE));
+        p.rect_stroke(rect.expand(1.0), r, Stroke::new(2.0, color::ACCENT));
     }
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
     if resp.clicked() {
         acts.push(Act::OpenNotebook(nb.path.clone()));
     }
     resp.context_menu(|ui| {
-        if ui.button("Open").clicked() {
+        if entry(ui, icon::ARROW_SQUARE_OUT, "Open", "", true) {
             acts.push(Act::OpenNotebook(nb.path.clone()));
             ui.close_menu();
         }
-        if ui.button("Rename").clicked() {
+        if entry(ui, icon::PENCIL_SIMPLE, "Rename", "", true) {
             acts.push(Act::Dialog(Dialog::RenameDir { path: nb.path.clone(), text: nb.name.clone() }));
             ui.close_menu();
         }
         ui.separator();
-        if ui.button("Delete").clicked() {
+        if entry(ui, icon::TRASH, "Delete", "", true) {
             acts.push(Act::Dialog(Dialog::Trash { path: nb.path.clone(), label: nb.name.clone() }));
             ui.close_menu();
         }
     });
 }
 
+/// "1 note", "3 notes".
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
+}
+
 /// Page 1 as stored in the note header (no document loading).
 fn paint_preview(painter: &egui::Painter, rect: Rect, pv: &Preview) {
-    painter.rect_filled(rect, 2.0, PAGE_COLOR);
+    painter.rect_filled(rect, radius::SMALL, color::PAGE);
     if pv.page_w <= 0.0 {
         return;
     }

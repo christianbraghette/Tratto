@@ -9,7 +9,9 @@
 //! there and follow the pen. Interaction (`update`) and painting (`paint`) are
 //! separate so the scroll offset is already final when the page is drawn.
 
-use eframe::egui::{pos2, vec2, Color32, FontId, Id, Painter, Rect, Sense, Ui};
+use eframe::egui::{pos2, vec2, Id, Painter, Rect, Sense, Ui};
+
+use crate::theme::{self, color, radius, space};
 
 pub const THICKNESS: f32 = 16.0;
 const MIN_THUMB: f32 = 56.0;
@@ -82,25 +84,22 @@ pub fn update(
 }
 
 pub fn paint(painter: &Painter, track: Rect, vertical: bool, s: &BarState, label: Option<&str>) {
-    painter.rect_filled(track, 0.0, Color32::from_gray(38));
-    let color = if !s.enabled {
-        Color32::from_gray(70)
-    } else if s.active || s.hovered {
-        Color32::from_gray(200)
+    painter.rect_filled(track, 0.0, color::CHROME);
+    let fill = if !s.enabled {
+        color::RAISED
+    } else if s.active {
+        color::ACCENT
+    } else if s.hovered {
+        color::TEXT_FAINT
     } else {
-        Color32::from_gray(150)
+        color::BORDER_STRONG
     };
-    painter.rect_filled(s.thumb, 6.0, color);
+    painter.rect_filled(s.thumb, radius::SMALL, fill);
 
     // Floating label (e.g. "Page 3 / 12") next to the thumb while dragging.
     if let (true, true, Some(text)) = (s.active, vertical, label) {
-        let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(15.0), Color32::WHITE);
-        let size = galley.size();
-        let pill = Rect::from_min_size(
-            pos2(track.left() - 10.0 - size.x - 16.0, s.thumb.center().y - size.y * 0.5 - 6.0),
-            size + vec2(16.0, 12.0),
-        );
-        painter.rect_filled(pill, 8.0, Color32::from_black_alpha(215));
-        painter.galley(pill.min + vec2(8.0, 6.0), galley, Color32::WHITE);
+        let width = painter.layout_no_wrap(text.to_owned(), theme::font(theme::size::BODY), color::TEXT).size().x;
+        let center = pos2(track.left() - space::M - width * 0.5 - space::L, s.thumb.center().y);
+        theme::paint_toast(painter, center, text);
     }
 }

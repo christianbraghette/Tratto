@@ -13,11 +13,12 @@ use eframe::egui::{
 use inknote_core::model::{PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
 
 use crate::stroke_mesh;
+use crate::theme::color;
 use crate::view::View;
 
 /// Distinct colour of the non-writable area around the pages.
-pub const PADDING_COLOR: Color32 = Color32::from_gray(52);
-pub const PAGE_COLOR: Color32 = Color32::from_rgb(252, 251, 247);
+pub const PADDING_COLOR: Color32 = color::DESK;
+pub const PAGE_COLOR: Color32 = color::PAGE;
 
 /// Flush the batched mesh before it grows beyond this many vertices.
 const MAX_BATCH_VERTS: usize = 60_000;
@@ -206,7 +207,7 @@ pub fn paint_texts(
                 painter.rect_stroke(
                     rect.expand(2.0),
                     2.0,
-                    UiStroke::new(1.0, Color32::from_rgba_unmultiplied(80, 120, 220, 110)),
+                    UiStroke::new(1.0, color::accent_alpha(110)),
                 );
             }
         }
@@ -269,12 +270,12 @@ pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
     let l = view.layout;
     let s = view.scale;
     let spacing = style.spacing.max(8.0);
-    let rule = UiStroke::new(1.0, Color32::from_rgb(200, 214, 230));
+    let rule = UiStroke::new(1.0, color::PAGE_RULE);
 
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
         // Soft drop shadow, then the paper.
-        painter.rect_filled(rect.translate(vec2(2.0, 3.0)), 0.0, Color32::from_black_alpha(70));
+        painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, Color32::from_black_alpha(60));
         painter.rect_filled(rect, 0.0, PAGE_COLOR);
 
         if style.kind != PageKind::Blank {
@@ -301,7 +302,7 @@ pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
                 x += spacing;
             }
         }
-        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, Color32::from_gray(25)));
+        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::PAGE_EDGE));
     }
 }
 

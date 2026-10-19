@@ -117,14 +117,18 @@ settings. The menus then appear below it.
 
 ### Editor
 
-The editor keeps its controls in two notches attached to the top corners and
+The editor keeps its controls in notches attached to the window corners and
 a floating toolbar. All buttons are icons; hover over one to see its name.
 
 | Where | Buttons |
 | --- | --- |
-| Top-left notch | **Library** (save and go back), **Pages** (toggle the page panel) |
-| Top-right notch | **Settings** |
+| Top-left notch | **Pages** (toggle the page panel) |
+| Bottom-left notch | **Settings** |
+| Top-right notch | **Library** (save and go back) |
 | Floating toolbar, bottom (or top) centre | Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size, Undo, Redo |
+
+When the page panel is open, the two left notches grow into it: **Pages** sits
+in its header and **Settings** in its footer, in the same places.
 
 The floating toolbar can sit at the top or the bottom (**View** menu or
 settings).
@@ -234,9 +238,9 @@ crates/
 │           model, history (undo/redo), stroke_builder, stroke_path,
 │           storage (.ink files), library (notebooks/notes), pdf_export
 └── ui/     inknote-ui: the `inknote` executable (egui + wgpu)
-            app (editor, library, menus), chrome (title bar), view, render,
-            stroke_mesh, toolbar, kinetic (scrolling), scrollbar, settings,
-            input (Wayland tablet / Windows pen)
+            app (editor, library, menus), chrome (title bar), theme (design
+            system), view, render, stroke_mesh, toolbar, kinetic (scrolling),
+            scrollbar, settings, input (Wayland tablet / Windows pen)
 ```
 
 `inknote-core` depends only on `emath` (the geometry types egui is built on),
@@ -252,8 +256,11 @@ keep the copyright in your work.
 
 ## Acknowledgements
 
-Toolbar icons come from [Phosphor Icons](https://phosphoricons.com) through the
-[egui-phosphor](https://github.com/amPerl/egui-phosphor) crate (MIT license).
+- Interface font: [Inter](https://rsms.me/inter/) by The Inter Project Authors
+  (SIL Open Font License 1.1), bundled in `crates/ui/assets/fonts` with a small
+  modification described there.
+- Icons: [Phosphor Icons](https://phosphoricons.com) through the
+  [egui-phosphor](https://github.com/amPerl/egui-phosphor) crate (MIT license).
 
 ## License
 

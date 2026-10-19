@@ -16,6 +16,7 @@
 //! - `scrollbar`      large pen-friendly scrollbars
 //! - `toolbar`        the floating toolbars (tools, navigation, settings)
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
+//! - `theme`          design system: colours, sizes, fonts, shared components
 //! - `input`          native pen input (Wayland tablet, Windows pen buttons)
 
 mod app;
@@ -26,6 +27,7 @@ mod render;
 mod scrollbar;
 mod settings;
 mod stroke_mesh;
+mod theme;
 mod toolbar;
 mod view;
 

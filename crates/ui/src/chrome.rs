@@ -11,10 +11,12 @@
 //! the menu bar is drawn, below the system title bar.
 
 use eframe::egui::{
-    self, pos2, vec2, Align, Align2, Color32, CursorIcon, FontId, Id, LayerId, Layout, Order,
+    self, pos2, vec2, Align, Align2, Color32, CursorIcon, Id, LayerId, Layout, Order,
     PointerButton, Rect, ResizeDirection, RichText, Sense, Stroke, Ui, ViewportCommand,
 };
 use egui_phosphor::regular as icon;
+
+use crate::theme::{self, color, size, space};
 
 /// Height of the custom title bar.
 pub const TITLE_BAR_HEIGHT: f32 = 32.0;
@@ -23,8 +25,7 @@ const MENU_BAR_HEIGHT: f32 = 26.0;
 const WINDOW_BUTTON_WIDTH: f32 = 46.0;
 /// Width of the invisible resize borders.
 const RESIZE_BORDER: f32 = 5.0;
-const CLOSE_HOVER: Color32 = Color32::from_rgb(196, 43, 28);
-const ACCENT: Color32 = Color32::from_rgb(40, 120, 255);
+const CLOSE_HOVER: Color32 = color::DANGER;
 
 /// Window state the chrome depends on.
 #[derive(Clone, Copy)]
@@ -58,7 +59,7 @@ pub fn title_bar(ctx: &egui::Context, state: WindowState, title: &str, menus: im
     egui::TopBottomPanel::top("title_bar")
         .exact_height(height)
         .show_separator_line(false)
-        .frame(egui::Frame::none().fill(ctx.style().visuals.window_fill()))
+        .frame(egui::Frame::none().fill(color::CHROME))
         .show(ctx, |ui| {
             let bar = ui.max_rect();
             // The background first, so every widget added later wins the hit test.
@@ -75,23 +76,33 @@ pub fn title_bar(ctx: &egui::Context, state: WindowState, title: &str, menus: im
             let mut buttons_left = bar.right();
             ui.horizontal(|ui| {
                 ui.set_height(height);
-                ui.add_space(10.0);
-                ui.label(RichText::new(icon::PEN_NIB).size(16.0).color(ACCENT));
-                ui.add_space(2.0);
-                egui::menu::bar(ui, menus);
+                ui.add_space(space::M);
+                ui.label(RichText::new(icon::PEN_NIB).size(size::ICON).color(color::ACCENT));
+                ui.add_space(space::XS);
+                egui::menu::bar(ui, |ui| {
+                    // Menu titles: flat, muted until hovered or open.
+                    theme::ghost_buttons(ui);
+                    ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_MUTED;
+                    ui.spacing_mut().button_padding = vec2(space::S, space::XS);
+                    menus(ui)
+                });
                 menus_right = ui.min_rect().right();
-                if controls {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        window_buttons(ui, state, height);
-                        buttons_left = ui.min_rect().left();
-                    });
-                }
             });
+            // In their own area spanning exactly the bar: nested in the row
+            // above, the right-to-left layout would start one item spacing
+            // (8 px) past the right edge, partly outside the window.
+            if controls {
+                let layout = Layout::right_to_left(Align::Center);
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    window_buttons(ui, state, height);
+                    buttons_left = ui.min_rect().left();
+                });
+            }
 
             // Centred title, moved aside (or dropped) when the window is too narrow.
-            let color = ui.visuals().weak_text_color();
-            let galley = ui.painter().layout_no_wrap(title.to_owned(), FontId::proportional(13.0), color);
+            let color = color::TEXT_MUTED;
+            let galley = ui.painter().layout_no_wrap(title.to_owned(), theme::font(size::BODY), color);
             let (min_x, max_x) = (menus_right + 16.0, buttons_left - 16.0);
             let w = galley.size().x;
             if max_x - min_x >= w {
@@ -102,31 +113,31 @@ pub fn title_bar(ctx: &egui::Context, state: WindowState, title: &str, menus: im
         });
 }
 
+/// Minimize, maximize / restore and close. No tooltips: the icons are
+/// standard, and a tooltip would open over the editor's top-right notch.
 fn window_buttons(ui: &mut Ui, state: WindowState, height: f32) {
     let ctx = ui.ctx().clone();
-    if window_button(ui, icon::X, CLOSE_HOVER, height).on_hover_text("Close").clicked() {
+    if window_button(ui, icon::X, CLOSE_HOVER, height).clicked() {
         ctx.send_viewport_cmd(ViewportCommand::Close);
     }
-    let (glyph, tip) = if state.maximized { (icon::COPY, "Restore") } else { (icon::SQUARE, "Maximize") };
-    let hover = ui.visuals().widgets.hovered.weak_bg_fill;
-    if window_button(ui, glyph, hover, height).on_hover_text(tip).clicked() {
+    let glyph = if state.maximized { icon::COPY } else { icon::SQUARE };
+    let hover = color::HOVER;
+    if window_button(ui, glyph, hover, height).clicked() {
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!state.maximized));
     }
-    if window_button(ui, icon::MINUS, hover, height).on_hover_text("Minimize").clicked() {
+    if window_button(ui, icon::MINUS, hover, height).clicked() {
         ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
     }
 }
 
 fn window_button(ui: &mut Ui, glyph: &str, hover_fill: Color32, height: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(WINDOW_BUTTON_WIDTH, height), Sense::click());
-    let mut color = ui.visuals().text_color();
+    let mut color = color::TEXT_MUTED;
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, hover_fill);
-        if hover_fill == CLOSE_HOVER {
-            color = Color32::WHITE;
-        }
+        color = if hover_fill == CLOSE_HOVER { color::ON_ACCENT } else { color::TEXT_STRONG };
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(15.0), color);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, theme::font(15.0), color);
     resp
 }
 
@@ -164,5 +175,5 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
             });
     }
     let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("window_outline")));
-    painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, Color32::from_gray(70)));
+    painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, color::BORDER_STRONG));
 }

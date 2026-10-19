@@ -45,6 +45,9 @@ cargo build --release
 Guidelines:
 
 - Keep pull requests focused: one fix or feature per pull request.
+- Take colours, corner radii, spacing and text sizes from `crates/ui/src/theme.rs`
+  instead of hard-coding them, so the interface stays consistent. Add a token
+  there if none fits.
 - Add unit tests for new behaviour in `inknote-core`.
 - Keep the `.ink` format backwards-compatible. If the format has to change,
   bump the version in `storage.rs` and make sure older files still load.

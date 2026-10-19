@@ -10,8 +10,7 @@
 //! implementation of each action.
 
 use eframe::egui::{
-    self, Align2, Button, Color32, Frame, Id, Key, KeyboardShortcut, Modifiers, Order, Pos2,
-    RichText, Ui,
+    self, Align2, Button, Frame, Id, Key, KeyboardShortcut, Modifiers, Order, Pos2, RichText, Ui,
 };
 use egui_phosphor::regular as icon;
 use inknote_core::history::Action;
@@ -20,6 +19,7 @@ use inknote_core::model::PageKind;
 use super::library_ui::Dialog;
 use super::{InkApp, Screen};
 use crate::chrome::{self, WindowState};
+use crate::theme::{self, color};
 use crate::settings::{ToolbarPosition, ZoomMode};
 use crate::toolbar::Tool;
 
@@ -79,9 +79,20 @@ fn shortcut(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> String {
 }
 
 /// One menu entry: icon, label and shortcut. Returns true when clicked.
-fn entry(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: bool) -> bool {
-    let text = if glyph.is_empty() { format!("      {label}") } else { format!("{glyph}   {label}") };
-    ui.add_enabled(enabled, Button::new(text).shortcut_text(shortcut)).clicked()
+pub(super) fn entry(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: bool) -> bool {
+    // The menu widens to fit the label and the shortcut instead of wrapping.
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+    // Icon column of a fixed width: entries without an icon get an invisible
+    // one, so all labels line up. PLACEHOLDER takes the button's text colour
+    // (normal, hovered, disabled).
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let format = |color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
+    let mut job = egui::text::LayoutJob::default();
+    let (icon_glyph, icon_color) =
+        if glyph.is_empty() { (icon::CHECK, egui::Color32::TRANSPARENT) } else { (glyph, egui::Color32::PLACEHOLDER) };
+    job.append(icon_glyph, 0.0, format(icon_color));
+    job.append(label, 10.0, format(egui::Color32::PLACEHOLDER));
+    ui.add_enabled(enabled, Button::new(job).shortcut_text(shortcut)).clicked()
 }
 
 /// A checkable / radio entry (shows a check mark when `on`).
@@ -275,6 +286,8 @@ impl InkApp {
             .show(ctx, |ui| {
                 Frame::menu(ui.style()).show(ui, |ui| {
                     ui.set_min_width(220.0);
+                    // Flat rows, like egui's own menus.
+                    ui.visuals_mut().button_frame = false;
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     if let Some(id) = menu.text {
                         if entry(ui, icon::TEXT_T, "Edit text", "", true) {
@@ -483,9 +496,9 @@ impl InkApp {
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(Color32::from_rgb(40, 120, 255)));
-                    ui.label(RichText::new("InkNote").size(24.0).strong());
-                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::ACCENT));
+                    ui.label(theme::title("InkNote"));
+                    ui.label(theme::muted(format!("Version {}", env!("CARGO_PKG_VERSION"))));
                     ui.add_space(6.0);
                     ui.label(env!("CARGO_PKG_DESCRIPTION"));
                     ui.add_space(10.0);
@@ -495,7 +508,7 @@ impl InkApp {
                     ui.add_space(6.0);
                     ui.hyperlink_to("Source code and license", env!("CARGO_PKG_REPOSITORY"));
                     ui.add_space(6.0);
-                    ui.small("Icons: Phosphor Icons (MIT)");
+                    ui.label(RichText::new("Font: Inter (OFL) · Icons: Phosphor (MIT)").small().color(color::TEXT_FAINT));
                 });
             });
         self.help.about = open;
