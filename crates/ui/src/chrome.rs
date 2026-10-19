@@ -88,18 +88,28 @@ fn fullscreen_reveal(ctx: &egui::Context, pinned: bool) -> f32 {
     ctx.animate_bool_with_time(id, show, REVEAL_TIME)
 }
 
+/// What the title bar reports.
+#[derive(Default)]
+pub struct TitleBarResponse {
+    /// The text field of an editable title.
+    pub title: Option<egui::Response>,
+    /// Fullscreen: the button where the window buttons usually are was
+    /// clicked (back to the window).
+    pub exit_fullscreen: bool,
+}
+
 /// Shows the top bar. Call it before any other panel so it spans the whole
 /// window. `menus` adds the menu buttons (inside an `egui::menu::bar`).
 /// In fullscreen the bar hides until the pointer reaches the top edge;
-/// `pinned` keeps it shown. Returns the text field's response for an
-/// editable title.
+/// `pinned` keeps it shown, and an "exit full screen" button takes the
+/// place of the window buttons.
 pub fn title_bar(
     ctx: &egui::Context,
     state: WindowState,
     pinned: bool,
     title: Title<'_>,
     menus: impl FnOnce(&mut Ui),
-) -> Option<egui::Response> {
+) -> TitleBarResponse {
     let controls = state.frame_controls();
     // Same height with or without the window buttons: the menu buttons need
     // it, and a lower bar would leave a gap below its painted background.
@@ -107,9 +117,9 @@ pub fn title_bar(
     // The panel grows with the reveal, the bar slides down inside it.
     let shown = if state.fullscreen { fullscreen_reveal(ctx, pinned) } else { 1.0 };
     if shown <= 0.0 {
-        return None;
+        return TitleBarResponse::default();
     }
-    let mut response = None;
+    let mut response = TitleBarResponse::default();
     egui::TopBottomPanel::top("title_bar")
         .exact_height(height * shown)
         .show_separator_line(false)
@@ -151,11 +161,15 @@ pub fn title_bar(
             // In their own area spanning exactly the bar: nested in the row
             // above, the right-to-left layout would start one item spacing
             // (8 px) past the right edge, partly outside the window.
-            if controls {
+            if controls || state.fullscreen {
                 let layout = Layout::right_to_left(Align::Center);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    window_buttons(ui, state, height);
+                    if state.fullscreen {
+                        response.exit_fullscreen = window_button(ui, icon::CORNERS_IN, color::HOVER, height).clicked();
+                    } else {
+                        window_buttons(ui, state, height);
+                    }
                     buttons_left = ui.min_rect().left();
                 });
             }
@@ -175,7 +189,7 @@ pub fn title_bar(
                     }
                 }
                 Title::Editable { text, hint } => {
-                    response = editable_title(ui, bar, text, hint, &place);
+                    response.title = editable_title(ui, bar, text, hint, &place);
                 }
             }
         });
@@ -359,6 +373,36 @@ mod tests {
 
     fn button(x: f32, y: f32, pressed: bool) -> Event {
         Event::PointerButton { pos: pos2(x, y), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
+    }
+
+    #[test]
+    fn fullscreen_bar_has_an_exit_button_at_the_window_buttons() {
+        let ctx = egui::Context::default();
+        let mut exit = false;
+        let mut run = |events: Vec<Event>| {
+            let mut input = RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                time: Some(ctx.input(|i| i.time) + 1.0 / 60.0),
+                events,
+                ..Default::default()
+            };
+            let info = ViewportInfo { fullscreen: Some(true), ..Default::default() };
+            input.viewports.insert(egui::ViewportId::ROOT, info);
+            let _ = ctx.run(input, |ctx| {
+                let state = WindowState::of(ctx, true);
+                exit |= title_bar(ctx, state, false, Title::Text("t"), |_| {}).exit_fullscreen;
+                egui::CentralPanel::default().show(ctx, |_| {});
+            });
+        };
+        // Where the close button usually is: the right end of the bar.
+        let (x, y) = (800.0 - WINDOW_BUTTON_WIDTH * 0.5, 16.0);
+        for _ in 0..30 {
+            run(vec![at(x, 0.0)]);
+        }
+        run(vec![at(x, y)]);
+        run(vec![button(x, y, true)]);
+        run(vec![button(x, y, false)]);
+        assert!(exit);
     }
 
     #[test]

@@ -300,7 +300,7 @@ fn notebook_tree(ui: &mut Ui, nb: &NotebookInfo, trash: &[&TrashItem], t: &mut T
         group(ui, &g, t);
     }
     // Quiet rows for the panel's own actions.
-    new_note_row(ui, t);
+    //new_note_row(ui, t);
     if ghost_row(ui, icon::FOLDER_SIMPLE_PLUS, "New section").clicked() {
         let d = Dialog::NewSection { notebook: nb.path.clone(), text: String::new() };
         t.picks.push(Pick::Act(Act::Dialog(d)));

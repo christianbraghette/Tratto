@@ -195,8 +195,12 @@ impl InkApp {
             let mut menu_open = false;
             // Fullscreen: keep the bar shown while a menu is open or the title is edited.
             let pinned = self.menu_open || self.title_focused;
-            let resp = chrome::title_bar(ctx, state, pinned, field, |ui| menu_open = self.menu_bar(ui, &mut cmds));
+            let bar = chrome::title_bar(ctx, state, pinned, field, |ui| menu_open = self.menu_bar(ui, &mut cmds));
             self.menu_open = menu_open;
+            if bar.exit_fullscreen {
+                cmds.push(Command::Fullscreen);
+            }
+            let resp = bar.title;
             self.title_focused = resp.as_ref().is_some_and(|r| r.has_focus());
             // Enter or a click elsewhere renames; Escape keeps the old title.
             if resp.is_some_and(|r| r.lost_focus()) && !ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -206,8 +210,11 @@ impl InkApp {
         } else {
             let mut menu_open = false;
             let title = chrome::Title::Text("InkNote");
-            chrome::title_bar(ctx, state, self.menu_open, title, |ui| menu_open = self.menu_bar(ui, &mut cmds));
+            let bar = chrome::title_bar(ctx, state, self.menu_open, title, |ui| menu_open = self.menu_bar(ui, &mut cmds));
             self.menu_open = menu_open;
+            if bar.exit_fullscreen {
+                cmds.push(Command::Fullscreen);
+            }
         }
         self.pending.extend(cmds);
     }
