@@ -36,6 +36,22 @@ pub fn paper_label(w: f32, h: f32) -> String {
     "Custom".to_owned()
 }
 
+/// The paper colour (screen and PDF).
+pub const PAPER_RGB: [u8; 3] = [252, 251, 247];
+
+/// The opaque colour a highlighter of colour `rgba` (its alpha is the ink's
+/// strength) leaves on a background `under`.
+///
+/// Highlighters are painted with this colour, below everything else on the
+/// page: strokes overlapping each other (or themselves) can then never
+/// darken twice, and ink, text and rules always stay on top, as with a real
+/// highlighter.
+pub fn highlight_on(rgba: [u8; 4], under: [u8; 3]) -> [u8; 3] {
+    let a = rgba[3] as f32 / 255.0;
+    let mix = |c: u8, u: u8| (u as f32 + (c as f32 - u as f32) * a).round() as u8;
+    [mix(rgba[0], under[0]), mix(rgba[1], under[1]), mix(rgba[2], under[2])]
+}
+
 /// A single input sample.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
@@ -247,5 +263,17 @@ impl Document {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlight_mixes_with_the_paper() {
+        assert_eq!(highlight_on([255, 0, 0, 255], [255, 255, 255]), [255, 0, 0]);
+        assert_eq!(highlight_on([255, 0, 0, 0], [10, 20, 30]), [10, 20, 30]);
+        assert_eq!(highlight_on([0, 0, 0, 128], [255, 255, 255]), [127, 127, 127]);
     }
 }

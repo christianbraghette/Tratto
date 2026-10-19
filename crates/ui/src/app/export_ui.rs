@@ -601,8 +601,9 @@ impl InkApp {
 }
 
 /// One exported page as the PDF will show it, fitted into `area`: the output
-/// page (white), the note's page scaled and centred on it, paper, rules,
-/// strokes and text boxes with the chosen ink colours.
+/// page (white), the note's page scaled and centred on it; then, as in the
+/// PDF, paper, highlighters, rules, text boxes and pen strokes with the
+/// chosen ink colours.
 fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions) {
     let ((out_w, out_h), s, (ox, oy)) = opts.placement(doc);
     let k = (area.width() / out_w).min(area.height() / out_h);
@@ -618,6 +619,28 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions)
     let p = ui.painter_at(paper);
     if opts.paper_background {
         p.rect_filled(paper, 0.0, color::PAGE);
+    }
+    let rgb = |(r, g, b): (f32, f32, f32)| Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+    let paint_strokes = |kind: StrokeKind| {
+        for st in doc.strokes.iter().filter(|st| st.page == page && st.kind == kind) {
+            let ink = rgb(opts.stroke_rgb(st));
+            let samples = stroke_path::centerline(st.kind, st.width, &st.points, 2.0);
+            let width = |r: f32| (r * 2.0 * f).max(0.6);
+            match samples.as_slice() {
+                [] => {}
+                [one] => {
+                    p.circle_filled(at(one.x, one.y), width(one.r) * 0.5, ink);
+                }
+                many => {
+                    let r = many.iter().map(|s| s.r).sum::<f32>() / many.len() as f32;
+                    let pts = many.iter().map(|s| at(s.x, s.y)).collect();
+                    p.add(Shape::line(pts, Stroke::new(width(r), ink)));
+                }
+            }
+        }
+    };
+    if opts.include_highlighter {
+        paint_strokes(StrokeKind::Highlighter);
     }
     if opts.include_rules && doc.page.kind != PageKind::Blank {
         let spacing = doc.page.spacing.max(8.0);
@@ -637,38 +660,16 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions)
             }
         }
     }
-    let rgb = |(r, g, b): (f32, f32, f32), a: u8| {
-        Color32::from_rgba_unmultiplied((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, a)
-    };
     if opts.include_text {
         for t in doc.texts.iter().filter(|t| t.page == page) {
-            let ink = rgb(opts.ink_rgb(t.color, false), 255);
+            let ink = rgb(opts.ink_rgb(t.color, false));
             for (i, line) in t.lines.iter().enumerate() {
                 let size = (t.size * f).max(1.0);
                 p.text(at(t.x, t.y + i as f32 * t.line_h), Align2::LEFT_TOP, line, FontId::proportional(size), ink);
             }
         }
     }
-    for st in doc.strokes.iter().filter(|st| st.page == page) {
-        let highlighter = st.kind == StrokeKind::Highlighter;
-        if highlighter && !opts.include_highlighter {
-            continue;
-        }
-        let ink = rgb(opts.ink_rgb([st.color[0], st.color[1], st.color[2]], highlighter), st.color[3]);
-        let samples = stroke_path::centerline(st.kind, st.width, &st.points, 2.0);
-        let width = |r: f32| (r * 2.0 * f).max(0.6);
-        match samples.as_slice() {
-            [] => {}
-            [one] => {
-                p.circle_filled(at(one.x, one.y), width(one.r) * 0.5, ink);
-            }
-            many => {
-                let r = many.iter().map(|s| s.r).sum::<f32>() / many.len() as f32;
-                let pts = many.iter().map(|s| at(s.x, s.y)).collect();
-                p.add(Shape::line(pts, Stroke::new(width(r), ink)));
-            }
-        }
-    }
+    paint_strokes(StrokeKind::Pen);
 }
 
 #[cfg(test)]

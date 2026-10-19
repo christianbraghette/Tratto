@@ -12,8 +12,10 @@
 //! * Pen strokes are the same smoothed curve that is drawn on screen. Constant
 //!   pressure -> one stroked path; variable pressure -> runs of segments with
 //!   the same (quantised) width, joined by round caps.
-//! * Highlighter strokes are a single stroked path with an `ExtGState` alpha,
-//!   so a stroke crossing itself is *not* darkened twice (unlike on screen).
+//! * Highlighter strokes are a single stroked path in the opaque colour they
+//!   leave on the background (`model::highlight_on`), painted first: page
+//!   order is background, highlighters, rules, text, pen strokes, as on
+//!   screen. Overlapping highlighters never darken, nothing is covered.
 
 use std::fs;
 use std::io::{self, Write};
@@ -23,7 +25,7 @@ use std::path::Path;
 use flate2::{write::ZlibEncoder, Compression};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Document, PageKind, Stroke, StrokeKind, TextBox};
+use crate::model::{self, Document, PageKind, Stroke, StrokeKind, TextBox};
 use crate::stroke_path::{self, Sample};
 
 /// 1 px (1/96 in) in PDF points (1/72 in).
@@ -118,6 +120,24 @@ impl PdfOptions {
             (InkColors::Black, true) | (InkColors::Grayscale, _) => gray(),
         }
     }
+
+    /// What the page is printed on: the paper colour, or white.
+    pub fn background(&self) -> [u8; 3] {
+        if self.paper_background { model::PAPER_RGB } else { [255, 255, 255] }
+    }
+
+    /// Colour (0..1) a stroke is printed in: the ink colour, and for a
+    /// highlighter the opaque colour it leaves on the background.
+    pub fn stroke_rgb(&self, s: &Stroke) -> (f32, f32, f32) {
+        let highlighter = s.kind == StrokeKind::Highlighter;
+        let (r, g, b) = self.ink_rgb([s.color[0], s.color[1], s.color[2]], highlighter);
+        if !highlighter {
+            return (r, g, b);
+        }
+        let byte = |v: f32| (v * 255.0).round() as u8;
+        let [r, g, b] = model::highlight_on([byte(r), byte(g), byte(b), s.color[3]], self.background());
+        (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+    }
 }
 
 /// Writes `doc` to `path` (via a temp file, so a failure never truncates an
@@ -161,20 +181,10 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     let page_list = export_pages(notes, opts);
     let pages = page_list.len();
 
-    // One ExtGState per distinct highlighter alpha.
-    let mut alphas: Vec<u8> = notes
-        .iter()
-        .flat_map(|n| n.doc.strokes.iter())
-        .filter(|s| s.kind == StrokeKind::Highlighter && opts.include_highlighter)
-        .map(|s| s.color[3])
-        .collect();
-    alphas.sort_unstable();
-    alphas.dedup();
-
-    // Object numbers: 1 catalog, 2 page tree, 3 resources, 4 info,
-    // 5.. ExtGStates, the font, then (page, content) pairs, then (several
-    // notes only) the outline root and one bookmark per note.
-    let font_obj = 5 + alphas.len();
+    // Object numbers: 1 catalog, 2 page tree, 3 resources, 4 info, 5 the
+    // font, then (page, content) pairs, then (several notes only) the
+    // outline root and one bookmark per note.
+    let font_obj = 5;
     let first_page_obj = font_obj + 1;
     let outline_obj = first_page_obj + 2 * pages;
     let outlined = notes.len() > 1;
@@ -191,15 +201,7 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", first_page_obj + 2 * i)).collect();
     pdf.obj(2, &format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" ")));
 
-    let gs_entries: String = alphas
-        .iter()
-        .enumerate()
-        .map(|(i, a)| format!("/GS{a} {} 0 R ", 5 + i))
-        .collect();
-    pdf.obj(
-        3,
-        &format!("<< /ExtGState << {gs_entries}>> /Font << /F1 {font_obj} 0 R >> >>"),
-    );
+    pdf.obj(3, &format!("<< /Font << /F1 {font_obj} 0 R >> >>"));
 
     let author = if opts.author.trim().is_empty() {
         String::new()
@@ -207,11 +209,6 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
         format!("/Author ({}) ", pdf_string(opts.author.trim()))
     };
     pdf.obj(4, &format!("<< /Title ({}) {author}/Producer (InkNote) >>", pdf_string(&opts.title)));
-
-    for (i, a) in alphas.iter().enumerate() {
-        let v = *a as f32 / 255.0;
-        pdf.obj(5 + i, &format!("<< /Type /ExtGState /CA {v:.3} /ca {v:.3} >>"));
-    }
 
     // Text boxes use the standard Helvetica (no font embedding needed).
     pdf.obj(
@@ -343,12 +340,23 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
     ));
 
     if opts.paper_background {
-        // The paper colour of the screen (252, 251, 247).
+        // The paper colour of the screen.
+        let [r, g, b] = model::PAPER_RGB.map(|v| v as f32 / 255.0);
         c.push_str(&format!(
-            "0.988 0.984 0.969 rg\n0 0 {} {} re f\n",
+            "{} {} {} rg\n0 0 {} {} re f\n",
+            num(r, 3),
+            num(g, 3),
+            num(b, 3),
             num(doc.page_width, 2),
             num(doc.page_height, 2)
         ));
+    }
+    // Bottom to top, as on screen: highlighters, rules, text, pen strokes.
+    let strokes = |kind: StrokeKind| doc.strokes.iter().filter(move |s| s.page == page && s.kind == kind);
+    if opts.include_highlighter {
+        for s in strokes(StrokeKind::Highlighter) {
+            write_stroke(&mut c, s, opts);
+        }
     }
     if opts.include_rules && doc.page.kind != PageKind::Blank {
         write_rules(&mut c, doc);
@@ -358,10 +366,7 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
             write_text(&mut c, t, opts);
         }
     }
-    for s in doc.strokes.iter().filter(|s| s.page == page) {
-        if s.kind == StrokeKind::Highlighter && !opts.include_highlighter {
-            continue;
-        }
+    for s in strokes(StrokeKind::Pen) {
         write_stroke(&mut c, s, opts);
     }
     c.push_str("Q\n");
@@ -457,18 +462,13 @@ fn write_stroke(c: &mut String, s: &Stroke, opts: &PdfOptions) {
     if samples.is_empty() {
         return;
     }
-    let rgb = [s.color[0], s.color[1], s.color[2]];
-    let (r, g, b) = opts.ink_rgb(rgb, s.kind == StrokeKind::Highlighter);
+    let (r, g, b) = opts.stroke_rgb(s);
     c.push_str(&format!(
         "q\n{r} {g} {b} RG {r} {g} {b} rg\n1 J 1 j\n",
         r = num(r, 3),
         g = num(g, 3),
         b = num(b, 3)
     ));
-
-    if s.kind == StrokeKind::Highlighter {
-        c.push_str(&format!("/GS{} gs\n", s.color[3]));
-    }
 
     if samples.len() == 1 {
         dot(c, samples[0]);
@@ -666,10 +666,23 @@ mod tests {
         let (r, g, b) = gray.ink_rgb([10, 20, 200], false);
         assert!(r == g && g == b);
 
+        // Highlighters: opaque, in the colour they leave on the background
+        // (no transparency, so overlapping strokes cannot darken).
+        let opts = PdfOptions::default();
+        let hl = Stroke::new(0, 0, StrokeKind::Highlighter, [255, 235, 0, 96], 14.0, Vec::new());
+        let (r, g, b) = opts.stroke_rgb(&hl);
+        let [br, bg, bb] = opts.background().map(|v| v as f32 / 255.0);
+        assert!(r <= br + 1e-3 && b < bb && g < bg, "between the background and the ink");
+        let colour = format!("{} {} {} RG", num(r, 3), num(g, 3), num(b, 3));
+        let doc = sample_doc();
+        let rules = PdfOptions { include_rules: true, ..Default::default() };
+        let page = page_content(&doc, 1, &rules);
+        let at = |what: &str| page.find(what).unwrap_or_else(|| panic!("{what} missing"));
+        // Under the rules and the pen ink (black).
+        assert!(at(&colour) < at("0.784 0.839 0.902 RG") && at(&colour) < at("0 0 0 RG"));
+        assert!(!pdf_text(&opts).contains("ExtGState"));
         let no_hl = PdfOptions { include_highlighter: false, ..Default::default() };
-        assert!(!pdf_text(&no_hl).contains("/ExtGState <<  /GS"));
-        assert!(pdf_text(&PdfOptions::default()).contains("/GS96"));
-        assert!(!pdf_text(&no_hl).contains("/GS96 gs"));
+        assert!(!page_content(&doc, 1, &no_hl).contains(&colour));
     }
 
     #[test]

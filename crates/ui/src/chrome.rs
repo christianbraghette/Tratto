@@ -320,3 +320,72 @@ pub fn round_corners(frame: &eframe::Frame) {
     #[cfg(not(windows))]
     let _ = frame;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Event, Modifiers, PointerButton, RawInput, ViewportInfo};
+
+    /// One frame (1/60 s) of a fullscreen 800 x 600 window with `events`;
+    /// `menu_open` is set to whether the menu is open.
+    fn frame(ctx: &egui::Context, menu_open: &mut bool, events: Vec<Event>) {
+        let mut input = RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+            time: Some(ctx.input(|i| i.time) + 1.0 / 60.0),
+            events,
+            ..Default::default()
+        };
+        let info = ViewportInfo { fullscreen: Some(true), ..Default::default() };
+        input.viewports.insert(egui::ViewportId::ROOT, info);
+        let pinned = *menu_open;
+        let _ = ctx.run(input, |ctx| {
+            let state = WindowState::of(ctx, true);
+            let mut open = false;
+            title_bar(ctx, state, pinned, Title::Text("t"), |ui| {
+                // As the app does: the contents run only while the menu is shown.
+                ui.menu_button("File", |ui| {
+                    open = true;
+                    ui.label("entry");
+                });
+            });
+            egui::CentralPanel::default().show(ctx, |_| {});
+            *menu_open = open;
+        });
+    }
+
+    fn at(x: f32, y: f32) -> Event {
+        Event::PointerMoved(pos2(x, y))
+    }
+
+    fn button(x: f32, y: f32, pressed: bool) -> Event {
+        Event::PointerButton { pos: pos2(x, y), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
+    }
+
+    #[test]
+    fn fullscreen_bar_stays_while_a_menu_is_open() {
+        let ctx = egui::Context::default();
+        let mut open = false;
+        // Reveal: the pointer at the top edge, wait for the slide.
+        for _ in 0..30 {
+            frame(&ctx, &mut open, vec![at(60.0, 0.0)]);
+        }
+        // Click "File" (just right of the app icon).
+        let file = (60.0, 16.0);
+        frame(&ctx, &mut open, vec![at(file.0, file.1)]);
+        frame(&ctx, &mut open, vec![button(file.0, file.1, true)]);
+        frame(&ctx, &mut open, vec![button(file.0, file.1, false)]);
+        assert!(open, "the menu opens");
+        // Into the dropdown, well below the bar.
+        for _ in 0..30 {
+            frame(&ctx, &mut open, vec![at(70.0, 60.0)]);
+        }
+        assert!(open, "the menu stays open");
+        // A pen lifts off: the pointer is gone.
+        for _ in 0..30 {
+            frame(&ctx, &mut open, vec![Event::PointerGone]);
+        }
+        assert!(open, "the menu stays open without a pointer");
+    }
+}
+
+

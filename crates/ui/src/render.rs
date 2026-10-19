@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Painting: pages, cached anti-aliased stroke meshes, eraser cursor.
+//!
+//! A page is painted bottom to top: paper, highlighter strokes, rules, text
+//! boxes, pen strokes. Highlighters are opaque, in the colour they leave on
+//! the paper (`model::highlight_on`): overlapping highlighter strokes never
+//! darken each other, and nothing written is ever covered.
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,7 +15,7 @@ use eframe::egui::{
     Stroke as UiStroke, Vec2,
 };
 
-use inknote_core::model::{PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
+use inknote_core::model::{self, PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
 
 use crate::stroke_mesh;
 use crate::theme::color;
@@ -24,6 +29,36 @@ pub const PAGE_COLOR: Color32 = color::PAGE;
 const MAX_BATCH_VERTS: usize = 60_000;
 /// Cache entries unused for this many frames are dropped (bounds memory).
 const CACHE_TTL_FRAMES: u64 = 512;
+
+/// The two stroke layers of a page (see the module docs).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    /// Highlighter strokes, under the rules and the text.
+    Highlight,
+    /// Pen strokes, on top.
+    Ink,
+}
+
+impl Layer {
+    fn of(kind: StrokeKind) -> Self {
+        match kind {
+            StrokeKind::Highlighter => Layer::Highlight,
+            StrokeKind::Pen => Layer::Ink,
+        }
+    }
+}
+
+/// The colour a stroke is painted with: highlighters as the opaque colour
+/// they leave on the paper.
+pub fn paint_rgba(kind: StrokeKind, rgba: [u8; 4]) -> [u8; 4] {
+    match kind {
+        StrokeKind::Highlighter => {
+            let [r, g, b] = model::highlight_on(rgba, model::PAPER_RGB);
+            [r, g, b, 255]
+        }
+        StrokeKind::Pen => rgba,
+    }
+}
 
 // ------------------------------------------------------------------ cache
 
@@ -68,7 +103,8 @@ impl StrokeCache {
         let frame = self.frame;
         let build = || {
             let mut mesh = Mesh::default();
-            stroke_mesh::tessellate(&mut mesh, s.kind, s.color, s.width, &s.points, scale, aa);
+            let rgba = paint_rgba(s.kind, s.color);
+            stroke_mesh::tessellate(&mut mesh, s.kind, rgba, s.width, &s.points, scale, aa);
             Entry { mesh, last_used: frame, rev: s.rev }
         };
         let e = self.map.entry(s.id).or_insert_with(build);
@@ -90,12 +126,14 @@ pub struct Moved<'a> {
     pub offset: Vec2,
 }
 
-/// Paints the strokes of all visible pages, one batched mesh per page. Strokes
-/// in `moved` are skipped there and drawn last, translated by the drag offset
-/// (their cached meshes are reused, nothing is re-tessellated while dragging).
+/// Paints the strokes of one layer of all visible pages, one batched mesh per
+/// page. Strokes in `moved` are skipped there and drawn last, translated by
+/// the drag offset (their cached meshes are reused, nothing is re-tessellated
+/// while dragging).
 pub fn paint_strokes(
     painter: &Painter,
     view: &View,
+    layer: Layer,
     strokes: &[Stroke],
     cache: &mut StrokeCache,
     ppp: f32,
@@ -112,7 +150,8 @@ pub fn paint_strokes(
         let (y0, y1) = (top - view.layout.page_top(page), bottom - view.layout.page_top(page));
 
         let mut batch = Mesh::default();
-        for s in strokes.iter().filter(|s| s.page == page && !is_moved(s.id)) {
+        let in_layer = |s: &&Stroke| s.page == page && Layer::of(s.kind) == layer && !is_moved(s.id);
+        for s in strokes.iter().filter(in_layer) {
             if s.bounds[3] + s.width < y0 || s.bounds[1] - s.width > y1 {
                 continue; // outside the viewport
             }
@@ -127,7 +166,8 @@ pub fn paint_strokes(
     if let Some(m) = moved {
         let offset = view.page_origin_screen(m.page).to_vec2() + m.offset * view.scale;
         let mut batch = Mesh::default();
-        for s in strokes.iter().filter(|s| s.page == m.page && m.ids.contains(&s.id)) {
+        let in_layer = |s: &&Stroke| s.page == m.page && Layer::of(s.kind) == layer && m.ids.contains(&s.id);
+        for s in strokes.iter().filter(in_layer) {
             batch.append_ref(cache.get(s, view.scale, aa));
             if batch.vertices.len() > MAX_BATCH_VERTS {
                 flush(painter, &mut batch, offset);
@@ -149,14 +189,17 @@ pub fn paint_page_strokes(
     cache: &mut StrokeCache,
     aa: f32,
 ) {
-    let mut batch = Mesh::default();
-    for s in strokes.iter().filter(|s| s.page == page) {
-        batch.append_ref(cache.get(s, scale, aa));
-        if batch.vertices.len() > MAX_BATCH_VERTS {
-            flush(painter, &mut batch, offset);
+    // Highlighters first, as on the page.
+    for layer in [Layer::Highlight, Layer::Ink] {
+        let mut batch = Mesh::default();
+        for s in strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer) {
+            batch.append_ref(cache.get(s, scale, aa));
+            if batch.vertices.len() > MAX_BATCH_VERTS {
+                flush(painter, &mut batch, offset);
+            }
         }
+        flush(painter, &mut batch, offset);
     }
-    flush(painter, &mut batch, offset);
 }
 
 /// Paints the text boxes of the visible pages with their stored line breaks.
@@ -245,7 +288,7 @@ pub fn paint_live(
     ppp: f32,
 ) {
     let mut mesh = Mesh::default();
-    stroke_mesh::tessellate(&mut mesh, kind, rgba, width, pts, view.scale, 1.0 / ppp);
+    stroke_mesh::tessellate(&mut mesh, kind, paint_rgba(kind, rgba), width, pts, view.scale, 1.0 / ppp);
     mesh.translate(view.page_origin_screen(page).to_vec2());
     if !mesh.is_empty() {
         painter.add(Shape::mesh(mesh));
@@ -263,10 +306,20 @@ fn flush(painter: &Painter, batch: &mut Mesh, offset: Vec2) {
 
 // -------------------------------------------------------- background
 
-/// Fills the area around the pages and draws every visible page.
-pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
+/// Fills the area around the pages and the paper of every visible page.
+pub fn paint_paper(painter: &Painter, view: &View) {
     painter.rect_filled(view.rect, 0.0, PADDING_COLOR);
+    for page in view.visible_pages() {
+        let rect = view.page_screen_rect(page);
+        // Soft drop shadow, then the paper.
+        painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, Color32::from_black_alpha(60));
+        painter.rect_filled(rect, 0.0, PAGE_COLOR);
+    }
+}
 
+/// The rules (or grid) and the edge of every visible page, over the
+/// highlighters.
+pub fn paint_rules(painter: &Painter, view: &View, style: &PageStyle) {
     let l = view.layout;
     let s = view.scale;
     let spacing = style.spacing.max(8.0);
@@ -274,10 +327,6 @@ pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
 
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
-        // Soft drop shadow, then the paper.
-        painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, Color32::from_black_alpha(60));
-        painter.rect_filled(rect, 0.0, PAGE_COLOR);
-
         if style.kind != PageKind::Blank {
             // Rules at page-local y = k * spacing; only those in view are drawn.
             let vis_top = ((view.rect.top() - rect.top()) / s).max(0.0);
@@ -304,6 +353,15 @@ pub fn paint_background(painter: &Painter, view: &View, style: &PageStyle) {
         }
         painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::PAGE_EDGE));
     }
+}
+
+/// The pen cursor (pen or highlighter hovering over a page): a dot in the
+/// colour and width of the stroke the pen would draw.
+pub fn paint_pen_cursor(painter: &Painter, center: Pos2, kind: StrokeKind, rgba: [u8; 4], width_px: f32) {
+    let [r, g, b, _] = paint_rgba(kind, rgba);
+    let radius = (width_px * 0.5).clamp(2.0, 40.0);
+    // A faint ring keeps light colours visible on the paper.
+    painter.circle(center, radius, Color32::from_rgb(r, g, b), UiStroke::new(1.0, Color32::from_black_alpha(70)));
 }
 
 pub fn paint_eraser_cursor(painter: &Painter, center: Pos2, radius_px: f32) {

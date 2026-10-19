@@ -11,6 +11,8 @@
 //!
 //! * `PEN_FLAG_BARREL`                    -> side button held
 //! * `PEN_FLAG_INVERTED` / `PEN_FLAG_ERASER` -> eraser end in use
+//! * in range but not touching             -> hover position (the app
+//!   draws its pen cursor there; winit does not report pen hover)
 //!
 //! The subclass proc only *observes* the messages and always forwards them
 //! (`DefSubclassProc`), so winit keeps working exactly as before. State is
@@ -48,13 +50,16 @@ mod stub {
         pub fn buttons(&self) -> PenButtons {
             PenButtons::default()
         }
+        pub fn hover(&self) -> Option<(f32, f32)> {
+            None
+        }
     }
 }
 
 #[cfg(windows)]
 mod imp {
     use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
     use eframe::egui;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -75,6 +80,7 @@ mod imp {
     const PEN_FLAG_BARREL: u32 = 0x0000_0001;
     const PEN_FLAG_INVERTED: u32 = 0x0000_0002;
     const PEN_FLAG_ERASER: u32 = 0x0000_0004;
+    const POINTER_FLAG_INCONTACT: u32 = 0x0000_0004;
 
     // Keep these declarations local so this module does not require the
     // optional `Win32_UI_Input_Pointer` windows-sys feature.
@@ -120,12 +126,17 @@ mod imp {
     unsafe extern "system" {
         fn GetPointerType(pointer_id: u32, pointer_type: *mut i32) -> i32;
         fn GetPointerPenInfo(pointer_id: u32, pen_info: *mut PointerPenInfo) -> i32;
+        fn ScreenToClient(hwnd: HWND, point: *mut Point) -> i32;
     }
 
     const SUBCLASS_ID: usize = 0x494E_4B31; // "INK1"
 
     static BARREL: AtomicBool = AtomicBool::new(false);
     static ERASER_END: AtomicBool = AtomicBool::new(false);
+    /// The pen is in range and not touching; where (client pixels).
+    static HOVERING: AtomicBool = AtomicBool::new(false);
+    static HOVER_X: AtomicI32 = AtomicI32::new(0);
+    static HOVER_Y: AtomicI32 = AtomicI32::new(0);
     static CTX: OnceLock<egui::Context> = OnceLock::new();
 
     fn debug() -> bool {
@@ -134,14 +145,29 @@ mod imp {
     }
 
     fn publish(barrel: bool, eraser_end: bool) {
-        let changed = BARREL.swap(barrel, Ordering::Relaxed)
-            != barrel | (ERASER_END.swap(eraser_end, Ordering::Relaxed) != eraser_end);
+        // `|`, not `||`: both must be stored.
+        let changed = (BARREL.swap(barrel, Ordering::Relaxed) != barrel)
+            | (ERASER_END.swap(eraser_end, Ordering::Relaxed) != eraser_end);
         if changed {
             if debug() {
                 eprintln!("pen: barrel={barrel} eraser_end={eraser_end}");
             }
             if let Some(ctx) = CTX.get() {
                 ctx.request_repaint(); // wake the UI so the tool switches at once
+            }
+        }
+    }
+
+    /// Records the hover position (`None`: touching or out of range) and wakes
+    /// the UI when it changed, so the pen cursor follows.
+    fn publish_hover(at: Option<(i32, i32)>) {
+        let was = HOVERING.swap(at.is_some(), Ordering::Relaxed);
+        let moved = at.is_some_and(|(x, y)| {
+            (HOVER_X.swap(x, Ordering::Relaxed) != x) | (HOVER_Y.swap(y, Ordering::Relaxed) != y)
+        });
+        if was != at.is_some() || moved {
+            if let Some(ctx) = CTX.get() {
+                ctx.request_repaint();
             }
         }
     }
@@ -167,6 +193,10 @@ mod imp {
                                 info.pen_flags & PEN_FLAG_BARREL != 0,
                                 info.pen_flags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER) != 0,
                             );
+                            let touching = info.pointer_info.pointer_flags & POINTER_FLAG_INCONTACT != 0;
+                            let mut p = info.pointer_info.pixel_location;
+                            let hover = (!touching && ScreenToClient(hwnd, &mut p) != 0).then_some((p.x, p.y));
+                            publish_hover(hover);
                         }
                     }
                 }
@@ -175,9 +205,13 @@ mod imp {
                     let mut kind: i32 = 0;
                     if GetPointerType(pointer_id, &mut kind) != 0 && kind == PT_PEN {
                         publish(false, false);
+                        publish_hover(None);
                     }
                 }
-                WM_KILLFOCUS => publish(false, false),
+                WM_KILLFOCUS => {
+                    publish(false, false);
+                    publish_hover(None);
+                }
                 _ => {}
             }
             DefSubclassProc(hwnd, msg, wparam, lparam)
@@ -209,6 +243,14 @@ mod imp {
                 barrel: BARREL.load(Ordering::Relaxed),
                 eraser_end: ERASER_END.load(Ordering::Relaxed),
             }
+        }
+
+        /// Where the pen hovers (in range, not touching), in physical pixels
+        /// of the window's client area.
+        pub fn hover(&self) -> Option<(f32, f32)> {
+            HOVERING
+                .load(Ordering::Relaxed)
+                .then(|| (HOVER_X.load(Ordering::Relaxed) as f32, HOVER_Y.load(Ordering::Relaxed) as f32))
         }
     }
 

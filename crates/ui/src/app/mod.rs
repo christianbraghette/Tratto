@@ -24,7 +24,7 @@ use inknote_core::stroke_builder::StrokeBuilder;
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
 use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
-use crate::render::{self, Moved, StrokeCache};
+use crate::render::{self, Layer, Moved, StrokeCache};
 use crate::scrollbar;
 use crate::settings::{LeftPanel, Settings, ZoomMode};
 use crate::theme::{self, color, radius, space};
@@ -155,6 +155,8 @@ pub struct InkApp {
     pen_init_done: bool,
     pen_down: bool,
     pen_pos: Pos2,
+    /// Wayland: where the pen hovers (in range, not touching).
+    wl_pen_hover: Option<Pos2>,
     /// Tool to restore when the temporary eraser (pen eraser end / side button) is released.
     saved_tool: Option<Tool>,
     /// Eraser requested by the native pen (eraser end or side button).
@@ -257,6 +259,7 @@ impl InkApp {
             pen_init_done: false,
             pen_down: false,
             pen_pos: Pos2::ZERO,
+            wl_pen_hover: None,
             saved_tool: None,
             eraser_native: false,
             panning: false,
@@ -532,6 +535,7 @@ impl InkApp {
                 } => {
                     let pos = Pos2::new(x / zoom, y / zoom);
                     self.pen_pos = pos;
+                    self.wl_pen_hover = (!down).then_some(pos);
                     raw_input.events.push(Event::PointerMoved(pos));
                     if down != self.pen_down {
                         self.pen_down = down;
@@ -548,6 +552,7 @@ impl InkApp {
                     self.eraser_native = eraser;
                 }
                 PenEvent::Leave => {
+                    self.wl_pen_hover = None;
                     if self.pen_down {
                         self.pen_down = false;
                         raw_input.events.push(Event::PointerButton {
@@ -1437,9 +1442,27 @@ impl InkApp {
         }
 
         // ---- painting
+        // Bottom to top: paper, highlighters, rules, text, pen (see `render`).
         let painter = ui.painter_at(canvas);
-        render::paint_background(&painter, &view, &self.doc.page);
+        render::paint_paper(&painter, &view);
         let ppp = ui.ctx().pixels_per_point();
+        let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
+        let moved = self.selection.as_ref().map(|s| Moved {
+            ids: &s.ids,
+            page: s.page,
+            offset: move_off,
+        });
+        // The stroke being drawn, in its own layer.
+        let live = self.active.as_ref().map(|a| (a, a.builder.preview_points(self.settings.predict_pen)));
+        let paint_live = |kind: StrokeKind| {
+            if let Some((a, pts)) = live.as_ref().filter(|(a, _)| a.kind == kind) {
+                render::paint_live(&painter, &view, a.page, a.kind, a.color, a.width, pts, ppp);
+            }
+        };
+        let strokes = &self.doc.strokes;
+        render::paint_strokes(&painter, &view, Layer::Highlight, strokes, &mut self.cache, ppp, moved.as_ref());
+        paint_live(StrokeKind::Highlighter);
+        render::paint_rules(&painter, &view, &self.doc.page);
         let text_move = self.text_press.as_ref().and_then(|tp| {
             if tp.moved {
                 tp.hit.map(|id| (id, tp.now - tp.start))
@@ -1456,20 +1479,8 @@ impl InkApp {
             self.tool == Tool::Text,
         );
 
-        let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
-        let moved = self.selection.as_ref().map(|s| Moved {
-            ids: &s.ids,
-            page: s.page,
-            offset: move_off,
-        });
-        render::paint_strokes(
-            &painter,
-            &view,
-            &self.doc.strokes,
-            &mut self.cache,
-            ppp,
-            moved.as_ref(),
-        );
+        render::paint_strokes(&painter, &view, Layer::Ink, strokes, &mut self.cache, ppp, moved.as_ref());
+        paint_live(StrokeKind::Pen);
 
         // Selection box and lasso outline.
         let blue = color::ACCENT;
@@ -1510,16 +1521,31 @@ impl InkApp {
                 ));
             }
         }
-        if let Some(a) = &self.active {
-            let pts = a.builder.preview_points(self.settings.predict_pen);
-            render::paint_live(&painter, &view, a.page, a.kind, a.color, a.width, &pts, ppp);
-        }
+        // A hovering pen (winit does not report it as a pointer): over a page,
+        // the system pointer gives way to a dot like the stroke it would
+        // draw (OneNote style); the eraser's circle follows it too. Not where
+        // something else (a toolbar, a panel) is on top of the canvas.
+        let ctx = ui.ctx().clone();
+        let pen_hover = self
+            .win_pen
+            .as_ref()
+            .and_then(|p| p.hover())
+            .map(|(x, y)| pos2(x / ppp, y / ppp))
+            .or(self.wl_pen_hover)
+            .filter(|p| canvas.contains(*p) && ctx.layer_id_at(*p) == Some(ui.layer_id()));
         if self.tool == Tool::Eraser {
             if let Some(pos) = canvas_resp
                 .hover_pos()
                 .or(canvas_resp.interact_pointer_pos())
+                .or(pen_hover)
             {
                 render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * scale);
+            }
+        } else if let (Some(pos), Some((kind, rgba, width))) = (pen_hover, self.stroke_params()) {
+            let on_page = view.layout.page_at(view.screen_to_content(pos)).is_some();
+            if on_page && self.active.is_none() {
+                ctx.set_cursor_icon(egui::CursorIcon::None);
+                render::paint_pen_cursor(&painter, pos, kind, rgba, width * scale);
             }
         }
 
