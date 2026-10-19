@@ -17,9 +17,11 @@
 
 use std::fs;
 use std::io::{self, Write};
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 use flate2::{write::ZlibEncoder, Compression};
+use serde::{Deserialize, Serialize};
 
 use crate::model::{Document, PageKind, Stroke, StrokeKind, TextBox};
 use crate::stroke_path::{self, Sample};
@@ -29,9 +31,93 @@ const PX_TO_PT: f32 = 0.75;
 /// Spacing of curve samples in page units.
 const SAMPLE_STEP: f32 = 1.5;
 
+/// Colours of the ink in the PDF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InkColors {
+    /// As drawn.
+    Original,
+    /// Pen and text in black; highlighter in grey (so it stays see-through).
+    Black,
+    /// Everything converted to grey (for printing in black and white).
+    Grayscale,
+}
+
 pub struct PdfOptions {
     /// Draw the ruled / grid lines of the page style.
     pub include_rules: bool,
+    /// Pages to export (0-based, inclusive); `None` = all.
+    pub pages: Option<RangeInclusive<u32>>,
+    pub include_highlighter: bool,
+    pub include_text: bool,
+    /// Fill the note's page with the paper colour (otherwise white).
+    pub paper_background: bool,
+    pub ink: InkColors,
+    /// Output page size in page units (px); the note's page is scaled to fit
+    /// inside `margin` and centred. `None` = the note's own size.
+    pub page_size: Option<(f32, f32)>,
+    /// Margin around the scaled page, in page units (with `page_size` only).
+    pub margin: f32,
+    /// Document metadata.
+    pub title: String,
+    pub author: String,
+}
+
+impl Default for PdfOptions {
+    fn default() -> Self {
+        Self {
+            include_rules: true,
+            pages: None,
+            include_highlighter: true,
+            include_text: true,
+            paper_background: false,
+            ink: InkColors::Original,
+            page_size: None,
+            margin: 0.0,
+            title: "InkNote".to_owned(),
+            author: String::new(),
+        }
+    }
+}
+
+impl PdfOptions {
+    /// The note pages that end up in the PDF, in order.
+    pub fn page_list(&self, doc: &Document) -> Vec<u32> {
+        let count = doc.page_count.max(1);
+        match &self.pages {
+            None => (0..count).collect(),
+            Some(r) => {
+                let (a, b) = (*r.start().min(r.end()), *r.start().max(r.end()));
+                (a.min(count - 1)..=b.min(count - 1)).collect()
+            }
+        }
+    }
+
+    /// Output page size, scale and offset of the note's page on it (page units).
+    fn placement(&self, doc: &Document) -> ((f32, f32), f32, (f32, f32)) {
+        let (pw, ph) = (doc.page_width, doc.page_height);
+        match self.page_size {
+            None => ((pw, ph), 1.0, (0.0, 0.0)),
+            Some((w, h)) => {
+                let m = self.margin.clamp(0.0, w.min(h) * 0.4);
+                let s = ((w - 2.0 * m) / pw).min((h - 2.0 * m) / ph).max(0.01);
+                ((w, h), s, ((w - pw * s) * 0.5, (h - ph * s) * 0.5))
+            }
+        }
+    }
+
+    /// Ink colour (0..1) for a stroke or text of colour `rgb`.
+    fn ink_rgb(&self, rgb: [u8; 3], highlighter: bool) -> (f32, f32, f32) {
+        let f = |v: u8| v as f32 / 255.0;
+        let gray = || {
+            let l = 0.299 * f(rgb[0]) + 0.587 * f(rgb[1]) + 0.114 * f(rgb[2]);
+            (l, l, l)
+        };
+        match (self.ink, highlighter) {
+            (InkColors::Original, _) => (f(rgb[0]), f(rgb[1]), f(rgb[2])),
+            (InkColors::Black, false) => (0.0, 0.0, 0.0),
+            (InkColors::Black, true) | (InkColors::Grayscale, _) => gray(),
+        }
+    }
 }
 
 /// Writes `doc` to `path` (via a temp file, so a failure never truncates an
@@ -46,13 +132,14 @@ pub fn export_pdf(doc: &Document, path: &Path, opts: &PdfOptions) -> io::Result<
 // ------------------------------------------------------------ file layout
 
 fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
-    let pages = doc.page_count.max(1) as usize;
+    let page_list = opts.page_list(doc);
+    let pages = page_list.len();
 
     // One ExtGState per distinct highlighter alpha.
     let mut alphas: Vec<u8> = doc
         .strokes
         .iter()
-        .filter(|s| s.kind == StrokeKind::Highlighter)
+        .filter(|s| s.kind == StrokeKind::Highlighter && opts.include_highlighter)
         .map(|s| s.color[3])
         .collect();
     alphas.sort_unstable();
@@ -81,7 +168,12 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
         &format!("<< /ExtGState << {gs_entries}>> /Font << /F1 {font_obj} 0 R >> >>"),
     );
 
-    pdf.obj(4, "<< /Title (InkNote) /Producer (InkNote) >>");
+    let author = if opts.author.trim().is_empty() {
+        String::new()
+    } else {
+        format!("/Author ({}) ", pdf_string(opts.author.trim()))
+    };
+    pdf.obj(4, &format!("<< /Title ({}) {author}/Producer (InkNote) >>", pdf_string(&opts.title)));
 
     for (i, a) in alphas.iter().enumerate() {
         let v = *a as f32 / 255.0;
@@ -94,9 +186,10 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     );
 
-    let (pw, ph) = (doc.page_width * PX_TO_PT, doc.page_height * PX_TO_PT);
-    for p in 0..pages {
-        let content = page_content(doc, p as u32, opts);
+    let ((out_w, out_h), _, _) = opts.placement(doc);
+    let (pw, ph) = (out_w * PX_TO_PT, out_h * PX_TO_PT);
+    for (p, &page) in page_list.iter().enumerate() {
+        let content = page_content(doc, page, opts);
         let packed = deflate(content.as_bytes())?;
         let page_obj = first_page_obj + 2 * p;
         pdf.obj(
@@ -175,21 +268,39 @@ impl Pdf {
 
 fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
     let mut c = String::with_capacity(32 * 1024);
-    // Page space (y down, px) -> PDF space (y up, pt).
+    // Note page space (y down, px) -> PDF space (y up, pt), scaled and
+    // centred on the output page.
+    let ((_, out_h), s, (ox, oy)) = opts.placement(doc);
+    let a = PX_TO_PT * s;
     c.push_str(&format!(
-        "q\n{k} 0 0 -{k} 0 {} cm\n",
-        num(doc.page_height * PX_TO_PT, 3),
-        k = PX_TO_PT
+        "q\n{} 0 0 -{} {} {} cm\n",
+        num(a, 5),
+        num(a, 5),
+        num(ox * PX_TO_PT, 3),
+        num((out_h - oy) * PX_TO_PT, 3),
     ));
 
+    if opts.paper_background {
+        // The paper colour of the screen (252, 251, 247).
+        c.push_str(&format!(
+            "0.988 0.984 0.969 rg\n0 0 {} {} re f\n",
+            num(doc.page_width, 2),
+            num(doc.page_height, 2)
+        ));
+    }
     if opts.include_rules && doc.page.kind != PageKind::Blank {
         write_rules(&mut c, doc);
     }
-    for t in doc.texts.iter().filter(|t| t.page == page) {
-        write_text(&mut c, t);
+    if opts.include_text {
+        for t in doc.texts.iter().filter(|t| t.page == page) {
+            write_text(&mut c, t, opts);
+        }
     }
     for s in doc.strokes.iter().filter(|s| s.page == page) {
-        write_stroke(&mut c, s);
+        if s.kind == StrokeKind::Highlighter && !opts.include_highlighter {
+            continue;
+        }
+        write_stroke(&mut c, s, opts);
     }
     c.push_str("Q\n");
     c
@@ -216,15 +327,11 @@ fn write_rules(c: &mut String, doc: &Document) {
 /// Text box: one `Tj` per stored line, so the PDF breaks lines exactly like the
 /// screen. Only characters of the WinAnsi (Latin-1 like) set can be printed;
 /// anything else becomes `?`.
-fn write_text(c: &mut String, t: &TextBox) {
+fn write_text(c: &mut String, t: &TextBox, opts: &PdfOptions) {
     if t.lines.iter().all(|l| l.trim().is_empty()) {
         return;
     }
-    let (r, g, b) = (
-        t.color[0] as f32 / 255.0,
-        t.color[1] as f32 / 255.0,
-        t.color[2] as f32 / 255.0,
-    );
+    let (r, g, b) = opts.ink_rgb(t.color, false);
     c.push_str(&format!(
         "q\n{} {} {} rg\nBT\n/F1 {} Tf\n",
         num(r, 3),
@@ -283,16 +390,13 @@ fn pdf_string(s: &str) -> String {
     out
 }
 
-fn write_stroke(c: &mut String, s: &Stroke) {
+fn write_stroke(c: &mut String, s: &Stroke, opts: &PdfOptions) {
     let samples = stroke_path::centerline(s.kind, s.width, &s.points, SAMPLE_STEP);
     if samples.is_empty() {
         return;
     }
-    let (r, g, b) = (
-        s.color[0] as f32 / 255.0,
-        s.color[1] as f32 / 255.0,
-        s.color[2] as f32 / 255.0,
-    );
+    let rgb = [s.color[0], s.color[1], s.color[2]];
+    let (r, g, b) = opts.ink_rgb(rgb, s.kind == StrokeKind::Highlighter);
     c.push_str(&format!(
         "q\n{r} {g} {b} RG {r} {g} {b} rg\n1 J 1 j\n",
         r = num(r, 3),
@@ -413,7 +517,7 @@ mod tests {
 
     #[test]
     fn structure_is_consistent() {
-        let bytes = build_pdf(&sample_doc(), &PdfOptions { include_rules: true }).unwrap();
+        let bytes = build_pdf(&sample_doc(), &PdfOptions::default()).unwrap();
         assert!(bytes.starts_with(b"%PDF-1.5"));
         assert!(bytes.ends_with(b"%%EOF\n"));
 
@@ -437,6 +541,53 @@ mod tests {
             let expect = format!("{} 0 obj", i + 1);
             assert_eq!(&bytes[off..off + expect.len()], expect.as_bytes());
         }
+    }
+
+    fn pdf_text(opts: &PdfOptions) -> String {
+        String::from_utf8_lossy(&build_pdf(&sample_doc(), opts).unwrap()).into_owned()
+    }
+
+    #[test]
+    fn page_ranges() {
+        let doc = sample_doc();
+        let all = PdfOptions::default();
+        assert_eq!(all.page_list(&doc), vec![0, 1]);
+        let one = PdfOptions { pages: Some(1..=1), ..Default::default() };
+        assert_eq!(one.page_list(&doc), vec![1]);
+        // Out of range and reversed ranges are clamped / ordered.
+        let wild = PdfOptions { pages: Some(5..=0), ..Default::default() };
+        assert_eq!(wild.page_list(&doc), vec![0, 1]);
+        assert!(pdf_text(&one).contains("/Count 1 "));
+    }
+
+    #[test]
+    fn fits_onto_another_page_size() {
+        let doc = sample_doc();
+        // US Letter, 0.5 in margins.
+        let opts = PdfOptions { page_size: Some((816.0, 1056.0)), margin: 48.0, ..Default::default() };
+        let ((w, h), s, (ox, oy)) = opts.placement(&doc);
+        assert_eq!((w, h), (816.0, 1056.0));
+        assert!(s < 1.0 && ox >= 47.9 && oy >= 47.9);
+        // Centred: equal space left and right, top and bottom.
+        assert!((w - doc.page_width * s - 2.0 * ox).abs() < 0.01);
+        assert!((h - doc.page_height * s - 2.0 * oy).abs() < 0.01);
+        assert!(pdf_text(&opts).contains("/MediaBox [0 0 612 792]"));
+    }
+
+    #[test]
+    fn ink_colours_and_filters() {
+        let black = PdfOptions { ink: InkColors::Black, ..Default::default() };
+        assert_eq!(black.ink_rgb([10, 20, 200], false), (0.0, 0.0, 0.0));
+        let (r, g, b) = black.ink_rgb([255, 235, 0], true);
+        assert!(r == g && g == b && r > 0.5, "highlighter stays light grey");
+        let gray = PdfOptions { ink: InkColors::Grayscale, ..Default::default() };
+        let (r, g, b) = gray.ink_rgb([10, 20, 200], false);
+        assert!(r == g && g == b);
+
+        let no_hl = PdfOptions { include_highlighter: false, ..Default::default() };
+        assert!(!pdf_text(&no_hl).contains("/ExtGState <<  /GS"));
+        assert!(pdf_text(&PdfOptions::default()).contains("/GS96"));
+        assert!(!pdf_text(&no_hl).contains("/GS96 gs"));
     }
 
     #[test]

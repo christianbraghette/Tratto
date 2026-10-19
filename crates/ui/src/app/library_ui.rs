@@ -25,7 +25,6 @@ use crate::theme::{self, color, radius, size, space};
 const CARD_W: f32 = 168.0;
 const COVER_W: f32 = 168.0;
 const COVER_H: f32 = 118.0;
-const RECENT_COUNT: usize = 12;
 
 // ------------------------------------------------------------------ state
 
@@ -163,7 +162,7 @@ impl InkApp {
                     } else if let Some(nb) = &notebook {
                         notebook_view(ui, nb, &self.lib_ui.section, &root, &mut acts);
                     } else {
-                        home_view(ui, &self.library, &root, &mut acts);
+                        home_view(ui, &self.library, &root, self.settings.recent_count, &mut acts);
                     }
                 });
             });
@@ -337,6 +336,15 @@ impl InkApp {
             Ok(p) => {
                 self.refresh_library();
                 self.open_note(&p);
+                // The paper chosen for new notes (Settings).
+                if self.note_path.as_deref() == Some(p.as_path()) {
+                    let s = &self.settings;
+                    self.doc.page_width = s.new_page_width;
+                    self.doc.page_height = s.new_page_height;
+                    self.doc.page.kind = s.new_page_kind;
+                    self.doc.page.spacing = s.new_page_spacing;
+                    self.save_note(false);
+                }
             }
             Err(e) => self.toast(format!("Cannot create note: {e}")),
         }
@@ -459,8 +467,8 @@ fn heading(ui: &mut Ui, text: &str) {
     ui.add_space(space::M);
 }
 
-fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, acts: &mut Vec<Act>) {
-    let recent = lib.recent(RECENT_COUNT);
+fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, recent_count: usize, acts: &mut Vec<Act>) {
+    let recent = lib.recent(recent_count);
     if recent.is_empty() && lib.notebooks.is_empty() {
         ui.add_space(80.0);
         ui.vertical_centered(|ui| {
@@ -732,7 +740,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// "Notebook › Section", or "Quick notes" for notes at the library root.
-fn location(root: &Path, note: &Path) -> String {
+pub(super) fn location(root: &Path, note: &Path) -> String {
     let rel = note.parent().and_then(|p| p.strip_prefix(root).ok());
     match rel {
         Some(r) if r.components().count() > 0 => r
@@ -745,7 +753,7 @@ fn location(root: &Path, note: &Path) -> String {
 }
 
 /// Relative time for recent changes, calendar date (UTC) for older ones.
-fn when(ts: u64) -> String {
+pub(super) fn when(ts: u64) -> String {
     let now = now_secs();
     let d = now.saturating_sub(ts);
     match d {

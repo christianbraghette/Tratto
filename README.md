@@ -124,9 +124,9 @@ buttons are icons; hover over one to see its name.
 
 | Where | Buttons |
 | --- | --- |
-| Top-centre notch (or bottom, see **View**) | Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size, Undo, Redo |
+| Top-centre notch (or bottom, see **View**) | Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size, Undo, Redo, zoom out / zoom level / zoom in |
 | Top-left notch | **Pages** (page panel) |
-| Bottom-left notch | **Settings** (settings panel) |
+| Bottom-left notch | **Note settings** (paper, pages, export) |
 | Top-right notch | **Library** (toggle the notebook panel) |
 
 If the window is too narrow for the tool notch to fit between the corner
@@ -139,7 +139,7 @@ dragging their inner edge, and both have a context menu (right-click):
   with **Pages** at the top and **Settings** at the bottom, in the same places
   as their notches. Next to it, the panel shows either the page previews (drag
   to reorder; right-click a page to go to it, insert a page before or after
-  it, or delete it) or the settings. Click the other button to switch, or the
+  it, or delete it) or the note settings. Click the other button to switch, or the
   highlighted one to close the panel. Each view keeps its own width. The page
   list follows the page you are on, and the dashed tile at its end adds a page.
 - **Notebook panel** (right): the sections and notes of the open note's
@@ -158,11 +158,24 @@ the note; Enter or clicking elsewhere saves, Escape cancels.
 To pan, drag on the grey area around the pages, or use the scrollbars, the
 mouse wheel or a touchpad. Flick the drag and the view keeps gliding.
 
-The settings include zoom, paper size and orientation, paper style and
-line spacing, pen prediction, PDF export options and
-**Save now**. Notes save automatically, so you don't need to save before
-closing. **File > Close note** (`Ctrl+W`) saves the note and goes back to the
-library screen.
+### Settings
+
+There are two kinds of settings:
+
+- **Note settings** (the gear button in the editor's bottom-left corner) are
+  stored in the note: paper size and orientation, paper style and line
+  spacing, and the pages. They also show when the note was created and
+  modified and where it is, with **Save now** and **Export PDF**.
+- **Settings** (**File > Settings**, `Ctrl+,`, also on the library screen)
+  apply to every note: interface size, title bar and toolbar position; smooth
+  scrolling and scroll speed; pen tip prediction, pressure sensitivity, the
+  pen side button and the eraser size; the paper of new notes; the autosave
+  delay; the library folder and the number of recent notes. **Reset to defaults** restores them (the library
+  folder and the panels are kept).
+
+Notes save automatically a moment after each change (see **Settings**), so you
+don't need to save before closing. **File > Close note** (`Ctrl+W`) saves the
+note and goes back to the library screen.
 
 ### Keyboard shortcuts
 
@@ -170,7 +183,7 @@ library screen.
 | --- | --- |
 | `Ctrl+N` | New note (in the same notebook or section) |
 | `Ctrl+S` | Save now |
-| `Ctrl+E` | Export the note as PDF |
+| `Ctrl+E` | Export the note as PDF (opens the export dialog) |
 | `Ctrl+W` | Close the note and go back to the library screen |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
@@ -183,6 +196,7 @@ library screen.
 | `Page Up` / `Page Down` | Scroll by one screen (animated) |
 | `Home` / `End` | Go to the first / last page |
 | `F11` | Toggle fullscreen |
+| `Ctrl+,` | Settings |
 | `Ctrl+Q` | Exit |
 
 On macOS, use `Cmd` instead of `Ctrl`. The list is also under **Help >
@@ -190,9 +204,22 @@ Keyboard shortcuts**.
 
 ### PDF export
 
-`Ctrl+E` (or **Export PDF** in the settings) writes `<note name>.pdf` next to
-the note file. Each note page becomes one PDF page. Ink is exported as
-vector paths that follow the same smoothed curves as on screen.
+`Ctrl+E` (**File > Export as PDF**, or **Export PDF** in the note settings)
+opens the export dialog:
+
+- **Pages**: all, the current one, or a range
+- **Content**: ruled lines and grid, highlighter strokes, text boxes, and the
+  paper colour as background
+- **Ink colours**: as drawn, black (highlighter in grey) or grayscale
+- **Page size**: the note's own, or a standard size (A4, Letter, ...) with each
+  page scaled to fit and centred, with an adjustable margin
+- **Document**: the PDF's title and author
+- **File**: where to write it (next to the note, named after its title, by
+  default) and whether to open it afterwards
+
+The dialog remembers your choices, except the pages, the title and the file.
+Each exported note page becomes one PDF page. Ink is exported as vector paths
+that follow the same smoothed curves as on screen.
 
 ## Your Data
 

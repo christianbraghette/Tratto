@@ -54,7 +54,10 @@ pub(super) enum Command {
     Zoom(ZoomMode),
     Fullscreen,
     ToolbarAt(ToolbarPosition),
+    /// Global settings window.
     Settings,
+    /// The open note's settings (left panel).
+    NoteSettings,
     InsertPage(u32),
     DeletePage(u32),
     PaperStyle(PageKind),
@@ -191,6 +194,7 @@ impl InkApp {
     /// borders: once per frame, after the screen.
     pub(super) fn finish_chrome(&mut self, ctx: &egui::Context) {
         self.help_windows(ctx);
+        self.global_settings_window(ctx);
         chrome::window_frame(ctx, self.window_state(ctx));
         for cmd in std::mem::take(&mut self.pending) {
             self.run_command(ctx, cmd);
@@ -216,11 +220,11 @@ impl InkApp {
             push(entry(ui, icon::DOWNLOAD_SIMPLE, "Import note file...", "", true), ui, Command::Import);
             ui.separator();
             push(entry(ui, icon::FLOPPY_DISK, "Save", &shortcut(&ctx, cmd, Key::S), editor), ui, Command::Save);
-            push(entry(ui, icon::FILE_PDF, "Export as PDF", &shortcut(&ctx, cmd, Key::E), editor), ui, Command::ExportPdf);
+            push(entry(ui, icon::FILE_PDF, "Export as PDF...", &shortcut(&ctx, cmd, Key::E), editor), ui, Command::ExportPdf);
             push(entry(ui, icon::BOOKS, "Close note", &shortcut(&ctx, cmd, Key::W), editor), ui, Command::CloseNote);
             ui.separator();
             push(entry(ui, icon::FOLDER_OPEN, "Library folder...", "", true), ui, Command::LibraryFolder);
-            push(entry(ui, icon::GEAR_SIX, "Settings...", "", editor), ui, Command::Settings);
+            push(entry(ui, icon::GEAR_SIX, "Settings...", &shortcut(&ctx, cmd, Key::Comma), true), ui, Command::Settings);
             ui.separator();
             push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
         });
@@ -259,7 +263,7 @@ impl InkApp {
                     push(check(ui, kind == k, label, ""), ui, Command::PaperStyle(k));
                 }
                 ui.separator();
-                push(entry(ui, icon::GEAR_SIX, "Page setup...", "", true), ui, Command::Settings);
+                push(entry(ui, icon::GEAR_SIX, "Note settings...", "", true), ui, Command::NoteSettings);
             });
         }
 
@@ -400,6 +404,9 @@ impl InkApp {
             if i.consume_key(cmd, Key::N) {
                 out.push(Command::NewNote);
             }
+            if i.consume_key(cmd, Key::Comma) {
+                out.push(Command::Settings);
+            }
             if editor {
                 if i.consume_key(cmd, Key::W) {
                     out.push(Command::CloseNote);
@@ -456,7 +463,7 @@ impl InkApp {
             Command::Save if editor => {
                 self.save_note(true);
             }
-            Command::ExportPdf if editor => self.export_pdf(),
+            Command::ExportPdf if editor => self.open_export_dialog(),
             Command::CloseNote if editor => self.close_note(ctx),
             Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::Undo => self.undo(),
@@ -511,7 +518,8 @@ impl InkApp {
                 }
             }
             Command::ToolbarAt(p) => self.settings.toolbar_position = p,
-            Command::Settings if editor => self.settings.left_panel = LeftPanel::Settings,
+            Command::Settings => self.global_settings_open = true,
+            Command::NoteSettings if editor => self.settings.left_panel = LeftPanel::Settings,
             Command::InsertPage(i) if editor => self.insert_page(i),
             Command::DeletePage(i) if editor => self.delete_page(i),
             Command::PaperStyle(k) if editor => self.doc.page.kind = k,
@@ -576,6 +584,7 @@ impl InkApp {
                     ("Home / End".to_owned(), "First / last page"),
                     (shortcut(ctx, none, Key::F11), "Full screen"),
                     ("Right click".to_owned(), "Context menu"),
+                    (shortcut(ctx, c, Key::Comma), "Settings"),
                     (shortcut(ctx, c, Key::Q), "Exit"),
                 ];
                 egui::Grid::new("shortcuts_grid").num_columns(2).spacing([24.0, 6.0]).striped(true).show(ui, |ui| {

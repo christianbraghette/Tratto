@@ -19,7 +19,7 @@ use eframe::egui::{
 use egui_phosphor::regular as icon;
 
 use crate::scrollbar;
-use crate::settings::{LeftPanel, Settings, ToolStyle, ToolbarPosition};
+use crate::settings::{LeftPanel, Settings, ToolStyle, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color, radius, space};
 
 
@@ -37,6 +37,8 @@ pub enum Tool {
 pub enum ToolbarEvent {
     Undo,
     Redo,
+    ZoomIn,
+    ZoomOut,
 }
 
 impl Tool {
@@ -233,7 +235,7 @@ pub fn pages_button(ui: &mut egui::Ui, shown: bool) -> bool {
 
 /// Returns true when clicked; `shown` highlights it.
 pub fn settings_button(ui: &mut egui::Ui, shown: bool) -> bool {
-    let tip = if shown { "Hide settings" } else { "Settings" };
+    let tip = if shown { "Hide note settings" } else { "Note settings: paper, pages, export" };
     ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::GEAR_SIX)))
         .on_hover_text(tip)
         .clicked()
@@ -432,6 +434,25 @@ fn contents(
     let redo = egui::Button::new(theme::icon(icon::ARROW_U_UP_RIGHT));
     if ui.add_enabled(can_redo, redo).on_hover_text("Redo (Ctrl+Y)").clicked() {
         event = Some(ToolbarEvent::Redo);
+    }
+    ui.separator();
+
+    // Zoom: out, the presets, in.
+    if ui.button(theme::icon(icon::MAGNIFYING_GLASS_MINUS)).on_hover_text("Zoom out (Ctrl+Minus)").clicked() {
+        event = Some(ToolbarEvent::ZoomOut);
+    }
+    egui::ComboBox::from_id_salt("toolbar_zoom")
+        .selected_text(settings.zoom.label())
+        .width(84.0)
+        .show_ui(ui, |ui| {
+            for z in ZoomMode::PRESETS {
+                ui.selectable_value(&mut settings.zoom, z, z.label());
+            }
+        })
+        .response
+        .on_hover_text("Zoom (Ctrl + mouse wheel or pinch zooms around the pointer)");
+    if ui.button(theme::icon(icon::MAGNIFYING_GLASS_PLUS)).on_hover_text("Zoom in (Ctrl+Plus)").clicked() {
+        event = Some(ToolbarEvent::ZoomIn);
     }
     event
 }
