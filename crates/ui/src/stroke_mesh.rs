@@ -1,10 +1,12 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Anti-aliased stroke tessellation.
 //!
 //! A stroke is turned into one triangle mesh:
 //!
-//! 1. The sparse (already filtered) control points are interpolated with
-//!    quadratic Béziers through the segment midpoints (C1-smooth, no
-//!    overshoot), sampled densely enough that curves look round at any zoom.
+//! 1. The smoothed centreline comes from [`inknote_core::stroke_path`],
+//!    sampled densely enough that curves look round at any zoom.
 //! 2. A ribbon with 4 vertices per sample is built: two solid inner vertices
 //!    and two fully transparent outer vertices, one `aa` (= 1 physical pixel)
 //!    further out. The GPU interpolates the alpha across that fringe, which
@@ -12,31 +14,17 @@
 //! 3. Round caps (half-discs with the same fringe) close both ends; a
 //!    single-point stroke becomes a full disc.
 //!
-//! The pressure-dependent radius is interpolated along the same curve, so
-//! width changes are smooth too.
-//!
 //! All output positions are `document_units * scale` (no translation), which
 //! lets the cache reuse a mesh while scrolling.
 
 use std::f32::consts::{PI, TAU};
 
 use eframe::egui::{epaint::Mesh, pos2, vec2, Color32, Pos2, Vec2};
-
-use crate::model::{Point, StrokeKind};
+use inknote_core::model::{Point, StrokeKind};
+use inknote_core::stroke_path;
 
 /// Target spacing of generated curve samples, in physical pixels.
 const SAMPLE_STEP_PX: f32 = 2.5;
-
-#[derive(Clone, Copy)]
-struct Node {
-    p: Pos2,
-    r: f32,
-}
-
-/// Pressure -> width multiplier.
-pub fn pressure_factor(p: f32) -> f32 {
-    0.35 + 0.65 * p.clamp(0.0, 1.0)
-}
 
 /// Appends the tessellated stroke to `mesh`.
 ///
@@ -57,32 +45,19 @@ pub fn tessellate(
     let solid = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
     let half_aa = aa * 0.5;
 
-    let nodes: Vec<Node> = pts
-        .iter()
-        .map(|p| {
-            let w = match kind {
-                StrokeKind::Pen => width * pressure_factor(p.pressure),
-                StrokeKind::Highlighter => width,
-            };
-            Node {
-                p: pos2(p.x * scale, p.y * scale),
-                // Never thinner than one physical pixel.
-                r: (w * scale * 0.5).max(half_aa),
-            }
-        })
-        .collect();
-
-    let dense = dedup(smooth(&nodes, SAMPLE_STEP_PX * aa), 0.05 * aa);
+    // Never thinner than one physical pixel.
+    let dense = stroke_path::smoothed(kind, width, pts, scale, half_aa, SAMPLE_STEP_PX * aa, 0.05 * aa);
     let n = dense.len();
+    let at = |i: usize| pos2(dense[i].x, dense[i].y);
 
     if n == 1 {
         let r = dense[0].r;
-        add_arc(mesh, dense[0].p, vec2(1.0, 0.0), vec2(0.0, 1.0), r - half_aa, r + half_aa, solid, TAU, arc_segments(r, aa) * 2);
+        add_arc(mesh, at(0), vec2(1.0, 0.0), vec2(0.0, 1.0), r - half_aa, r + half_aa, solid, TAU, arc_segments(r, aa) * 2);
         return;
     }
 
     // Unit direction of every segment.
-    let dirs: Vec<Vec2> = dense.windows(2).map(|w| unit(w[1].p - w[0].p)).collect();
+    let dirs: Vec<Vec2> = (0..n - 1).map(|i| unit(at(i + 1) - at(i))).collect();
 
     // ---- ribbon
     let base = mesh.vertices.len() as u32;
@@ -102,7 +77,7 @@ pub fn tessellate(
         let r = dense[i].r;
         let r_in = (r - half_aa).max(0.0) * s;
         let r_out = (r + half_aa) * s;
-        let c = dense[i].p;
+        let c = at(i);
         mesh.colored_vertex(c + nrm * r_out, Color32::TRANSPARENT);
         mesh.colored_vertex(c + nrm * r_in, solid);
         mesh.colored_vertex(c - nrm * r_in, solid);
@@ -120,95 +95,9 @@ pub fn tessellate(
     }
 
     // ---- round caps
-    let first = dense[0];
-    add_arc(mesh, first.p, perp(dirs[0]), -dirs[0], first.r - half_aa, first.r + half_aa, solid, PI, arc_segments(first.r, aa));
-    let last = dense[n - 1];
-    add_arc(mesh, last.p, perp(dirs[n - 2]), dirs[n - 2], last.r - half_aa, last.r + half_aa, solid, PI, arc_segments(last.r, aa));
-}
-
-/// One sample of a stroke's smoothed centreline, in page units.
-#[derive(Clone, Copy, Debug)]
-pub struct Sample {
-    pub x: f32,
-    pub y: f32,
-    /// Half of the local stroke width.
-    pub r: f32,
-}
-
-/// The same curve that is rendered on screen (Bézier through midpoints, with
-/// pressure-dependent radius), sampled every `step` page units. Used by the
-/// PDF export so the printed ink matches what is seen.
-pub fn centerline(kind: StrokeKind, width: f32, pts: &[Point], step: f32) -> Vec<Sample> {
-    if pts.is_empty() {
-        return Vec::new();
-    }
-    let nodes: Vec<Node> = pts
-        .iter()
-        .map(|p| {
-            let w = match kind {
-                StrokeKind::Pen => width * pressure_factor(p.pressure),
-                StrokeKind::Highlighter => width,
-            };
-            Node { p: pos2(p.x, p.y), r: w * 0.5 }
-        })
-        .collect();
-    dedup(smooth(&nodes, step), 0.01)
-        .into_iter()
-        .map(|n| Sample { x: n.p.x, y: n.p.y, r: n.r })
-        .collect()
-}
-
-/// Quadratic Bézier through segment midpoints, using the points as controls.
-fn smooth(nodes: &[Node], step: f32) -> Vec<Node> {
-    let n = nodes.len();
-    if n < 3 {
-        return nodes.to_vec();
-    }
-    let mut out = Vec::with_capacity(n * 3);
-    out.push(nodes[0]);
-    for i in 1..n - 1 {
-        let a = mid(nodes[i - 1], nodes[i]);
-        let c = nodes[i];
-        let b = mid(nodes[i], nodes[i + 1]);
-        let len = (c.p - a.p).length() + (b.p - c.p).length();
-        let k = ((len / step).ceil() as usize).clamp(1, 32);
-        // The curve of segment i starts where the previous one ended.
-        let start = if i == 1 { 0 } else { 1 };
-        for j in start..=k {
-            out.push(bezier(a, c, b, j as f32 / k as f32));
-        }
-    }
-    out.push(nodes[n - 1]);
-    out
-}
-
-fn dedup(nodes: Vec<Node>, min_dist: f32) -> Vec<Node> {
-    let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
-    for n in nodes {
-        if out.last().map_or(true, |l| (n.p - l.p).length() >= min_dist) {
-            out.push(n);
-        }
-    }
-    if out.is_empty() {
-        out.push(Node { p: Pos2::ZERO, r: 0.5 });
-    }
-    out
-}
-
-fn mid(a: Node, b: Node) -> Node {
-    Node { p: pos2((a.p.x + b.p.x) * 0.5, (a.p.y + b.p.y) * 0.5), r: (a.r + b.r) * 0.5 }
-}
-
-fn bezier(a: Node, c: Node, b: Node, t: f32) -> Node {
-    let u = 1.0 - t;
-    let (wa, wc, wb) = (u * u, 2.0 * u * t, t * t);
-    Node {
-        p: pos2(
-            a.p.x * wa + c.p.x * wc + b.p.x * wb,
-            a.p.y * wa + c.p.y * wc + b.p.y * wb,
-        ),
-        r: a.r * wa + c.r * wc + b.r * wb,
-    }
+    let (r0, r1) = (dense[0].r, dense[n - 1].r);
+    add_arc(mesh, at(0), perp(dirs[0]), -dirs[0], r0 - half_aa, r0 + half_aa, solid, PI, arc_segments(r0, aa));
+    add_arc(mesh, at(n - 1), perp(dirs[n - 2]), dirs[n - 2], r1 - half_aa, r1 + half_aa, solid, PI, arc_segments(r1, aa));
 }
 
 fn unit(v: Vec2) -> Vec2 {

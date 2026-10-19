@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The library screen: recent notes, notebook covers, sections and dialogs.
 //!
 //! This is a child module of `app`, so it can use the editor state directly
@@ -11,10 +14,11 @@ use eframe::egui::{
     Sense, Shape, Stroke, TextEdit, Ui,
 };
 
+use inknote_core::library::{self, NoteInfo, NotebookInfo};
+use inknote_core::storage::{now_secs, Preview};
+
 use super::InkApp;
-use crate::library::{self, NoteInfo, NotebookInfo};
 use crate::render::PAGE_COLOR;
-use crate::storage::{now_secs, Preview};
 
 const CARD_W: f32 = 168.0;
 const COVER_W: f32 = 168.0;

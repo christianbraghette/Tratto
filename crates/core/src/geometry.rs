@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Small geometry helpers.
 
-use eframe::egui::Pos2;
+use emath::Pos2;
 
 /// Shortest distance from point `p` to the segment `a`–`b`.
 pub fn point_segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {

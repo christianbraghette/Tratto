@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Turns raw pointer samples into a smooth control polygon with minimal latency.
 //!
 //! * **Spatial filter** – samples closer than `min_dist` to the last accepted

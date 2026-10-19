@@ -1,25 +1,25 @@
-[package]
-name = "inknote"
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/ui"]
+# `cargo run` / `cargo build` at the root target the application.
+default-members = ["crates/ui"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Minimal cross-platform digital handwriting note-taking app (egui + wgpu)"
+rust-version = "1.85"
+authors = ["Christian Braghette <christianbraghette@gmail.com>"]
+# Also available under a commercial license, see README.md.
+license = "GPL-3.0-or-later"
+repository = "https://github.com/christianbraghette/inklav"
 
-[dependencies]
-# Default features already include the Wayland + X11 backends and default fonts.
-# `wgpu` adds the wgpu renderer, `persistence` lets us store UI settings between runs.
+[workspace.dependencies]
+inknote-core = { path = "crates/core" }
+# `emath` is the math crate egui is built on; sharing it keeps core types
+# (Pos2, Rect) directly usable by the UI without pulling egui into core.
+emath = "0.29"
 eframe = { version = "0.29", features = ["wgpu", "persistence"] }
 serde = { version = "1", features = ["derive"] }
-bincode = "1.3"
-raw-window-handle = "0.6"
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-windows-sys = "0.61.2"
-
-# Native Wayland tablet (pen) support. Versions match what winit 0.30 uses so
-# there is a single wayland-client in the dependency tree.
-[target.'cfg(target_os = "linux")'.dependencies]
-wayland-client = "0.31"
-wayland-backend = { version = "0.3", features = ["client_system"] }
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 
 [profile.dev]
 opt-level = 1

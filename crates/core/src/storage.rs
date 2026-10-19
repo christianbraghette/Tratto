@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Note files.
 //!
 //! v4 layout:

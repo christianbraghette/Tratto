@@ -1615,12 +1615,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "inknote"
+name = "inknote-core"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "eframe",
+ "emath",
  "flate2",
+ "serde",
+]
+
+[[package]]
+name = "inknote-ui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "inknote-core",
  "raw-window-handle",
  "serde",
  "wayland-backend",

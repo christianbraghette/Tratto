@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Painting: pages, cached anti-aliased stroke meshes, eraser cursor.
 
 use std::collections::{HashMap, HashSet};
@@ -7,7 +10,8 @@ use eframe::egui::{
     Stroke as UiStroke, Vec2,
 };
 
-use crate::model::{PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
+use inknote_core::model::{PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
+
 use crate::stroke_mesh;
 use crate::view::View;
 

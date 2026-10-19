@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Pen side button and eraser end on Windows.
 //!
 //! winit 0.30 reports a Windows pen as a touch contact (position + pressure)

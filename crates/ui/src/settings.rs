@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Persisted UI settings (stored through eframe's storage, not in the note file).
 
 use serde::{Deserialize, Serialize};
@@ -84,7 +87,7 @@ impl Default for Settings {
             zoom: ZoomMode::Percent(100),
             pages_panel_open: false,
             pdf_rules: true,
-            library_root: crate::library::default_root().to_string_lossy().into_owned(),
+            library_root: inknote_core::library::default_root().to_string_lossy().into_owned(),
         }
     }
 }

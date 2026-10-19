@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Vector PDF export.
 //!
 //! A small hand-written PDF 1.5 writer (no external PDF crate, so there is no
@@ -19,7 +22,7 @@ use std::path::Path;
 use flate2::{write::ZlibEncoder, Compression};
 
 use crate::model::{Document, PageKind, Stroke, StrokeKind, TextBox};
-use crate::stroke_mesh::{self, Sample};
+use crate::stroke_path::{self, Sample};
 
 /// 1 px (1/96 in) in PDF points (1/72 in).
 const PX_TO_PT: f32 = 0.75;
@@ -281,7 +284,7 @@ fn pdf_string(s: &str) -> String {
 }
 
 fn write_stroke(c: &mut String, s: &Stroke) {
-    let samples = stroke_mesh::centerline(s.kind, s.width, &s.points, SAMPLE_STEP);
+    let samples = stroke_path::centerline(s.kind, s.width, &s.points, SAMPLE_STEP);
     if samples.is_empty() {
         return;
     }

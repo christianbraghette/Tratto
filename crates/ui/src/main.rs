@@ -1,39 +1,29 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! InkNote – a small handwriting note-taking application.
 //!
+//! This crate is the UI (egui + wgpu). Document model, history, storage,
+//! library and PDF export live in `inknote_core`.
+//!
 //! Module layout:
-//! - `model`          serializable data model (`Point`, `Stroke`, `Document`)
-//! - `geometry`       point-to-segment math used by the eraser
-//! - `library`        notebooks / sections / notes as folders and files
-//! - `history`        action-based undo/redo (no document cloning)
-//! - `stroke_builder` jitter filter + velocity-adaptive smoothing + prediction
-//! - `stroke_mesh`    anti-aliased, curve-interpolated stroke tessellation
-//! - `view`           page layout + page/content/screen coordinate transforms
-//! - `scrollbar`      large pen-friendly scrollbars
-//! - `render`         painting of page background and strokes
-//! - `settings`       persisted UI settings (toolbar position, tool styles)
-//! - `toolbar`        the floating pill toolbar
-//! - `wayland_pen`    native Wayland tablet (pen) input, Linux only
-//! - `windows_pen`    pen side button / eraser end on Windows
-//! - `pdf_export`    vector PDF export (hand-written PDF writer)
-//! - `storage`        bincode save/load
 //! - `app`            application state and per-frame orchestration
+//! - `view`           page layout + page/content/screen coordinate transforms
+//! - `render`         painting of page background and strokes
+//! - `stroke_mesh`    anti-aliased stroke tessellation
+//! - `scrollbar`      large pen-friendly scrollbars
+//! - `toolbar`        the floating pill toolbar
+//! - `settings`       persisted UI settings (toolbar position, tool styles)
+//! - `input`          native pen input (Wayland tablet, Windows pen buttons)
 
 mod app;
-mod geometry;
-mod history;
-mod library;
-mod model;
-mod pdf_export;
+mod input;
 mod render;
 mod scrollbar;
 mod settings;
-mod storage;
-mod stroke_builder;
 mod stroke_mesh;
 mod toolbar;
 mod view;
-mod windows_pen;
-mod wayland_pen;
 
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};

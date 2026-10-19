@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Large, pen-friendly scrollbars.
 //!
 //! The track is 16 points wide and the thumb never gets shorter than 56 points,

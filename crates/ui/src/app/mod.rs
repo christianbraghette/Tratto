@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Application state and per-frame orchestration.
 
 use std::collections::HashSet;
@@ -9,20 +12,21 @@ use eframe::egui::{
     Sense, Slider, TouchPhase, Vec2, pos2, vec2,
 };
 
-use crate::geometry::point_in_polygon;
-use crate::history::{Action, History};
-use crate::library::Library;
-use crate::model::{Document, PAPERS, PageKind, Point, Stroke, StrokeKind, TextBox, paper_label};
-use crate::pdf_export::{self, PdfOptions};
+use inknote_core::geometry::point_in_polygon;
+use inknote_core::history::{Action, History};
+use inknote_core::library::Library;
+use inknote_core::model::{Document, PAPERS, PageKind, Point, Stroke, StrokeKind, TextBox, paper_label};
+use inknote_core::pdf_export::{self, PdfOptions};
+use inknote_core::storage::{self, NoteMeta};
+use inknote_core::stroke_builder::StrokeBuilder;
+
+use crate::input::wayland_pen::{PenEvent, WaylandPen};
+use crate::input::windows_pen::WindowsPen;
 use crate::render::{self, Moved, StrokeCache};
 use crate::scrollbar;
 use crate::settings::{Settings, ToolbarPosition, ZoomMode};
-use crate::storage::{self, NoteMeta};
-use crate::stroke_builder::StrokeBuilder;
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::view::{Layout, MARGIN, View};
-use crate::wayland_pen::{PenEvent, WaylandPen};
-use crate::windows_pen::WindowsPen;
 
 mod library_ui;
 

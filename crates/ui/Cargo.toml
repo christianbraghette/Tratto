@@ -1,0 +1,29 @@
+[package]
+name = "inknote-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal cross-platform digital handwriting note-taking app (egui + wgpu)"
+
+[[bin]]
+name = "inknote"
+path = "src/main.rs"
+
+[dependencies]
+inknote-core.workspace = true
+# Default features already include the Wayland + X11 backends and default fonts.
+# `wgpu` adds the wgpu renderer, `persistence` lets us store UI settings between runs.
+eframe.workspace = true
+serde.workspace = true
+raw-window-handle = "0.6"
+windows-sys = "0.61.2"
+
+# Native Wayland tablet (pen) support. Versions match what winit 0.30 uses so
+# there is a single wayland-client in the dependency tree.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }

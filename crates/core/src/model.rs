@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Serializable document model. Stroke coordinates are in *page space*:
 //! document units relative to the top-left corner of the stroke's page.
 
-use eframe::egui::{pos2, vec2, Pos2, Rect};
+use emath::{pos2, vec2, Pos2, Rect};
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::point_segment_distance;

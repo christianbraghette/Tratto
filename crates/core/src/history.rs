@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Christian Braghette
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Action-based undo/redo.
 //!
 //! The history never clones the document. Every stack entry is the *command
