@@ -48,6 +48,8 @@ pub enum Dialog {
     Import(String),
     /// A PDF to write on (its path).
     ImportPdf(String),
+    /// A PDF to read (its path).
+    OpenPdf(String),
     Folder(String),
 }
 
@@ -101,6 +103,10 @@ pub(super) enum Act {
     Import(PathBuf, String),
     /// A PDF to write on: the folder of the new note, the PDF's path.
     ImportPdf(PathBuf, String),
+    /// A PDF to read, in the reader.
+    OpenPdf(PathBuf),
+    /// Take a PDF off the recently read ones.
+    ForgetPdf(String),
     SetRoot(String),
     Refresh,
 }
@@ -171,7 +177,10 @@ impl InkApp {
                         notebook_view(ui, nb, &self.lib_ui.section, &root, sort, &mut acts);
                     } else {
                         match self.lib_ui.view {
-                            LibView::Home => home_view(ui, &self.library, &root, self.settings.recent_count, &mut acts),
+                            LibView::Home => {
+                                let pdfs = &self.settings.recent_pdfs;
+                                home_view(ui, &self.library, &root, self.settings.recent_count, pdfs, &mut acts)
+                            }
                             LibView::Quick => quick_view(ui, &self.library, &root, sort, &mut acts),
                             LibView::Trash => trash_view(ui, &self.library, &mut acts),
                         }
@@ -319,6 +328,9 @@ impl InkApp {
                             ui.memory_mut(|m| m.toggle_popup(menu));
                         }
                         button_menu(ui, menu, &import, |ui| {
+                            if entry(ui, icon::BOOK_OPEN, "Read a PDF...", "", true) {
+                                acts.push(Act::Dialog(Dialog::OpenPdf(String::new())));
+                            }
                             if entry(ui, icon::FILE_ARROW_DOWN, "Write on a PDF...", "", true) {
                                 acts.push(Act::Dialog(Dialog::ImportPdf(String::new())));
                             }
@@ -326,7 +338,7 @@ impl InkApp {
                                 acts.push(Act::Dialog(Dialog::Import(String::new())));
                             }
                             ui.separator();
-                            ui.label(theme::muted("You can also drop a PDF onto the window.").small());
+                            ui.label(theme::muted("You can also drop a PDF onto the window to read it.").small());
                         });
                         theme::ghost_buttons(ui);
                         if ui.button(theme::icon(icon::FOLDER_OPEN)).on_hover_text("Library folder").clicked() {
@@ -399,6 +411,7 @@ impl InkApp {
             Dialog::Move { .. } => "Move note to",
             Dialog::Import(_) => "Import a note file",
             Dialog::ImportPdf(_) => "Write on a PDF",
+            Dialog::OpenPdf(_) => "Read a PDF",
             Dialog::Folder(_) => "Library folder",
         };
 
@@ -482,6 +495,14 @@ impl InkApp {
                         ui.label(theme::muted("It becomes a note in the current notebook or section, one page per PDF page.").small());
                         ui.label(theme::muted("You can also drop a PDF onto the window.").small());
                         primary = Some(("Import", false, named(text).then(|| Act::ImportPdf(target_dir.to_path_buf(), text.clone()))));
+                    }
+                    Dialog::OpenPdf(text) => {
+                        ui.label("Full path of a PDF file:");
+                        submit |= name_row(ui, text, "/path/to/book.pdf");
+                        ui.label(theme::muted("It opens to read, as it is. Import it to write on it.").small());
+                        ui.label(theme::muted("You can also drop a PDF onto the window.").small());
+                        let path = PathBuf::from(text.trim().trim_matches('"'));
+                        primary = Some(("Open", false, named(text).then_some(Act::OpenPdf(path))));
                     }
                     Dialog::Folder(text) => {
                         ui.label("All notebooks and notes live in this folder:");
@@ -692,6 +713,11 @@ impl InkApp {
                 let src = PathBuf::from(text.trim().trim_matches('"'));
                 self.import_pdf(dir, src);
             }
+            Act::OpenPdf(path) => {
+                let ctx = self.egui_ctx.clone();
+                self.open_pdf(&ctx, &path);
+            }
+            Act::ForgetPdf(path) => self.settings.forget_pdf(&path),
             Act::SetRoot(text) => {
                 let p = PathBuf::from(text.trim());
                 match std::fs::create_dir_all(&p) {
@@ -797,7 +823,7 @@ fn action_tile(ui: &mut Ui, glyph: &str, title: &str, hint: &str) -> egui::Respo
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, recent_count: usize, acts: &mut Vec<Act>) {
+fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, recent_count: usize, pdfs: &[String], acts: &mut Vec<Act>) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(space::L, space::L);
         if action_tile(ui, icon::LIGHTNING, "Quick note", "Start writing right away").clicked() {
@@ -805,6 +831,9 @@ fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, recent_count: usi
         }
         if action_tile(ui, icon::NOTEBOOK, "New notebook", "Notes grouped in sections").clicked() {
             acts.push(Act::Dialog(Dialog::NewNotebook(String::new())));
+        }
+        if action_tile(ui, icon::BOOK_OPEN, "Read a PDF", "Books, papers, manuals").clicked() {
+            acts.push(Act::Dialog(Dialog::OpenPdf(String::new())));
         }
         if action_tile(ui, icon::FILE_ARROW_DOWN, "Write on a PDF", "Slides, papers, forms").clicked() {
             acts.push(Act::Dialog(Dialog::ImportPdf(String::new())));
@@ -819,6 +848,12 @@ fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, recent_count: usi
     }
     note_grid(ui, &recent, root, true, None, acts);
 
+    if !pdfs.is_empty() {
+        ui.add_space(space::XL);
+        heading(ui, "Recently read");
+        recent_pdfs(ui, pdfs, acts);
+    }
+
     ui.add_space(space::XL);
     heading(ui, "Notebooks");
     ui.horizontal_wrapped(|ui| {
@@ -829,6 +864,28 @@ fn home_view(ui: &mut Ui, lib: &library::Library, root: &Path, recent_count: usi
         let (rect, _) = ui.allocate_exact_size(vec2(COVER_W, COVER_H), Sense::hover());
         if theme::add_tile(ui, rect, Id::new("new_notebook_tile"), "New notebook").clicked() {
             acts.push(Act::Dialog(Dialog::NewNotebook(String::new())));
+        }
+    });
+}
+
+/// The PDFs recently opened in the reader, most recent first: a click
+/// opens one again, where it was left.
+fn recent_pdfs(ui: &mut Ui, pdfs: &[String], acts: &mut Vec<Act>) {
+    let width = ui.available_width().min(560.0);
+    ui.allocate_ui(vec2(width, 0.0), |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for path in pdfs.iter().rev() {
+            let p = Path::new(path);
+            let name = p.file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+            let row = theme::list_row(ui, icon::FILE_PDF, &name, false, theme::ROW_BUTTON);
+            let forget = ui.rect_contains_pointer(row.rect)
+                && theme::row_button(ui, row.rect, 0, Id::new(("forget_pdf", path)), icon::X, "Remove from this list", false)
+                    .clicked();
+            if forget {
+                acts.push(Act::ForgetPdf(path.clone()));
+            } else if row.on_hover_text(path).clicked() {
+                acts.push(Act::OpenPdf(p.to_path_buf()));
+            }
         }
     });
 }
@@ -1311,7 +1368,8 @@ mod tests {
         let mut acts = Vec::new();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                home_view(ui, &lib, &root, 12, &mut acts);
+                let pdfs = ["/papers/a.pdf".to_owned(), "b.pdf".to_owned()];
+                home_view(ui, &lib, &root, 12, &pdfs, &mut acts);
                 quick_view(ui, &lib, &root, LibrarySort::Edited, &mut acts);
                 notebook_view(ui, &nb, &None, &root, LibrarySort::Manual, &mut acts);
                 notebook_view(ui, &nb, &Some(nb.sections[0].path.clone()), &root, LibrarySort::Title, &mut acts);

@@ -22,6 +22,8 @@ pub enum LeftPanel {
     Closed,
     Pages,
     Settings,
+    /// The table of contents of a note written on a PDF.
+    Outline,
 }
 
 impl LeftPanel {
@@ -31,16 +33,13 @@ impl LeftPanel {
     }
 }
 
-/// Where a note was left: the scroll position (content space, so it does
-/// not depend on the zoom or the window size), the zoom and whether it was
-/// being read.
+/// Where a note (or a PDF in the reader) was left: the scroll position
+/// (content space, so it does not depend on the zoom or the window size) and
+/// the zoom.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NoteView {
     pub scroll: [f32; 2],
     pub zoom: ZoomMode,
-    /// Reading mode (absent in settings saved before it existed).
-    #[serde(default)]
-    pub reading: bool,
 }
 
 /// The order of the notes in the library's grids.
@@ -66,6 +65,8 @@ impl LibrarySort {
 
 /// Notes whose place is remembered, at most (the least recent is forgotten).
 pub const NOTE_VIEWS: usize = 200;
+/// PDFs listed as recently read, at most.
+pub const RECENT_PDFS: usize = 12;
 
 /// How the pages are scaled in the window.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -166,10 +167,14 @@ pub struct Settings {
     pub reopen_last_note: bool,
     /// The order of the notes in the library.
     pub library_sort: LibrarySort,
-    /// The note open when the app was last closed (`None`: the library).
+    /// The note (or PDF in the reader) open when the app was last closed
+    /// (`None`: the library).
     pub last_note: Option<String>,
-    /// Where each recently opened note was left (by path), most recent last.
+    /// Where each recently opened note or PDF was left (by path), most
+    /// recent last.
     pub note_views: Vec<(String, NoteView)>,
+    /// PDFs recently opened in the reader (paths), most recent last.
+    pub recent_pdfs: Vec<String>,
 }
 
 impl Settings {
@@ -199,6 +204,19 @@ impl Settings {
         self.note_views.push((path.to_owned(), view));
         let excess = self.note_views.len().saturating_sub(NOTE_VIEWS);
         self.note_views.drain(..excess);
+    }
+
+    /// The PDF at `path` was opened in the reader: first among the recent ones.
+    pub fn pdf_opened(&mut self, path: &str) {
+        self.recent_pdfs.retain(|p| p != path);
+        self.recent_pdfs.push(path.to_owned());
+        let excess = self.recent_pdfs.len().saturating_sub(RECENT_PDFS);
+        self.recent_pdfs.drain(..excess);
+    }
+
+    /// Takes the PDF at `path` off the recent ones.
+    pub fn forget_pdf(&mut self, path: &str) {
+        self.recent_pdfs.retain(|p| p != path);
     }
 }
 
@@ -243,6 +261,7 @@ impl Default for Settings {
             library_sort: LibrarySort::Manual,
             last_note: None,
             note_views: Vec::new(),
+            recent_pdfs: Vec::new(),
         }
     }
 }
@@ -253,7 +272,7 @@ mod tests {
     use std::path::Path;
 
     fn view(y: f32) -> NoteView {
-        NoteView { scroll: [0.0, y], zoom: ZoomMode::FitWidth, reading: false }
+        NoteView { scroll: [0.0, y], zoom: ZoomMode::FitWidth }
     }
 
     #[test]
@@ -269,6 +288,22 @@ mod tests {
         }
         assert_eq!(s.note_views.len(), NOTE_VIEWS);
         assert_eq!(s.note_view("b.ink"), None, "the least recent is forgotten");
+    }
+
+    #[test]
+    fn recent_pdfs_most_recent_last() {
+        let mut s = Settings::default();
+        s.pdf_opened("a.pdf");
+        s.pdf_opened("b.pdf");
+        s.pdf_opened("a.pdf");
+        assert_eq!(s.recent_pdfs, ["b.pdf", "a.pdf"]);
+        for i in 0..RECENT_PDFS {
+            s.pdf_opened(&format!("{i}.pdf"));
+        }
+        assert_eq!(s.recent_pdfs.len(), RECENT_PDFS);
+        assert!(!s.recent_pdfs.iter().any(|p| p == "a.pdf"), "the least recent is forgotten");
+        s.forget_pdf("0.pdf");
+        assert_eq!(s.recent_pdfs.first().map(String::as_str), Some("1.pdf"));
     }
 
     #[test]

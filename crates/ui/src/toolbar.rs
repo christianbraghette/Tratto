@@ -4,7 +4,7 @@
 //! The editor's toolbars, all drawn as notches attached to the canvas edges.
 //!
 //! * the tools (tools, styles, undo / redo) centred on the top or bottom edge;
-//!   in reading mode the reading bar (pages, zoom) in their place
+//!   for a PDF in the reader the reading bar (import, pages, zoom) in their place
 //! * library in a notch in the top-right corner
 //! * pages panel toggle and settings in notches in the top-left and
 //!   bottom-left corners, which become part of the pages panel when it is open
@@ -26,6 +26,9 @@ use crate::theme::{self, color, radius, space};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
+    /// Moves around the note like the PDF reader: drag to scroll, tap to
+    /// turn pages or follow a PDF link; writes nothing.
+    Pointer,
     Pen,
     Highlighter,
     Eraser,
@@ -40,21 +43,22 @@ pub enum ToolbarEvent {
     Redo,
     ZoomIn,
     ZoomOut,
-    /// Into reading mode.
-    Read,
-    /// Out of reading mode.
-    Write,
+    /// Make the PDF in the reader a note to write on.
+    Import,
     PrevPage,
     NextPage,
     /// Go to this page (0-based).
     GoToPage(u32),
+    /// Back to where the view was before following a link.
+    Back,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [Tool::Pen, Tool::Highlighter, Tool::Eraser, Tool::Select, Tool::Text];
+    pub const ALL: [Tool; 6] = [Tool::Pointer, Tool::Pen, Tool::Highlighter, Tool::Eraser, Tool::Select, Tool::Text];
 
     pub fn icon(self) -> &'static str {
         match self {
+            Tool::Pointer => icon::CURSOR,
             Tool::Pen => icon::PEN_NIB,
             Tool::Highlighter => icon::HIGHLIGHTER,
             Tool::Eraser => icon::ERASER,
@@ -65,6 +69,7 @@ impl Tool {
 
     pub fn label(self) -> &'static str {
         match self {
+            Tool::Pointer => "Pointer",
             Tool::Pen => "Pen",
             Tool::Highlighter => "Highlighter",
             Tool::Eraser => "Eraser",
@@ -103,45 +108,72 @@ pub fn show(
     settings: &mut Settings,
     can_undo: bool,
     can_redo: bool,
+    nav: &Navigation,
     bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
     let position = settings.toolbar_position;
-    edge_bar(ctx, "tool_notch", position, bottom_inset, |ui| contents(ui, tool, settings, can_undo, can_redo))
+    edge_bar(ctx, "tool_notch", position, bottom_inset, |ui| contents(ui, tool, settings, can_undo, can_redo, nav))
 }
 
-/// The reading mode's bar, in the tool bar's place: back to writing, the
-/// pages (`page` of `count`, 0-based) and the zoom.
-pub fn show_reader(
-    ctx: &egui::Context,
-    settings: &mut Settings,
-    page: u32,
-    count: u32,
-    bottom_inset: f32,
-) -> Option<ToolbarEvent> {
+/// Where the view is, for the page controls of the reader's bar and of the
+/// pointer tool.
+pub struct Navigation {
+    /// The current page (0-based) of `count`.
+    pub page: u32,
+    pub count: u32,
+    /// The document is a PDF, or a note written on one: it may have contents.
+    pub contents: bool,
+    /// A link was followed: Back can return.
+    pub can_go_back: bool,
+}
+
+/// The reader's bar, in the tool bar's place: import (to write on the PDF),
+/// the table of contents, back after a link, the pages and the zoom.
+pub fn show_reader(ctx: &egui::Context, settings: &mut Settings, nav: &Navigation, bottom_inset: f32) -> Option<ToolbarEvent> {
     let position = settings.toolbar_position;
     edge_bar(ctx, "reader_notch", position, bottom_inset, |ui| {
         let mut event = None;
-        if ui.button(theme::icon(icon::PEN_NIB)).on_hover_text("Back to writing (Ctrl+R)").clicked() {
-            event = Some(ToolbarEvent::Write);
+        let import = egui::Button::new(format!("{}  Import", icon::FILE_ARROW_DOWN));
+        let tip = "Make it a note to write on, in the notebook or section open in the library";
+        if ui.add(import).on_hover_text(tip).clicked() {
+            event = Some(ToolbarEvent::Import);
         }
         ui.separator();
-        let prev = egui::Button::new(theme::icon(icon::CARET_LEFT));
-        if ui.add_enabled(page > 0, prev).on_hover_text("Previous page (Left, Page Up)").clicked() {
-            event = Some(ToolbarEvent::PrevPage);
-        }
-        let mut shown = page + 1;
-        let field = egui::DragValue::new(&mut shown).range(1..=count.max(1)).speed(0.05);
-        if ui.add(field).on_hover_text("Page: click to type a number, or drag").changed() {
-            event = Some(ToolbarEvent::GoToPage(shown - 1));
-        }
-        ui.label(theme::muted(format!("/ {count}")));
-        let next = egui::Button::new(theme::icon(icon::CARET_RIGHT));
-        if ui.add_enabled(page + 1 < count, next).on_hover_text("Next page (Right, Space, Page Down)").clicked() {
-            event = Some(ToolbarEvent::NextPage);
-        }
+        let pages = page_controls(ui, settings, nav);
         ui.separator();
-        zoom_controls(ui, settings).or(event)
+        zoom_controls(ui, settings).or(pages).or(event)
     })
+}
+
+/// The table of contents (if any), Back (after a link) and the pages:
+/// previous, the current one (to type or drag), next.
+fn page_controls(ui: &mut egui::Ui, settings: &mut Settings, nav: &Navigation) -> Option<ToolbarEvent> {
+    let mut event = None;
+    if nav.contents && outline_button(ui, settings.left_panel == LeftPanel::Outline) {
+        settings.left_panel.toggle(LeftPanel::Outline);
+    }
+    if nav.can_go_back && ui.button(theme::icon(icon::ARROW_BEND_UP_LEFT)).on_hover_text("Back (Alt+Left)").clicked() {
+        event = Some(ToolbarEvent::Back);
+    }
+    if nav.contents || nav.can_go_back {
+        ui.separator();
+    }
+    let (page, count) = (nav.page, nav.count);
+    let prev = egui::Button::new(theme::icon(icon::CARET_LEFT));
+    if ui.add_enabled(page > 0, prev).on_hover_text("Previous page (Left, Page Up)").clicked() {
+        event = Some(ToolbarEvent::PrevPage);
+    }
+    let mut shown = page + 1;
+    let field = egui::DragValue::new(&mut shown).range(1..=count.max(1)).speed(0.05);
+    if ui.add(field).on_hover_text("Page: click to type a number, or drag").changed() {
+        event = Some(ToolbarEvent::GoToPage(shown - 1));
+    }
+    ui.label(theme::muted(format!("/ {count}")));
+    let next = egui::Button::new(theme::icon(icon::CARET_RIGHT));
+    if ui.add_enabled(page + 1 < count, next).on_hover_text("Next page (Right, Space, Page Down)").clicked() {
+        event = Some(ToolbarEvent::NextPage);
+    }
+    event
 }
 
 /// A bar in a notch centred on the top or bottom edge (see `show`).
@@ -227,8 +259,10 @@ fn edge_notch_shape(rect: Rect, at: Edge, fill: Color32) -> Shape {
 /// reads as the two notches grown into a sidebar.
 ///
 /// Call after the side panels: `available_rect` is the canvas area then.
-/// `bottom_inset` keeps the bottom notch above the horizontal scrollbar.
-pub fn show_corners(ctx: &egui::Context, settings: &mut Settings, bottom_inset: f32) {
+/// `note_settings`: the settings notch is shown (not for a PDF in the
+/// reader). `bottom_inset` keeps the bottom notch above the horizontal
+/// scrollbar.
+pub fn show_corners(ctx: &egui::Context, settings: &mut Settings, note_settings: bool, bottom_inset: f32) {
     let free = ctx.available_rect();
 
     // Panel joins: above the canvas, but below menus and popups (which are
@@ -257,12 +291,14 @@ pub fn show_corners(ctx: &egui::Context, settings: &mut Settings, bottom_inset: 
                 settings.left_panel = LeftPanel::Pages;
             }
         });
-        let bottom_left = pos2(free.left(), free.bottom() - bottom_inset);
-        notch(ctx, "corner_notch_settings", Corner::BottomLeft, bottom_left, |ui| {
-            if settings_button(ui, false) {
-                settings.left_panel = LeftPanel::Settings;
-            }
-        });
+        if note_settings {
+            let bottom_left = pos2(free.left(), free.bottom() - bottom_inset);
+            notch(ctx, "corner_notch_settings", Corner::BottomLeft, bottom_left, |ui| {
+                if settings_button(ui, false) {
+                    settings.left_panel = LeftPanel::Settings;
+                }
+            });
+        }
     }
 }
 
@@ -281,6 +317,15 @@ pub fn library_button(ui: &mut egui::Ui, open: &mut bool) {
 pub fn pages_button(ui: &mut egui::Ui, shown: bool) -> bool {
     let tip = if shown { "Hide pages" } else { "Pages: jump, reorder, delete" };
     ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::SIDEBAR_SIMPLE)))
+        .on_hover_text(tip)
+        .clicked()
+}
+
+/// Toggles the outline (table of contents) of a note written on a PDF.
+/// Returns true when clicked; `shown` highlights it.
+pub fn outline_button(ui: &mut egui::Ui, shown: bool) -> bool {
+    let tip = if shown { "Hide the contents" } else { "Contents: the PDF's outline" };
+    ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::LIST_BULLETS)))
         .on_hover_text(tip)
         .clicked()
 }
@@ -454,16 +499,22 @@ fn contents(
     settings: &mut Settings,
     can_undo: bool,
     can_redo: bool,
+    nav: &Navigation,
 ) -> Option<ToolbarEvent> {
     let mut event = None;
 
     for t in Tool::ALL {
-        ui.selectable_value(tool, t, theme::icon(t.icon())).on_hover_text(t.label());
+        let tip = match t {
+            Tool::Pointer => "Pointer: scroll, turn pages, follow links",
+            _ => t.label(),
+        };
+        ui.selectable_value(tool, t, theme::icon(t.icon())).on_hover_text(tip);
     }
     ui.separator();
 
     ui.spacing_mut().slider_width = 100.0;
     match *tool {
+        Tool::Pointer => event = page_controls(ui, settings, nav),
         Tool::Pen => style_controls(ui, &mut settings.pen, &PEN_PALETTE, 0.5..=12.0),
         Tool::Highlighter => {
             style_controls(ui, &mut settings.highlighter, &HIGHLIGHTER_PALETTE, 4.0..=40.0)
@@ -488,12 +539,7 @@ fn contents(
         event = Some(ToolbarEvent::Redo);
     }
     ui.separator();
-    let zoom = zoom_controls(ui, settings);
-    ui.separator();
-    if ui.button(theme::icon(icon::BOOK_OPEN)).on_hover_text("Reading mode (Ctrl+R)").clicked() {
-        event = Some(ToolbarEvent::Read);
-    }
-    zoom.or(event)
+    zoom_controls(ui, settings).or(event)
 }
 
 /// Zoom: out, the presets, in.

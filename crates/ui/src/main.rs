@@ -30,6 +30,7 @@ mod chrome;
 mod input;
 mod highlight_gpu;
 mod kinetic;
+mod pdf_nav;
 mod pdf_view;
 mod render;
 mod scrollbar;

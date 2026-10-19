@@ -37,6 +37,8 @@ pub(super) enum Command {
     NewNotebook,
     Import,
     ImportPdf,
+    /// A PDF to read (the reader).
+    OpenPdf,
     LibraryFolder,
     Save,
     ExportPdf,
@@ -54,8 +56,6 @@ pub(super) enum Command {
     ZoomIn,
     ZoomOut,
     Zoom(ZoomMode),
-    /// Reading mode on / off.
-    Reading,
     Fullscreen,
     ToolbarAt(ToolbarPosition),
     /// Global settings window.
@@ -195,7 +195,13 @@ impl InkApp {
             if !self.title_focused {
                 buf = self.note_meta.title.clone();
             }
-            let field = chrome::Title::Editable { text: &mut buf, hint: "Untitled note" };
+            // A PDF in the reader keeps its file's name.
+            let name = self.note_meta.title.clone();
+            let field = if self.reading() {
+                chrome::Title::Text(&name)
+            } else {
+                chrome::Title::Editable { text: &mut buf, hint: "Untitled note" }
+            };
             let mut menu_open = false;
             // Fullscreen: keep the bar shown while a menu is open or the title is edited.
             let pinned = self.menu_open || self.title_focused;
@@ -282,11 +288,15 @@ impl InkApp {
             push(entry(ui, icon::LIGHTNING, "Quick note", &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::N), true), ui, Command::QuickNote);
             push(entry(ui, icon::NOTEBOOK, "New notebook...", "", true), ui, Command::NewNotebook);
             push(entry(ui, icon::DOWNLOAD_SIMPLE, "Import note file...", "", true), ui, Command::Import);
+            push(entry(ui, icon::BOOK_OPEN, "Open PDF...", &shortcut(&ctx, cmd, Key::O), true), ui, Command::OpenPdf);
             push(entry(ui, icon::FILE_ARROW_DOWN, "Write on a PDF...", "", true), ui, Command::ImportPdf);
             ui.separator();
-            push(entry(ui, icon::FLOPPY_DISK, "Save", &shortcut(&ctx, cmd, Key::S), editor), ui, Command::Save);
-            push(entry(ui, icon::FILE_PDF, "Export as PDF...", &shortcut(&ctx, cmd, Key::E), editor), ui, Command::ExportPdf);
-            push(entry(ui, icon::BOOKS, "Close note", &shortcut(&ctx, cmd, Key::W), editor), ui, Command::CloseNote);
+            // A PDF in the reader is not a note: nothing to save or export.
+            let note = editor && !self.reading();
+            push(entry(ui, icon::FLOPPY_DISK, "Save", &shortcut(&ctx, cmd, Key::S), note), ui, Command::Save);
+            push(entry(ui, icon::FILE_PDF, "Export as PDF...", &shortcut(&ctx, cmd, Key::E), note), ui, Command::ExportPdf);
+            let close = if self.reading() { "Close PDF" } else { "Close note" };
+            push(entry(ui, icon::BOOKS, close, &shortcut(&ctx, cmd, Key::W), editor), ui, Command::CloseNote);
             ui.separator();
             push(entry(ui, icon::FOLDER_OPEN, "Library folder...", "", true), ui, Command::LibraryFolder);
             push(entry(ui, icon::GEAR_SIX, "Settings...", &shortcut(&ctx, cmd, Key::Comma), true), ui, Command::Settings);
@@ -294,8 +304,8 @@ impl InkApp {
             push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
         });
 
-        // Reading changes nothing: no Edit and Page menus meanwhile.
-        if editor && !self.reading {
+        // The reader changes nothing: no Edit and Page menus there.
+        if editor && !self.reading() {
             ui.menu_button("Edit", |ui| {
                 open = true;
                 self.edit_entries(ui, &mut |ui, c| push(true, ui, c));
@@ -305,8 +315,6 @@ impl InkApp {
         ui.menu_button("View", |ui| {
             open = true;
             if editor {
-                push(check(ui, self.reading, "Reading mode", &shortcut(&ctx, cmd, Key::R)), ui, Command::Reading);
-                ui.separator();
                 push(entry(ui, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", &shortcut(&ctx, cmd, Key::Plus), true), ui, Command::ZoomIn);
                 push(entry(ui, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", &shortcut(&ctx, cmd, Key::Minus), true), ui, Command::ZoomOut);
                 let zoom = self.settings.zoom;
@@ -322,7 +330,7 @@ impl InkApp {
             push(entry(ui, icon::CORNERS_OUT, "Full screen", &shortcut(&ctx, Modifiers::NONE, Key::F11), true), ui, Command::Fullscreen);
         });
 
-        if editor && !self.reading {
+        if editor && !self.reading() {
             ui.menu_button("Page", |ui| {
                 open = true;
                 self.page_entries(ui, self.current_page, &mut |ui, c| push(true, ui, c));
@@ -482,15 +490,15 @@ impl InkApp {
             if i.consume_key(cmd, Key::Comma) {
                 out.push(Command::Settings);
             }
+            if i.consume_key(cmd, Key::O) {
+                out.push(Command::OpenPdf);
+            }
             if editor {
                 if i.consume_key(cmd, Key::W) {
                     out.push(Command::CloseNote);
                 }
                 if !typing {
-                    if i.consume_key(cmd, Key::R) {
-                        out.push(Command::Reading);
-                    }
-                    if !self.reading && i.consume_key(cmd, Key::A) {
+                    if !self.reading() && i.consume_key(cmd, Key::A) {
                         out.push(Command::SelectAll(self.current_page));
                     }
                     if i.consume_key(cmd, Key::Plus) || i.consume_key(cmd, Key::Equals) {
@@ -535,7 +543,7 @@ impl InkApp {
                     self.new_note(&root);
                 }
             }
-            Command::NewNotebook | Command::Import | Command::ImportPdf | Command::LibraryFolder => {
+            Command::NewNotebook | Command::Import | Command::ImportPdf | Command::OpenPdf | Command::LibraryFolder => {
                 if editor {
                     self.close_note(ctx);
                 }
@@ -544,6 +552,7 @@ impl InkApp {
                         Command::NewNotebook => Dialog::NewNotebook(String::new()),
                         Command::Import => Dialog::Import(String::new()),
                         Command::ImportPdf => Dialog::ImportPdf(String::new()),
+                        Command::OpenPdf => Dialog::OpenPdf(String::new()),
                         _ => Dialog::Folder(self.settings.library_root.clone()),
                     });
                 }
@@ -551,7 +560,7 @@ impl InkApp {
             Command::Save if editor => {
                 self.save_note(true);
             }
-            Command::ExportPdf if editor => self.open_export_dialog(),
+            Command::ExportPdf if editor && !self.reading() => self.open_export_dialog(),
             Command::CloseNote if editor => self.close_note(ctx),
             Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::Undo => self.undo(),
@@ -572,10 +581,7 @@ impl InkApp {
                 }
                 self.history.exec(&mut self.doc, Action::RemoveText { id });
             }
-            Command::Tool(t) => {
-                self.set_reading(ctx, false);
-                self.tool = t;
-            }
+            Command::Tool(t) => self.tool = t,
             Command::ZoomIn | Command::ZoomOut => {
                 let now = (self.view_scale * 100.0).round() as u32;
                 let next = if cmd == Command::ZoomIn {
@@ -586,7 +592,6 @@ impl InkApp {
                 self.zoom_request = Some(next as f32 / now.max(1) as f32);
             }
             Command::Zoom(z) => self.settings.zoom = z,
-            Command::Reading if editor => self.set_reading(ctx, !self.reading),
             Command::Fullscreen => {
                 // On Windows, going fullscreen straight from a maximized window
                 // resizes the window without a resize event, so egui keeps
@@ -675,9 +680,10 @@ impl InkApp {
                     (format!("{} / {}", shortcut(ctx, c, Key::Plus), shortcut(ctx, c, Key::Minus)), "Zoom in / out"),
                     (shortcut(ctx, c, Key::Num0), "Actual size"),
                     ("Ctrl + wheel, pinch".to_owned(), "Zoom around the pointer"),
-                    ("Page Up / Page Down".to_owned(), "Scroll by one screen (a page while reading)"),
-                    (shortcut(ctx, c, Key::R), "Reading mode on / off"),
-                    ("Left / Right, Space".to_owned(), "Reading: previous / next page"),
+                    ("Page Up / Page Down".to_owned(), "Scroll by one screen (a page in the PDF reader)"),
+                    (shortcut(ctx, c, Key::O), "Open a PDF to read"),
+                    ("Left / Right, Space".to_owned(), "PDF reader: previous / next page"),
+                    ("Alt + Left, Backspace".to_owned(), "PDF reader: back after following a link"),
                     ("Home / End".to_owned(), "First / last page"),
                     (shortcut(ctx, none, Key::F11), "Full screen"),
                     ("Right click".to_owned(), "Context menu"),

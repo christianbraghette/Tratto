@@ -20,12 +20,14 @@ use inknote_core::library::{self, Library};
 use inknote_core::model::{
     Document, Point, Stroke, StrokeKind, TextBox,
 };
+use inknote_core::pdf_pages::{self, LinkAction, PdfFile, Target};
 use inknote_core::storage::{self, NoteMeta, NoteWriter};
 use inknote_core::stroke_builder::StrokeBuilder;
 
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
 use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
+use crate::pdf_nav::PdfNav;
 use crate::pdf_view::PdfTextures;
 use crate::render::{self, Layer, Moved, StrokeCache};
 use crate::scrollbar;
@@ -38,6 +40,7 @@ mod library_panel;
 mod library_ui;
 mod export_ui;
 mod menus;
+mod outline_ui;
 mod settings_ui;
 
 use menus::{Command, ContextMenu, HelpWindows};
@@ -50,6 +53,8 @@ const PAGES_WIDTH: f32 = 164.0;
 const PAGES_WIDTHS: std::ops::RangeInclusive<f32> = 150.0..=360.0;
 /// Page previews never get wider than this, however wide the panel.
 const THUMB_MAX_W: f32 = 200.0;
+/// Places kept for Back (the oldest is forgotten).
+const NAV_BACK_MAX: usize = 50;
 /// Autosave this long after the last change.
 /// Key under which eframe stores the window state (not public in eframe).
 const WINDOW_STATE_KEY: &str = "window";
@@ -175,6 +180,13 @@ pub struct InkApp {
     thumb_cache: StrokeCache,
     /// Notes written on a PDF: its pages as textures.
     pdf_textures: PdfTextures,
+    /// The outline and links of the open note's PDF.
+    pdf_nav: PdfNav,
+    /// Where the view was before each link or outline entry followed
+    /// (scroll offsets), for Back.
+    nav_back: Vec<Vec2>,
+    /// Outline entries shown open (their children visible), by index.
+    outline_open: HashSet<usize>,
     /// A note read (or a PDF imported) in the background; a loading screen
     /// covers the window meanwhile.
     loading: Option<Loading>,
@@ -188,10 +200,14 @@ pub struct InkApp {
     scroll_to: Option<f32>,
     /// Page in the middle of the view (highlighted in the panel).
     current_page: u32,
-    /// Reading mode: the pages turned and scrolled by pen, finger, mouse or
-    /// keys; nothing is written or selected.
-    reading: bool,
-    /// Pages to turn on the next frame (reading mode; negative = back).
+    /// The PDF open in the reader (read-only) instead of a note: its pages
+    /// are turned and scrolled by pen, finger, mouse or keys; nothing is
+    /// written or selected. `doc` holds it, `note_path` is `None`.
+    reader: Option<PathBuf>,
+    /// The place to open the next note at when it has none of its own: a
+    /// PDF imported from the reader continues where it was being read.
+    carry_view: Option<NoteView>,
+    /// Pages to turn on the next frame (the reader; negative = back).
     page_turn: i32,
     screen: Screen,
     library: Library,
@@ -286,13 +302,17 @@ impl InkApp {
             cache: StrokeCache::default(),
             thumb_cache: StrokeCache::default(),
             pdf_textures: PdfTextures::default(),
+            pdf_nav: PdfNav::default(),
+            nav_back: Vec::new(),
+            outline_open: HashSet::new(),
             loading: None,
             egui_ctx: cc.egui_ctx.clone(),
             page_drag: None,
             panel_page: None,
             scroll_to: None,
             current_page: 0,
-            reading: false,
+            reader: None,
+            carry_view: None,
             page_turn: 0,
             screen: Screen::Library,
             library: Library::default(),
@@ -330,7 +350,12 @@ impl InkApp {
         // Back where the app was closed: the note that was open, if any.
         let last = app.settings.last_note.clone().filter(|_| app.settings.reopen_last_note).map(PathBuf::from);
         if let Some(path) = last.filter(|p| p.is_file()) {
-            app.open_note(&path);
+            if is_pdf(&path) {
+                let ctx = cc.egui_ctx.clone();
+                app.open_pdf(&ctx, &path);
+            } else {
+                app.open_note(&path);
+            }
         }
         app
     }
@@ -422,13 +447,14 @@ impl InkApp {
         self.note_path = Some(path.to_path_buf());
         self.ensure_pages();
         self.reset_editing_state();
+        self.reader = None;
         let key = path.to_string_lossy();
-        self.reading = false;
-        if let Some(view) = self.settings.note_view(&key) {
+        // A PDF just imported from the reader: where it was being read.
+        let carried = self.carry_view.take();
+        if let Some(view) = self.settings.note_view(&key).or(carried) {
             // The canvas clamps it to the note (e.g. pages deleted elsewhere).
             self.scroll = vec2(view.scroll[0], view.scroll[1]);
             self.settings.zoom = view.zoom;
-            self.reading = view.reading;
         }
         self.settings.last_note = Some(key.into_owned());
         self.last_fp = self.current_fingerprint();
@@ -436,13 +462,73 @@ impl InkApp {
         self.screen = Screen::Editor;
     }
 
-    /// Remembers where the open note is left (scroll, zoom, reading mode),
-    /// and that it is the open one.
+    /// Opens a PDF in the reader (read-only), read in the background. The
+    /// open note is saved and closed first; stays put if that fails.
+    fn open_pdf(&mut self, ctx: &egui::Context, path: &Path) {
+        if self.screen == Screen::Editor {
+            self.close_note(ctx);
+            if self.screen == Screen::Editor {
+                return;
+            }
+        }
+        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let path = path.to_path_buf();
+        self.in_background(format!("Opening \u{201c}{name}\u{201d}..."), move || {
+            let failed = |e: String| format!("Cannot open the PDF: {e}");
+            let file = PdfFile::new(std::fs::read(&path).map_err(|e| failed(e.to_string()))?);
+            let sizes = pdf_pages::page_sizes(&file).map_err(|e| failed(e.to_string()))?;
+            if sizes.is_empty() {
+                return Err(failed("it has no pages".into()));
+            }
+            Ok(Loaded::Pdf(path, Document::on_pdf(file, sizes)))
+        });
+    }
+
+    /// Shows a PDF read for the reader, where it was left.
+    fn show_pdf(&mut self, path: &Path, doc: Document) {
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        self.doc = doc;
+        self.note_meta = NoteMeta::new(&name, false);
+        self.writer = NoteWriter::default();
+        self.note_path = None;
+        self.reader = Some(path.to_path_buf());
+        self.ensure_pages();
+        self.reset_editing_state();
+        let key = path.to_string_lossy().into_owned();
+        if let Some(view) = self.settings.note_view(&key) {
+            self.scroll = vec2(view.scroll[0], view.scroll[1]);
+            self.settings.zoom = view.zoom;
+        }
+        // The note settings change a note; a PDF is read as it is.
+        if self.settings.left_panel == LeftPanel::Settings {
+            self.settings.left_panel = LeftPanel::Pages;
+        }
+        self.settings.pdf_opened(&key);
+        self.settings.last_note = Some(key);
+        self.last_fp = self.current_fingerprint();
+        self.dirty = false;
+        self.screen = Screen::Editor;
+    }
+
+    /// Turns the PDF in the reader into a note to write on, in the notebook
+    /// or section shown in the library, and opens it where it was being read.
+    fn import_open_pdf(&mut self) {
+        let Some(src) = self.reader.clone() else { return };
+        self.remember_view();
+        let scroll = self.kinetic.target().unwrap_or(self.scroll);
+        self.carry_view = Some(NoteView { scroll: [scroll.x, scroll.y], zoom: self.settings.zoom });
+        let dir = self.library_target_dir();
+        self.import_pdf(dir, src);
+    }
+
+    /// Remembers where the open note (or PDF in the reader) is left (scroll
+    /// and zoom), and that it is the open one.
     fn remember_view(&mut self) {
-        let Some(path) = self.note_path.as_ref().map(|p| p.to_string_lossy().into_owned()) else { return };
+        let open = self.note_path.as_ref().or(self.reader.as_ref());
+        let Some(path) = open.map(|p| p.to_string_lossy().into_owned()) else { return };
         // The place the view is gliding to, if it is.
         let scroll = self.kinetic.target().unwrap_or(self.scroll);
-        let view = NoteView { scroll: [scroll.x, scroll.y], zoom: self.settings.zoom, reading: self.reading };
+        let view = NoteView { scroll: [scroll.x, scroll.y], zoom: self.settings.zoom };
         self.settings.set_note_view(&path, view);
         self.settings.last_note = Some(path);
     }
@@ -451,15 +537,22 @@ impl InkApp {
     /// reads the note it names on a background thread; the note opens when
     /// it is ready. `label` is shown on the loading screen meanwhile.
     fn load_in_background(&mut self, label: String, find: impl FnOnce() -> Result<PathBuf, String> + Send + 'static) {
+        self.in_background(label, move || {
+            find().and_then(|path| {
+                storage::open_note(&path)
+                    .map(|(meta, doc, writer)| Loaded::Note(path, meta, doc, writer))
+                    .map_err(|e| format!("Cannot open note: {e}"))
+            })
+        });
+    }
+
+    /// Runs `load` on a background thread behind the loading screen (showing
+    /// `label`); what it read opens when it is ready.
+    fn in_background(&mut self, label: String, load: impl FnOnce() -> Result<Loaded, String> + Send + 'static) {
         let (tx, done) = mpsc::channel();
         let ctx = self.egui_ctx.clone();
         let spawned = thread::Builder::new().name("load-note".into()).spawn(move || {
-            let loaded = find().and_then(|path| {
-                storage::open_note(&path)
-                    .map(|(meta, doc, writer)| (path, meta, doc, writer))
-                    .map_err(|e| format!("Cannot open note: {e}"))
-            });
-            let _ = tx.send(loaded);
+            let _ = tx.send(load());
             ctx.request_repaint();
         });
         match spawned {
@@ -478,11 +571,13 @@ impl InkApp {
         };
         self.loading = None;
         match loaded {
-            Ok((path, meta, doc, writer)) => {
+            Ok(Loaded::Note(path, meta, doc, writer)) => {
                 self.refresh_library();
                 self.show_note(&path, meta, doc, writer);
             }
+            Ok(Loaded::Pdf(path, doc)) => self.show_pdf(&path, doc),
             Err(e) => {
+                self.carry_view = None;
                 self.refresh_library();
                 self.toast(e);
             }
@@ -498,19 +593,23 @@ impl InkApp {
     }
 
     /// Saves and returns to the library. Stays in the editor if saving fails,
-    /// so nothing typed or drawn can be lost.
+    /// so nothing typed or drawn can be lost. A PDF in the reader has
+    /// nothing to save.
     fn close_note(&mut self, ctx: &egui::Context) {
-        if self.edit.is_some() {
-            self.commit_edit(ctx);
-        }
-        self.sync_dirty();
-        if self.dirty && !self.save_note(false) {
-            return;
+        if self.reader.is_none() {
+            if self.edit.is_some() {
+                self.commit_edit(ctx);
+            }
+            self.sync_dirty();
+            if self.dirty && !self.save_note(false) {
+                return;
+            }
         }
         self.remember_view();
         // Closed by hand: the app starts in the library next time.
         self.settings.last_note = None;
         self.note_path = None;
+        self.reader = None;
         self.context_menu = None;
         self.export_dialog = None;
         self.doc = Document::default();
@@ -520,13 +619,11 @@ impl InkApp {
         self.refresh_library();
     }
 
-    /// A PDF dropped onto the window becomes a note to write on, next to the
-    /// open note (or in the notebook / section shown in the library), and is
-    /// opened. While a file is dragged over the window, a hint says so.
+    /// A PDF dropped onto the window opens in the reader. While a file is
+    /// dragged over the window, a hint says so.
     fn dropped_pdf(&mut self, ctx: &egui::Context) {
-        let is_pdf = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
         let (hovering, dropped) = ctx.input(|i| {
-            let hovering = i.raw.hovered_files.iter().any(|f| f.path.as_deref().map_or(true, is_pdf));
+            let hovering = i.raw.hovered_files.iter().any(|f| f.path.as_deref().is_none_or(is_pdf));
             let dropped = i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).find(|p| is_pdf(p));
             (hovering, dropped)
         });
@@ -534,28 +631,20 @@ impl InkApp {
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("pdf_drop_hint")));
             let screen = ctx.screen_rect();
             painter.rect_filled(screen, 0.0, Color32::from_black_alpha(120));
-            theme::paint_toast(&painter, screen.center(), "Drop the PDF to write on it");
+            theme::paint_toast(&painter, screen.center(), "Drop the PDF to read it");
         }
-        let Some(src) = dropped else { return };
-        let dir = match self.screen {
-            Screen::Editor => self.note_path.as_deref().and_then(Path::parent).map(Path::to_path_buf),
-            Screen::Library => None,
-        };
-        // The open note is saved and closed first; stays put if that fails.
-        if self.screen == Screen::Editor {
-            self.close_note(ctx);
-            if self.screen == Screen::Editor {
-                return;
-            }
+        if let Some(src) = dropped {
+            self.open_pdf(ctx, &src);
         }
-        let dir = dir.unwrap_or_else(|| self.library_target_dir());
-        self.import_pdf(dir, src);
     }
 
     fn reset_editing_state(&mut self) {
         self.cache.clear();
         self.thumb_cache.clear();
         self.pdf_textures.clear();
+        self.pdf_nav.clear();
+        self.nav_back.clear();
+        self.outline_open.clear();
         self.page_drag = None;
         self.edit = None;
         self.text_press = None;
@@ -605,7 +694,7 @@ impl InkApp {
         // While typing (a text box or a text field such as the note title),
         // Ctrl+Z / Ctrl+Y belong to the text editor.
         // Reading changes nothing, so it has no undo either.
-        let typing = self.edit.is_some() || ctx.wants_keyboard_input() || self.reading;
+        let typing = self.edit.is_some() || ctx.wants_keyboard_input() || self.reading();
         // Order matters: the Shift variant must be consumed before plain Ctrl+Z.
         let (redo_shift, redo_y, undo, save, export) = ctx.input_mut(|i| {
             (
@@ -624,11 +713,11 @@ impl InkApp {
         if save {
             self.save_note(true);
         }
-        if export {
+        if export && !self.reading() {
             self.open_export_dialog();
         }
         // While the context menu is open, Escape belongs to it.
-        if self.selection.is_some() && self.context_menu.is_none() && !ctx.wants_keyboard_input() && !self.reading {
+        if self.selection.is_some() && self.context_menu.is_none() && !ctx.wants_keyboard_input() && !self.reading() {
             let (delete, escape) = ctx.input_mut(|i| {
                 (
                     i.consume_key(Modifiers::NONE, Key::Delete)
@@ -930,27 +1019,88 @@ impl InkApp {
         self.moving = None;
     }
 
-    /// Enters or leaves reading mode. Entering finishes the text being typed
-    /// and drops the selection; never in the middle of a stroke.
-    fn set_reading(&mut self, ctx: &egui::Context, on: bool) {
-        if on == self.reading || on && self.busy() {
-            return;
-        }
-        if on {
-            if self.edit.is_some() {
-                self.commit_edit(ctx);
-            }
-            self.clear_selection();
-            self.text_press = None;
-            self.context_menu = None;
-            self.apply_pen_eraser(false);
-        }
-        self.reading = on;
+    /// A PDF is open in the reader (not a note).
+    fn reading(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// The canvas moves around instead of writing: the reader, or a note
+    /// with the pointer tool. Drag to scroll, tap to turn pages or follow a
+    /// PDF link.
+    fn navigating(&self) -> bool {
+        self.reading() || self.tool == Tool::Pointer
     }
 
     /// The pages of the open note, stacked.
     fn layout(&self) -> Layout {
         Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count.max(1) }
+    }
+
+    // ------------------------------------------------- PDF links and outline
+
+    /// The note page written on page `pdf_page` of the PDF (the first, if
+    /// several are; none if it was deleted).
+    fn note_page_of(&self, pdf_page: u32) -> Option<u32> {
+        let pages = &self.doc.pdf.as_ref()?.pages;
+        pages.iter().position(|p| *p == Some(pdf_page)).map(|i| i as u32)
+    }
+
+    /// Scrolls to where a link or an outline entry leads, remembering where
+    /// the view was for Back.
+    fn go_to_target(&mut self, target: Target) {
+        let Some(page) = self.note_page_of(target.page) else {
+            self.toast("That page of the PDF is no longer in this note");
+            return;
+        };
+        let layout = self.layout();
+        let mut y = layout.page_stop(page);
+        // A height on the page: shown at the top, with a little room above.
+        if let Some(pdf) = &self.doc.pdf {
+            let placed = pdf.placement(target.page, layout.page_w, layout.page_h);
+            let size = pdf.sizes.get(target.page as usize);
+            if let (Some(top), Some([_, py, _, ph]), Some([_, h])) = (target.top, placed, size) {
+                let share = (1.0 - top / h.max(1.0)).clamp(0.0, 1.0);
+                y = layout.page_top(page) + py + share * ph - MARGIN;
+            }
+        }
+        if self.nav_back.len() >= NAV_BACK_MAX {
+            self.nav_back.remove(0);
+        }
+        self.nav_back.push(self.kinetic.target().unwrap_or(self.scroll));
+        self.scroll_to = Some(y.max(0.0));
+    }
+
+    /// Back to where the view was before the last link followed.
+    fn go_back(&mut self) {
+        if let Some(back) = self.nav_back.pop() {
+            self.scroll_to = Some(back.y);
+        }
+    }
+
+    /// The PDF link under the screen point `pos`, and its screen rectangle.
+    /// Asks for the links of that page the first time.
+    fn link_at(&mut self, view: &View, pos: Pos2) -> Option<(Rect, LinkAction)> {
+        let pdf = self.doc.pdf.as_ref()?;
+        let file = pdf.file.as_ref()?;
+        let layout = view.layout;
+        let page = layout.page_at(view.screen_to_content(pos))?;
+        let pdf_page = (*pdf.pages.get(page as usize)?)?;
+        let [x, y, w, h] = pdf.placement(pdf_page, layout.page_w, layout.page_h)?;
+        let origin = view.page_origin_screen(page) + vec2(x, y) * view.scale;
+        let size = vec2(w, h) * view.scale;
+        self.pdf_nav.links(file, pdf_page).iter().find_map(|l| {
+            let [l0, t0, r0, b0] = l.rect;
+            let rect = Rect::from_min_max(origin + vec2(l0, t0) * size, origin + vec2(r0, b0) * size);
+            rect.contains(pos).then(|| (rect, l.action.clone()))
+        })
+    }
+
+    /// Follows a link: a page of the PDF, or a web address in the browser.
+    fn follow_link(&mut self, ctx: &egui::Context, action: LinkAction) {
+        match action {
+            LinkAction::GoTo(target) => self.go_to_target(target),
+            LinkAction::Uri(uri) => ctx.open_url(egui::OpenUrl::new_tab(uri)),
+        }
     }
 
     /// Inserts an empty page so that it gets `index` (undoable).
@@ -1179,7 +1329,7 @@ impl InkApp {
                     s.width,
                 ))
             }
-            Tool::Eraser | Tool::Select | Tool::Text => None,
+            Tool::Pointer | Tool::Eraser | Tool::Select | Tool::Text => None,
         }
     }
 
@@ -1437,7 +1587,7 @@ impl InkApp {
 
         // Reading also takes taps (to turn pages); a drag then starts only
         // past the click threshold, which is why writing senses drags only.
-        let sense = if self.reading { Sense::click_and_drag() } else { Sense::drag() };
+        let sense = if self.navigating() { Sense::click_and_drag() } else { Sense::drag() };
         let canvas_resp = ui.allocate_rect(canvas, sense);
 
         // A press on the canvas (outside the editor, which sits on top) ends text editing.
@@ -1469,16 +1619,21 @@ impl InkApp {
             // Repeated presses continue from where the running ease ends.
             let base = self.kinetic.target().unwrap_or(self.scroll);
             let page_len = canvas.height() / scale * 0.9;
-            if self.reading {
-                let (next, prev, down, up) = ui.input(|i| {
+            if self.navigating() {
+                let (next, prev, down, up, back) = ui.input(|i| {
                     let space = i.key_pressed(Key::Space);
+                    let (left, alt) = (i.key_pressed(Key::ArrowLeft), i.modifiers.alt);
                     (
                         i.key_pressed(Key::ArrowRight) || space && !i.modifiers.shift,
-                        i.key_pressed(Key::ArrowLeft) || space && i.modifiers.shift,
+                        left && !alt || space && i.modifiers.shift,
                         i.key_pressed(Key::ArrowDown),
                         i.key_pressed(Key::ArrowUp),
+                        left && alt || i.key_pressed(Key::Backspace),
                     )
                 });
+                if back {
+                    self.go_back();
+                }
                 self.page_turn += i32::from(pgdn || next) - i32::from(pgup || prev);
                 let line = visible * 0.1;
                 if down {
@@ -1505,14 +1660,36 @@ impl InkApp {
         if let Some(y) = self.scroll_to.take() {
             self.ease_scroll(vec2(self.scroll.x, y));
         }
-        // Reading: a tap on the left or right quarter of the view turns the page.
-        if self.reading && canvas_resp.clicked() {
-            if let Some(p) = canvas_resp.interact_pointer_pos() {
-                let zone = canvas.width() * 0.25;
-                if p.x < canvas.left() + zone {
-                    self.page_turn -= 1;
-                } else if p.x > canvas.right() - zone {
-                    self.page_turn += 1;
+        // The reader: links, under the pointer, show where they lead
+        // and are followed by a tap; elsewhere a tap on the left or right
+        // quarter of the view turns the page.
+        let mut link_under_pointer = None;
+        if self.navigating() {
+            let v = View::new(canvas, self.scroll, scale, layout);
+            let pointer = canvas_resp.interact_pointer_pos().or(canvas_resp.hover_pos());
+            let link = pointer.and_then(|p| self.link_at(&v, p));
+            if let Some((rect, action)) = &link {
+                // Painted over the page, further down.
+                link_under_pointer = Some(*rect);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                if let LinkAction::Uri(uri) = action {
+                    egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), Id::new("pdf_link"), |ui| {
+                        ui.label(uri);
+                    });
+                }
+            }
+            if canvas_resp.clicked() {
+                match (link, canvas_resp.interact_pointer_pos()) {
+                    (Some((_, action)), _) => self.follow_link(ui.ctx(), action),
+                    (None, Some(p)) => {
+                        let zone = canvas.width() * 0.25;
+                        if p.x < canvas.left() + zone {
+                            self.page_turn -= 1;
+                        } else if p.x > canvas.right() - zone {
+                            self.page_turn += 1;
+                        }
+                    }
+                    (None, None) => {}
                 }
             }
         }
@@ -1539,8 +1716,8 @@ impl InkApp {
         if idle && !swallowed && canvas_resp.drag_started_by(PointerButton::Primary) {
             let start = press.or(canvas_resp.interact_pointer_pos());
             let v = View::new(canvas, self.scroll, scale, layout);
-            // Reading: everywhere; writing: only off the paper.
-            self.panning = self.reading
+            // The reader: everywhere; a note: only off the paper.
+            self.panning = self.navigating()
                 || start.map_or(false, |p| v.layout.page_at(v.screen_to_content(p)).is_none());
         }
         if self.panning {
@@ -1624,7 +1801,7 @@ impl InkApp {
         // ---- right click: context menu for what is under the pointer
         let right_click = ui.input(|i| i.pointer.secondary_clicked());
         if right_click
-            && !self.reading
+            && !self.reading()
             && !self.busy()
             && self.saved_tool.is_none()
             && ui.rect_contains_pointer(canvas)
@@ -1649,8 +1826,10 @@ impl InkApp {
             }
         }
 
-        if !self.panning && !swallowed && !self.reading {
+        if !self.panning && !swallowed && !self.reading() {
             match self.tool {
+                // Moving around is handled above.
+                Tool::Pointer => {}
                 Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
                 Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
                 Tool::Text => self.handle_text(&canvas_resp, &view, press, &moves),
@@ -1667,6 +1846,12 @@ impl InkApp {
         // A note written on a PDF: its pages, right on the paper.
         for page in view.visible_pages() {
             self.pdf_textures.paint(&painter, &self.doc, page, view.page_screen_rect(page), true);
+            // The reader: the links of the pages shown, ready before they are pointed at.
+            if let (true, Some(pdf)) = (self.navigating(), &self.doc.pdf) {
+                if let (Some(file), Some(pdf_page)) = (&pdf.file, self.doc.pdf_page(page)) {
+                    self.pdf_nav.links(file, pdf_page);
+                }
+            }
         }
         let ppp = ui.ctx().pixels_per_point();
         let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
@@ -1704,6 +1889,10 @@ impl InkApp {
 
         render::paint_strokes(&painter, &view, Layer::Ink, strokes, &mut self.cache, ppp, moved.as_ref());
         paint_live(StrokeKind::Pen);
+
+        if let Some(rect) = link_under_pointer {
+            painter.rect_filled(rect.expand(2.0), 2.0, color::accent_alpha(36));
+        }
 
         // Selection box and lasso outline.
         let blue = color::ACCENT;
@@ -1756,7 +1945,7 @@ impl InkApp {
             .map(|(x, y)| pos2(x / ppp, y / ppp))
             .or(self.wl_pen_hover)
             .filter(|p| canvas.contains(*p) && ctx.layer_id_at(*p) == Some(ui.layer_id()));
-        if self.reading {
+        if self.navigating() {
             // No tool, no tool cursor.
         } else if self.tool == Tool::Eraser {
             if let Some(pos) = canvas_resp
@@ -1856,7 +2045,7 @@ impl InkApp {
         // pages panel, as wide as the page.
         let last = view.page_screen_rect(layout.count - 1);
         let btn = Rect::from_min_size(pos2(last.left(), last.bottom() + 18.0), vec2(last.width(), 40.0));
-        if btn.intersects(canvas) && !self.reading {
+        if btn.intersects(canvas) && !self.reading() {
             let mut tile = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
             tile.set_clip_rect(canvas);
             if theme::add_tile(&mut tile, btn, Id::new("add_page"), "Add page").clicked() {
@@ -1898,6 +2087,14 @@ impl InkApp {
         if view != LeftPanel::Pages {
             self.page_drag = None;
         }
+        // Only a note written on a PDF has an outline.
+        let on_pdf = self.doc.pdf.is_some();
+        let wrong_view = view == LeftPanel::Outline && !on_pdf || view == LeftPanel::Settings && self.reading();
+        if wrong_view {
+            self.settings.left_panel = LeftPanel::Pages;
+            return self.left_panel(ctx);
+        }
+        let note_settings = !self.reading();
         if view == LeftPanel::Closed {
             return;
         }
@@ -1920,12 +2117,15 @@ impl InkApp {
             .show(ctx, |ui| {
                 toolbar::notch_buttons_style(ui);
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    if toolbar::settings_button(ui, view == LeftPanel::Settings) {
+                    if note_settings && toolbar::settings_button(ui, view == LeftPanel::Settings) {
                         clicked = Some(LeftPanel::Settings);
                     }
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         if toolbar::pages_button(ui, view == LeftPanel::Pages) {
                             clicked = Some(LeftPanel::Pages);
+                        }
+                        if on_pdf && toolbar::outline_button(ui, view == LeftPanel::Outline) {
+                            clicked = Some(LeftPanel::Outline);
                         }
                     });
                 });
@@ -1933,6 +2133,7 @@ impl InkApp {
         match view {
             LeftPanel::Pages => self.pages_view(ctx),
             LeftPanel::Settings => self.note_settings_view(ctx),
+            LeftPanel::Outline => self.outline_view(ctx),
             LeftPanel::Closed => {}
         }
         if let Some(v) = clicked {
@@ -1972,6 +2173,8 @@ impl InkApp {
         let ppp = ctx.pixels_per_point();
         let current = self.current_page;
         let blue = color::ACCENT;
+        // A PDF in the reader: its pages are looked at, not changed.
+        let editable = !self.reading();
 
         // Disjoint field borrows, released again after `show`.
         let doc = &self.doc;
@@ -2106,7 +2309,7 @@ impl InkApp {
                                 ui.id().with(("page_del", i)),
                                 Sense::click(),
                             );
-                            if ui.rect_contains_pointer(card) && drag.is_none() {
+                            if editable && ui.rect_contains_pointer(card) && drag.is_none() {
                                 let p = ui.painter();
                                 let fill = if del.hovered() {
                                     color::DANGER
@@ -2139,6 +2342,9 @@ impl InkApp {
                                 {
                                     jump = Some(i);
                                     ui.close_menu();
+                                }
+                                if !editable {
+                                    return;
                                 }
                                 ui.separator();
                                 if menus::entry(
@@ -2173,21 +2379,22 @@ impl InkApp {
                                     ui.close_menu();
                                 }
                             });
-                            if del.clicked() {
+                            if editable && del.clicked() {
                                 delete = Some(i);
                             } else if resp.clicked() {
                                 jump = Some(i);
                             }
-                            if resp.drag_started() {
+                            if editable && resp.drag_started() {
                                 *drag = Some(i);
                             }
                         }
-                        ui.add_space(space::XS);
-                        let (row, _) = ui.allocate_exact_size(vec2(avail, 36.0), Sense::hover());
-                        let tile = Rect::from_center_size(row.center(), vec2(thumb_w, 36.0));
-                        if theme::add_tile(ui, tile, Id::new("add_page_tile"), "Add page").clicked()
-                        {
-                            add = true;
+                        if editable {
+                            ui.add_space(space::XS);
+                            let (row, _) = ui.allocate_exact_size(vec2(avail, 36.0), Sense::hover());
+                            let tile = Rect::from_center_size(row.center(), vec2(thumb_w, 36.0));
+                            if theme::add_tile(ui, tile, Id::new("add_page_tile"), "Add page").clicked() {
+                                add = true;
+                            }
                         }
 
                         // Drag & drop reordering.
@@ -2263,13 +2470,14 @@ impl InkApp {
 
     /// One frame of the note editor.
     fn editor_screen(&mut self, ctx: &egui::Context) {
+        self.pdf_nav.begin_frame(ctx);
         self.handle_shortcuts(ctx);
 
         // Pen side button = eraser while held. Wayland pens report it through
         // `eraser_native`, Windows pens through `win_pen`; on X11 it can arrive
         // as the middle mouse button. (The right button opens the context
         // menu.) Never switch in the middle of a stroke.
-        if !self.busy() && self.edit.is_none() && !self.reading {
+        if !self.busy() && self.edit.is_none() && !self.reading() {
             let button_held = ctx.input(|i| i.pointer.middle_down());
             let win = self
                 .win_pen
@@ -2311,9 +2519,14 @@ impl InkApp {
             return;
         }
         // After the side panels, so the toolbar is centred over the canvas.
-        let event = if self.reading {
-            let count = self.doc.page_count.max(1);
-            toolbar::show_reader(ctx, &mut self.settings, self.current_page, count, bottom_inset)
+        let nav = toolbar::Navigation {
+            page: self.current_page,
+            count: self.doc.page_count.max(1),
+            contents: self.doc.pdf.is_some(),
+            can_go_back: !self.nav_back.is_empty(),
+        };
+        let event = if self.reading() {
+            toolbar::show_reader(ctx, &mut self.settings, &nav, bottom_inset)
         } else {
             toolbar::show(
                 ctx,
@@ -2321,11 +2534,13 @@ impl InkApp {
                 &mut self.settings,
                 self.history.can_undo(),
                 self.history.can_redo(),
+                &nav,
                 bottom_inset,
             )
         };
         // After the pages panel, so the corner buttons sit next to it.
-        toolbar::show_corners(ctx, &mut self.settings, bottom_inset);
+        let note_settings = !self.reading();
+        toolbar::show_corners(ctx, &mut self.settings, note_settings, bottom_inset);
         // Before the canvas, which must not see the press that closes it.
         self.context_menu_ui(ctx);
         // Rename / delete / new section from the notebook panel.
@@ -2342,11 +2557,11 @@ impl InkApp {
             Some(ToolbarEvent::Redo) => self.redo(),
             Some(ToolbarEvent::ZoomIn) => self.pending.push(Command::ZoomIn),
             Some(ToolbarEvent::ZoomOut) => self.pending.push(Command::ZoomOut),
-            Some(ToolbarEvent::Read) => self.set_reading(ctx, true),
-            Some(ToolbarEvent::Write) => self.set_reading(ctx, false),
+            Some(ToolbarEvent::Import) => self.import_open_pdf(),
             Some(ToolbarEvent::PrevPage) => self.page_turn -= 1,
             Some(ToolbarEvent::NextPage) => self.page_turn += 1,
             Some(ToolbarEvent::GoToPage(i)) => self.scroll_to = Some(self.layout().page_stop(i)),
+            Some(ToolbarEvent::Back) => self.go_back(),
             None => {}
         }
 
@@ -2373,7 +2588,20 @@ impl InkApp {
 struct Loading {
     /// What the loading screen says.
     label: String,
-    done: Receiver<Result<(PathBuf, NoteMeta, Document, NoteWriter), String>>,
+    done: Receiver<Result<Loaded, String>>,
+}
+
+/// What a background load opens.
+// One per load, moved once: the size difference costs nothing.
+#[allow(clippy::large_enum_variant)]
+enum Loaded {
+    Note(PathBuf, NoteMeta, Document, NoteWriter),
+    /// A PDF for the reader.
+    Pdf(PathBuf, Document),
+}
+
+fn is_pdf(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
 }
 
 /// Notes larger than this (bytes) are read in the background: notes written

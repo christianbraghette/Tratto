@@ -143,6 +143,75 @@ pub fn underlay(pdf: Vec<u8>, pages: Vec<Underlay>) -> Result<Vec<u8>, PdfError>
     answer.recv().map_err(|_| PdfError::Unavailable("the PDF worker stopped".into()))?
 }
 
+/// Where a link or an outline entry leads, in the same PDF.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Target {
+    pub page: u32,
+    /// The height to show at the top of the view, when the PDF says: in PDF
+    /// points from the bottom of the page (the page's rotation not applied).
+    pub top: Option<f32>,
+}
+
+/// An entry of a PDF's outline (its bookmarks: the table of contents), in
+/// reading order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineEntry {
+    pub title: String,
+    /// 0 for the top level.
+    pub depth: u32,
+    /// `None`: the entry leads nowhere in this PDF (e.g. to another file).
+    pub target: Option<Target>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkAction {
+    GoTo(Target),
+    /// A web address (or another URI).
+    Uri(String),
+}
+
+/// A link on a page. `rect` is `[left, top, right, bottom]` as shares of the
+/// page as it is shown (rotation applied): 0..1, y down.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageLink {
+    pub rect: [f32; 4],
+    pub action: LinkAction,
+}
+
+/// The answer to `outline`.
+pub struct Outline {
+    /// `PdfFile::key` of the document.
+    pub key: u64,
+    pub entries: Result<Vec<OutlineEntry>, PdfError>,
+}
+
+/// The answer to `links`.
+pub struct PageLinks {
+    /// `PdfFile::key` of the document.
+    pub key: u64,
+    pub page: u32,
+    pub links: Result<Vec<PageLink>, PdfError>,
+}
+
+/// Asks for the outline of `file`. The answer arrives on `reply`; `wake` is
+/// called after sending it.
+pub fn outline(file: &Arc<PdfFile>, reply: Sender<Outline>, wake: Arc<dyn Fn() + Send + Sync>) {
+    let job = Job::Outline { file: file.clone(), reply, wake };
+    if let Err(mpsc::SendError(job)) = worker().send(job) {
+        fail(job, PdfError::Unavailable("the PDF worker stopped".into()));
+    }
+}
+
+/// Asks for the links on `page` of `file` (one page at a time: reading those
+/// of a whole book would hold up the rendering). The answer arrives on
+/// `reply`; `wake` is called after sending it.
+pub fn links(file: &Arc<PdfFile>, page: u32, reply: Sender<PageLinks>, wake: Arc<dyn Fn() + Send + Sync>) {
+    let job = Job::Links { file: file.clone(), page, reply, wake };
+    if let Err(mpsc::SendError(job)) = worker().send(job) {
+        fail(job, PdfError::Unavailable("the PDF worker stopped".into()));
+    }
+}
+
 /// The size of every page of a PDF, in points (1/72 in), rotation applied.
 /// Blocks until the worker answers (opening a PDF is quick).
 pub fn page_sizes(file: &Arc<PdfFile>) -> Result<Vec<[f32; 2]>, PdfError> {
@@ -169,6 +238,8 @@ enum Job {
         wake: Arc<dyn Fn() + Send + Sync>,
     },
     Underlay { pdf: Vec<u8>, pages: Vec<Underlay>, reply: Sender<Result<Vec<u8>, PdfError>> },
+    Outline { file: Arc<PdfFile>, reply: Sender<Outline>, wake: Arc<dyn Fn() + Send + Sync> },
+    Links { file: Arc<PdfFile>, page: u32, reply: Sender<PageLinks>, wake: Arc<dyn Fn() + Send + Sync> },
 }
 
 impl Job {
@@ -295,6 +366,14 @@ fn fail(job: Job, err: PdfError) {
         Job::Underlay { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+        Job::Outline { file, reply, wake } => {
+            let _ = reply.send(Outline { key: file.key, entries: Err(err) });
+            wake();
+        }
+        Job::Links { file, page, reply, wake } => {
+            let _ = reply.send(PageLinks { key: file.key, page, links: Err(err) });
+            wake();
+        }
     }
 }
 
@@ -311,7 +390,95 @@ fn handle(open: &mut Open, job: Job) {
         Job::Underlay { pdf, pages, reply } => {
             let _ = reply.send(underlay_pages(open.pdfium, pdf, &pages));
         }
+        Job::Outline { file, reply, wake } => {
+            let entries = open.document(&file).map(read_outline);
+            let _ = reply.send(Outline { key: file.key, entries });
+            wake();
+        }
+        Job::Links { file, page, reply, wake } => {
+            let links = open.page(&file, page).map(read_links);
+            let _ = reply.send(PageLinks { key: file.key, page, links });
+            wake();
+        }
     }
+}
+
+/// Outline entries read at most: a broken outline can be huge, or cyclic.
+const MAX_OUTLINE: usize = 10_000;
+/// Deeper entries are left out.
+const MAX_OUTLINE_DEPTH: u32 = 32;
+
+fn read_outline(doc: &PdfDocument) -> Vec<OutlineEntry> {
+    fn walk(first: Option<PdfBookmark>, depth: u32, out: &mut Vec<OutlineEntry>) {
+        let mut next = first;
+        while let Some(b) = next {
+            if out.len() >= MAX_OUTLINE {
+                return;
+            }
+            let target = match b.destination() {
+                Some(d) => target(&d),
+                None => match b.action() {
+                    Some(PdfAction::LocalDestination(a)) => a.destination().ok().and_then(|d| target(&d)),
+                    _ => None,
+                },
+            };
+            let title = b.title().unwrap_or_default().trim().to_owned();
+            out.push(OutlineEntry { title, depth, target });
+            if depth < MAX_OUTLINE_DEPTH {
+                walk(b.first_child(), depth + 1, out);
+            }
+            next = b.next_sibling();
+        }
+    }
+    let mut out = Vec::new();
+    walk(doc.bookmarks().root(), 0, &mut out);
+    out
+}
+
+fn target(dest: &PdfDestination) -> Option<Target> {
+    let page = u32::try_from(dest.page_index().ok()?).ok()?;
+    let top = match dest.view_settings() {
+        Ok(PdfDestinationViewSettings::SpecificCoordinatesAndZoom(_, Some(y), _))
+        | Ok(PdfDestinationViewSettings::FitPageHorizontallyToWindow(Some(y)))
+        | Ok(PdfDestinationViewSettings::FitBoundsHorizontallyToWindow(Some(y))) => Some(y.value),
+        _ => None,
+    };
+    Some(Target { page, top })
+}
+
+/// Link rectangles are measured on the page rendered this wide (pixels).
+const LINK_GRID: u32 = 10_000;
+
+fn read_links(page: &PdfPage) -> Vec<PageLink> {
+    let size = [page.width().value, page.height().value];
+    let (w, h) = (LINK_GRID, page_height_px(size, LINK_GRID));
+    let config = PdfRenderConfig::new().set_target_width(w as Pixels);
+    let share = |x: PdfPoints, y: PdfPoints| {
+        page.points_to_pixels(x, y, &config)
+            .ok()
+            .map(|(px, py)| ((px as f32 / w as f32).clamp(0.0, 1.0), (py as f32 / h as f32).clamp(0.0, 1.0)))
+    };
+    let mut out = Vec::new();
+    for link in page.links().iter() {
+        let action = match link.destination() {
+            Some(d) => target(&d).map(LinkAction::GoTo),
+            None => match link.action() {
+                Some(PdfAction::LocalDestination(a)) => a.destination().ok().and_then(|d| target(&d)).map(LinkAction::GoTo),
+                Some(PdfAction::Uri(a)) => a.uri().ok().filter(|u| !u.trim().is_empty()).map(LinkAction::Uri),
+                _ => None,
+            },
+        };
+        let Some(action) = action else { continue };
+        let Ok(rect) = link.rect() else { continue };
+        let q = rect.to_quad_points();
+        // Rotation can swap the corners: sort them.
+        let (Some(a), Some(b)) = (share(q.left(), q.top()), share(q.right(), q.bottom())) else { continue };
+        let rect = [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)];
+        if rect[2] > rect[0] && rect[3] > rect[1] {
+            out.push(PageLink { rect, action });
+        }
+    }
+    out
 }
 
 fn underlay_pages(pdfium: &Pdfium, pdf: Vec<u8>, pages: &[Underlay]) -> Result<Vec<u8>, PdfError> {
@@ -443,6 +610,110 @@ mod tests {
                 false
             }
         }
+    }
+
+    /// A PDF made of `objects` (numbered from 1; 1 is the catalog), with a
+    /// correct cross-reference table.
+    fn pdf_of(objects: &[&str]) -> Vec<u8> {
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        let n = objects.len() + 1;
+        out.extend(format!("xref\n0 {n}\n0000000000 65535 f \n").as_bytes());
+        for o in offsets {
+            out.extend(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend(format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        out
+    }
+
+    /// Three 200 x 100 pt pages, the third turned a quarter clockwise; links
+    /// on the first and the third; a chapter with a section in the outline.
+    fn linked_pdf() -> Arc<PdfFile> {
+        PdfFile::new(pdf_of(&[
+            "<< /Type /Catalog /Pages 2 0 R /Outlines 7 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Annots [6 0 R 9 0 R] >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Rotate 90 /Annots [10 0 R] >>",
+            "<< /Type /Annot /Subtype /Link /Rect [20 10 60 30] /Border [0 0 0] /Dest [4 0 R /XYZ 0 80 0] >>",
+            "<< /Type /Outlines /First 8 0 R /Last 8 0 R /Count 2 >>",
+            "<< /Title (Chapter) /Parent 7 0 R /Dest [4 0 R /XYZ 0 80 0] /First 11 0 R /Last 11 0 R /Count 1 >>",
+            "<< /Type /Annot /Subtype /Link /Rect [100 50 200 100] /A << /S /URI /URI (https://example.org/) >> >>",
+            "<< /Type /Annot /Subtype /Link /Rect [0 0 50 100] /Dest [3 0 R /Fit] >>",
+            "<< /Title (Section) /Parent 8 0 R /A << /S /GoTo /D [5 0 R /Fit] >> >>",
+        ]))
+    }
+
+    fn close(a: [f32; 4], b: [f32; 4]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 2e-3)
+    }
+
+    #[test]
+    fn outline_entries_and_their_pages() {
+        if !pdfium_available() {
+            return;
+        }
+        let file = linked_pdf();
+        let (tx, rx) = mpsc::channel();
+        outline(&file, tx, Arc::new(|| {}));
+        let answer = rx.recv().unwrap();
+        assert_eq!(answer.key, file.key);
+        assert_eq!(
+            answer.entries.unwrap(),
+            [
+                OutlineEntry { title: "Chapter".into(), depth: 0, target: Some(Target { page: 1, top: Some(80.0) }) },
+                OutlineEntry { title: "Section".into(), depth: 1, target: Some(Target { page: 2, top: None }) },
+            ]
+        );
+    }
+
+    #[test]
+    fn links_in_the_page_as_shown() {
+        if !pdfium_available() {
+            return;
+        }
+        let file = linked_pdf();
+        assert_eq!(page_sizes(&file).unwrap()[2], [100.0, 200.0]);
+        let (tx, rx) = mpsc::channel();
+        for page in 0..3 {
+            links(&file, page, tx.clone(), Arc::new(|| {}));
+        }
+        let mut got: Vec<PageLinks> = (0..3).map(|_| rx.recv().unwrap()).collect();
+        got.sort_by_key(|l| l.page);
+        let mut got = got.into_iter().map(|l| l.links.unwrap());
+        let (first, second, third) = (got.next().unwrap(), got.next().unwrap(), got.next().unwrap());
+
+        assert_eq!(first.len(), 2, "{first:?}");
+        // Measured from the top: 10..30 pt up a 100 pt page is 0.7..0.9 down.
+        assert!(close(first[0].rect, [0.1, 0.7, 0.3, 0.9]), "{:?}", first[0].rect);
+        assert_eq!(first[0].action, LinkAction::GoTo(Target { page: 1, top: Some(80.0) }));
+        assert!(close(first[1].rect, [0.5, 0.0, 1.0, 0.5]), "{:?}", first[1].rect);
+        assert_eq!(first[1].action, LinkAction::Uri("https://example.org/".into()));
+        assert!(second.is_empty());
+        // Turned clockwise, the left edge of the page becomes its top.
+        assert_eq!(third.len(), 1);
+        assert!(close(third[0].rect, [0.0, 0.0, 1.0, 0.25]), "{:?}", third[0].rect);
+        assert_eq!(third[0].action, LinkAction::GoTo(Target { page: 0, top: None }));
+    }
+
+    #[test]
+    fn a_pdf_without_outline_has_none() {
+        if !pdfium_available() {
+            return;
+        }
+        let file = PdfFile::new(pdf_of(&[
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] >>",
+        ]));
+        let (tx, rx) = mpsc::channel();
+        outline(&file, tx, Arc::new(|| {}));
+        assert!(rx.recv().unwrap().entries.unwrap().is_empty());
     }
 
     #[test]

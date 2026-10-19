@@ -24,6 +24,7 @@ the GPU and, optionally, predicted slightly ahead of the pen tip.
     - [Editor](#editor)
     - [Settings](#settings)
     - [Keyboard shortcuts](#keyboard-shortcuts)
+    - [Reading PDFs](#reading-pdfs)
     - [PDF export](#pdf-export)
   - [Your Data](#your-data)
   - [Configuration](#configuration)
@@ -39,6 +40,8 @@ the GPU and, optionally, predicted slightly ahead of the pen tip.
 - Pressure-sensitive strokes, with smoothing and optional prediction of the pen tip
 - Stroke eraser, and lasso selection to move or delete ink
 - Text boxes for typed notes
+- A pointer tool to move around a note as in the PDF reader: drag to scroll,
+  tap to turn pages or follow the links of the PDF it is written on
 - Native pen support on Wayland (pressure, eraser end, side button) and Windows (eraser end, side button);
   on X11, a pen side button reported as the middle mouse button also switches to the eraser
 
@@ -62,6 +65,8 @@ the GPU and, optionally, predicted slightly ahead of the pen tip.
 - A library of notebooks (with colour covers), sections and quick notes
 - Recent notes; rename, duplicate, move and delete notes
 - Import existing `.ink` files
+- Read PDFs without importing them: page turning, the PDF's table of
+  contents and links, recently read PDFs in the library; import one to write on it
 - Deleted items go to a trash folder instead of being erased
 
 **Safety and export**
@@ -118,7 +123,7 @@ resize.
 
 | Menu | Contents |
 | --- | --- |
-| **File** | New note, new notebook, import, save, export as PDF, close note, library folder, settings, exit |
+| **File** | New note, new notebook, import, open a PDF to read, write on a PDF, save, export as PDF, close note, library folder, settings, exit |
 | **Edit** | Undo, redo, select all on page, delete selection, deselect |
 | **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen |
 | **Page** | Insert a page before / after the current one, delete it, paper style, page setup |
@@ -131,7 +136,7 @@ buttons are icons; hover over one to see its name.
 
 | Where | Buttons |
 | --- | --- |
-| Top-centre notch (or bottom, see **View**) | Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size, Undo, Redo, zoom out / zoom level / zoom in |
+| Top-centre notch (or bottom, see **View**) | Pointer, Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size (for the pointer: contents, Back and the pages), Undo, Redo, zoom out / zoom level / zoom in |
 | Top-left notch | **Pages** (page panel) |
 | Bottom-left notch | **Note settings** (paper, pages, export) |
 | Top-right notch | **Library** (toggle the notebook panel) |
@@ -191,6 +196,7 @@ note and goes back to the library screen.
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+N` | New note (in the same notebook or section) |
+| `Ctrl+O` | Open a PDF to read |
 | `Ctrl+S` | Save now |
 | `Ctrl+E` | Export the note as PDF (opens the export dialog) |
 | `Ctrl+W` | Close the note and go back to the library screen |
@@ -210,6 +216,32 @@ note and goes back to the library screen.
 
 On macOS, use `Cmd` instead of `Ctrl`. The list is also under **Help >
 Keyboard shortcuts**.
+
+### Reading PDFs
+
+**File > Open PDF...** (`Ctrl+O`), **Read a PDF** on the library's home
+screen, or dropping a PDF onto the window opens it to read, as it is: nothing
+can be written on it, and it is not copied into the library.
+
+- Drag anywhere (pen, finger or mouse) to scroll. Tap the left or right
+  quarter of the page, or press `Left` / `Right`, `Space` / `Shift+Space` or
+  `Page Up` / `Page Down`, to turn the page. A page taller than the window is
+  shown in steps first, so nothing is skipped.
+- **Contents** (in the bar, or in the left panel) shows the PDF's outline;
+  a click goes there, and the part being read is marked.
+- Links in the PDF can be tapped: to another page, or a web address (opened
+  in the browser). **Back** (`Alt+Left` or `Backspace`) returns to where you
+  were.
+- **Import** turns the PDF into a note to write on, in the notebook or
+  section open in the library, and opens it at the same page.
+
+Recently read PDFs are listed on the library's home screen and reopen where
+you left them.
+
+In a note, the **Pointer** tool (first in the toolbar) moves around the same
+way: drag to scroll, tap or use the keys above to turn pages, and, on a note
+written on a PDF, follow its links and open its contents. It writes nothing;
+pick a pen or another tool to write again.
 
 ### PDF export
 
