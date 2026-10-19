@@ -30,7 +30,7 @@ pub enum PenEvent {
         pressure: f32,
         /// Tip is in contact with the surface.
         down: bool,
-        /// The eraser end of the pen is in use.
+        /// The eraser end of the pen is in use, or a side button is held.
         eraser: bool,
     },
     /// Pen left proximity of the tablet.
@@ -64,7 +64,7 @@ mod imp {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender, TryIter};
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     use eframe::egui;
     use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
@@ -88,10 +88,18 @@ mod imp {
 
     use super::PenEvent;
 
-    /// Linux `BTN_STYLUS` (first barrel button).
+    /// Linux `BTN_STYLUS` / `BTN_STYLUS2` (the two side buttons of a pen).
     const BTN_STYLUS: u32 = 0x14b;
+    const BTN_STYLUS2: u32 = 0x14c;
+    const BTN_STYLUS3: u32 = 0x149;
     /// `zwp_tablet_tool_v2::pressure` is normalised over this range.
     const PRESSURE_MAX: f32 = 65535.0;
+
+    /// `INKNOTE_DEBUG_PEN=1` prints every pen button code to stderr.
+    fn debug() -> bool {
+        static D: OnceLock<bool> = OnceLock::new();
+        *D.get_or_init(|| std::env::var_os("INKNOTE_DEBUG_PEN").is_some())
+    }
 
     pub struct WaylandPen {
         rx: Receiver<PenEvent>,
@@ -178,6 +186,8 @@ mod imp {
         down: bool,
         dirty: bool,
         left: bool,
+        /// Bit 0 = BTN_STYLUS, bit 1 = BTN_STYLUS2, bit 2 = BTN_STYLUS3 held.
+        barrel_mask: u8,
     }
 
     struct State {
@@ -217,7 +227,7 @@ mod imp {
                             y: t.y as f32,
                             pressure: t.pressure,
                             down: t.down,
-                            eraser: t.kind == ToolKind::Eraser,
+                            eraser: t.kind == ToolKind::Eraser || t.barrel_mask != 0,
                         })
                         .is_ok();
                 }
@@ -245,6 +255,7 @@ mod imp {
                 E::ProximityOut => {
                     t.in_proximity = false;
                     t.down = false;
+                    t.barrel_mask = 0;
                     t.left = true;
                 }
                 E::Down { .. } => {
@@ -269,9 +280,22 @@ mod imp {
                         btn_state,
                         WEnum::Value(zwp_tablet_tool_v2::ButtonState::Pressed)
                     );
-                    if t.kind != ToolKind::Ignore && pressed && button == BTN_STYLUS {
-                        let _ = state.tx.send(PenEvent::BarrelPressed);
-                        state.ctx.request_repaint();
+                    if debug() {
+                        eprintln!("pen: button {button:#x} pressed={pressed}");
+                    }
+                    let bit = match button {
+                        BTN_STYLUS => 1,
+                        BTN_STYLUS2 => 2,
+                        BTN_STYLUS3 => 4,
+                        _ => 0,
+                    };
+                    if bit != 0 && t.kind != ToolKind::Ignore {
+                        if pressed {
+                            t.barrel_mask |= bit;
+                        } else {
+                            t.barrel_mask &= !bit;
+                        }
+                        t.dirty = true; // reported with the next `frame`
                     }
                 }
                 E::Removed => {

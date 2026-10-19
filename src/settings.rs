@@ -66,10 +66,10 @@ pub struct Settings {
     pub zoom: ZoomMode,
     /// Left panel with page previews.
     pub pages_panel_open: bool,
-    pub pdf_path: String,
     /// Draw the ruled/grid lines into the exported PDF.
     pub pdf_rules: bool,
-    pub file_path: String,
+    /// Folder that holds all notebooks and notes.
+    pub library_root: String,
 }
 
 impl Default for Settings {
@@ -83,9 +83,8 @@ impl Default for Settings {
             predict_pen: true,
             zoom: ZoomMode::Percent(100),
             pages_panel_open: false,
-            pdf_path: "notes.pdf".to_owned(),
             pdf_rules: true,
-            file_path: "notes.ink".to_owned(),
+            library_root: crate::library::default_root().to_string_lossy().into_owned(),
         }
     }
 }

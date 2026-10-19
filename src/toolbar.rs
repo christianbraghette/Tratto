@@ -24,6 +24,8 @@ pub enum ToolbarEvent {
     Undo,
     Redo,
     ToggleSettings,
+    /// Back to the library.
+    Library,
 }
 
 const PEN_PALETTE: [[u8; 3]; 6] = [
@@ -84,6 +86,11 @@ fn contents(
     can_redo: bool,
 ) -> Option<ToolbarEvent> {
     let mut event = None;
+
+    if ui.button("Library").on_hover_text("Save and go back to your notes").clicked() {
+        event = Some(ToolbarEvent::Library);
+    }
+    ui.separator();
 
     ui.selectable_value(tool, Tool::Pen, "Pen");
     ui.selectable_value(tool, Tool::Highlighter, "Highlighter");

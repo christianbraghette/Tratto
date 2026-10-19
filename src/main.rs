@@ -3,6 +3,7 @@
 //! Module layout:
 //! - `model`          serializable data model (`Point`, `Stroke`, `Document`)
 //! - `geometry`       point-to-segment math used by the eraser
+//! - `library`        notebooks / sections / notes as folders and files
 //! - `history`        action-based undo/redo (no document cloning)
 //! - `stroke_builder` jitter filter + velocity-adaptive smoothing + prediction
 //! - `stroke_mesh`    anti-aliased, curve-interpolated stroke tessellation
@@ -20,6 +21,7 @@
 mod app;
 mod geometry;
 mod history;
+mod library;
 mod model;
 mod pdf_export;
 mod render;

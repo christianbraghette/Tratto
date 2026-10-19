@@ -212,6 +212,8 @@ impl Action {
 pub struct History {
     undo: VecDeque<Action>,
     redo: Vec<Action>,
+    /// Incremented on every document change (exec / undo / redo); autosave watches it.
+    version: u64,
 }
 
 impl History {
@@ -222,7 +224,12 @@ impl History {
     }
 
     /// Records an already-performed change by its inverse.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     pub fn push_undo(&mut self, inverse: Action) {
+        self.version += 1;
         self.undo.push_back(inverse);
         if self.undo.len() > MAX_DEPTH {
             self.undo.pop_front();
@@ -235,6 +242,7 @@ impl History {
             Some(a) => {
                 let inverse = a.apply(doc);
                 self.redo.push(inverse);
+                self.version += 1;
                 true
             }
             None => false,
@@ -246,6 +254,7 @@ impl History {
             Some(a) => {
                 let inverse = a.apply(doc);
                 self.undo.push_back(inverse);
+                self.version += 1;
                 true
             }
             None => false,
