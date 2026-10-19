@@ -192,7 +192,11 @@ impl InkApp {
                 buf = self.note_meta.title.clone();
             }
             let field = chrome::Title::Editable { text: &mut buf, hint: "Untitled note" };
-            let resp = chrome::title_bar(ctx, state, field, |ui| self.menu_bar(ui, &mut cmds));
+            let mut menu_open = false;
+            // Fullscreen: keep the bar shown while a menu is open or the title is edited.
+            let pinned = self.menu_open || self.title_focused;
+            let resp = chrome::title_bar(ctx, state, pinned, field, |ui| menu_open = self.menu_bar(ui, &mut cmds));
+            self.menu_open = menu_open;
             self.title_focused = resp.as_ref().is_some_and(|r| r.has_focus());
             // Enter or a click elsewhere renames; Escape keeps the old title.
             if resp.is_some_and(|r| r.lost_focus()) && !ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -200,7 +204,10 @@ impl InkApp {
             }
             self.title_buf = buf;
         } else {
-            chrome::title_bar(ctx, state, chrome::Title::Text("InkNote"), |ui| self.menu_bar(ui, &mut cmds));
+            let mut menu_open = false;
+            let title = chrome::Title::Text("InkNote");
+            chrome::title_bar(ctx, state, self.menu_open, title, |ui| menu_open = self.menu_bar(ui, &mut cmds));
+            self.menu_open = menu_open;
         }
         self.pending.extend(cmds);
     }
@@ -240,7 +247,9 @@ impl InkApp {
 
     // ------------------------------------------------------------ menu bar
 
-    fn menu_bar(&self, ui: &mut Ui, cmds: &mut Vec<Command>) {
+    /// The menus of the title bar; returns whether one of them is open.
+    fn menu_bar(&self, ui: &mut Ui, cmds: &mut Vec<Command>) -> bool {
+        let mut open = false;
         let ctx = ui.ctx().clone();
         let editor = self.screen == Screen::Editor;
         let cmd = Modifiers::COMMAND;
@@ -251,7 +260,7 @@ impl InkApp {
             }
         };
 
-        ui.menu_button("File", |ui| {
+        open |= ui.menu_button("File", |ui| {
             push(entry(ui, icon::NOTE_PENCIL, "New note", &shortcut(&ctx, cmd, Key::N), true), ui, Command::NewNote);
             push(entry(ui, icon::NOTEBOOK, "New notebook...", "", true), ui, Command::NewNotebook);
             push(entry(ui, icon::DOWNLOAD_SIMPLE, "Import note file...", "", true), ui, Command::Import);
@@ -264,15 +273,15 @@ impl InkApp {
             push(entry(ui, icon::GEAR_SIX, "Settings...", &shortcut(&ctx, cmd, Key::Comma), true), ui, Command::Settings);
             ui.separator();
             push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
-        });
+        }).inner.is_some();
 
         if editor {
-            ui.menu_button("Edit", |ui| {
+            open |= ui.menu_button("Edit", |ui| {
                 self.edit_entries(ui, &mut |ui, c| push(true, ui, c));
-            });
+            }).inner.is_some();
         }
 
-        ui.menu_button("View", |ui| {
+        open |= ui.menu_button("View", |ui| {
             if editor {
                 push(entry(ui, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", &shortcut(&ctx, cmd, Key::Plus), true), ui, Command::ZoomIn);
                 push(entry(ui, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", &shortcut(&ctx, cmd, Key::Minus), true), ui, Command::ZoomOut);
@@ -287,10 +296,10 @@ impl InkApp {
                 ui.separator();
             }
             push(entry(ui, icon::CORNERS_OUT, "Full screen", &shortcut(&ctx, Modifiers::NONE, Key::F11), true), ui, Command::Fullscreen);
-        });
+        }).inner.is_some();
 
         if editor {
-            ui.menu_button("Page", |ui| {
+            open |= ui.menu_button("Page", |ui| {
                 self.page_entries(ui, self.current_page, &mut |ui, c| push(true, ui, c));
                 ui.separator();
                 let kind = self.doc.page.kind;
@@ -299,14 +308,15 @@ impl InkApp {
                 }
                 ui.separator();
                 push(entry(ui, icon::GEAR_SIX, "Note settings...", "", true), ui, Command::NoteSettings);
-            });
+            }).inner.is_some();
         }
 
-        ui.menu_button("Help", |ui| {
+        open |= ui.menu_button("Help", |ui| {
             push(entry(ui, icon::KEYBOARD, "Keyboard shortcuts", "", true), ui, Command::Shortcuts);
             ui.separator();
             push(entry(ui, icon::INFO, "About InkNote", "", true), ui, Command::About);
-        });
+        }).inner.is_some();
+        open
     }
 
     /// Undo / redo and the selection entries (Edit menu and context menu).

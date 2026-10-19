@@ -327,7 +327,7 @@ fn quick_tree(ui: &mut Ui, root: &Path, notes: &[NoteInfo], trash: &[&TrashItem]
 /// A new note next to the open one (same notebook / section).
 fn new_note_row(ui: &mut Ui, t: &mut Tree) {
     let Some(dir) = t.current.and_then(Path::parent) else { return };
-    if ghost_row(ui, icon::NOTE_PENCIL, "New note here").on_hover_text("Ctrl+N").clicked() {
+    if ghost_row(ui, icon::NOTE_PENCIL, "New note").on_hover_text("Ctrl+N").clicked() {
         t.picks.push(Pick::NewNote(dir.to_path_buf()));
     }
 }
@@ -359,7 +359,7 @@ fn group(ui: &mut Ui, g: &Group, t: &mut Tree) {
             // The same actions on right-click and behind "⋯".
             header.context_menu(|ui| group_menu(ui, g, has_current, t.picks));
             if show_actions {
-                let new = theme::row_button(ui, row, actions - 1, id.with("new"), icon::PLUS, "New note here", false);
+                let new = theme::row_button(ui, row, actions - 1, id.with("new"), icon::PLUS, "New note", false);
                 if new.clicked() {
                     t.picks.push(Pick::NewNote(g.dir.to_path_buf()));
                 }
@@ -437,7 +437,7 @@ fn paint_header(
 }
 
 fn group_menu(ui: &mut Ui, g: &Group, has_current: bool, picks: &mut Vec<Pick>) {
-    if entry(ui, icon::NOTE_PENCIL, "New note here", "", true) {
+    if entry(ui, icon::NOTE_PENCIL, "New note", "", true) {
         picks.push(Pick::NewNote(g.dir.to_path_buf()));
         ui.close_menu();
     }

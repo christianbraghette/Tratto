@@ -206,6 +206,8 @@ pub struct InkApp {
     /// Text of the note title field in the title bar, and whether it has focus.
     title_buf: String,
     title_focused: bool,
+    /// A menu of the title bar was open last frame (keeps the fullscreen bar shown).
+    menu_open: bool,
     /// File > Settings window.
     global_settings_open: bool,
     /// Export PDF dialog, if open.
@@ -288,6 +290,7 @@ impl InkApp {
             os_title: "InkNote".to_owned(),
             title_buf: String::new(),
             title_focused: false,
+            menu_open: false,
             global_settings_open: false,
             export_dialog: None,
             export_job: None,
@@ -1334,14 +1337,9 @@ impl InkApp {
                     self.kinetic.release(now, scale);
                 }
             }
-        } else if idle {
-            if let Some(p) = canvas_resp.hover_pos() {
-                let v = View::new(canvas, self.scroll, scale, layout);
-                if v.layout.page_at(v.screen_to_content(p)).is_none() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                }
-            }
         }
+        // Hovering the grey area keeps the normal arrow: on Windows "grab"
+        // has no hand cursor and shows the four-arrow move cross instead.
 
         // ---- scrollbars (interaction first, so the view below is final)
         let vbar_rect = Rect::from_min_max(
@@ -2146,6 +2144,7 @@ impl eframe::App for InkApp {
             self.pen_init_done = true;
             self.pen = WaylandPen::start(ctx, frame);
             self.win_pen = WindowsPen::start(ctx, frame);
+            crate::chrome::round_corners(frame);
         }
 
         // Closing the window while editing: finish the text box and write the note.

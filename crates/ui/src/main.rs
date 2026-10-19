@@ -19,6 +19,10 @@
 //! - `theme`          design system: colours, sizes, fonts, shared components
 //! - `input`          native pen input (Wayland tablet, Windows pen buttons)
 
+// A GUI program on Windows: started from Explorer or a shortcut, no console
+// window opens next to it. See `attach_console` for output in a terminal.
+#![windows_subsystem = "windows"]
+
 mod app;
 mod chrome;
 mod input;
@@ -34,7 +38,29 @@ mod view;
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 
+/// The app icon: the title bar's pen nib (see assets/icon).
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon/icon.png");
+
+/// Started from a terminal (`cargo run`, PowerShell), print there: a GUI
+/// program has no console of its own, so it borrows its parent's.
+#[cfg(windows)]
+fn attach_console() {
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // Declared here so it does not need an optional windows-sys feature.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    // Fails (harmlessly) when there is no parent console, e.g. from Explorer.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    #[cfg(windows)]
+    attach_console();
+
     // Low-latency presentation by default: no vsync wait and at most one frame
     // queued. Set INKNOTE_VSYNC=1 to go back to vsync (saves power, adds latency).
     // INKNOTE_MSAA=4 additionally enables 4x MSAA (strokes are already
@@ -65,6 +91,7 @@ fn main() -> eframe::Result<()> {
         },
         viewport: egui::ViewportBuilder::default()
             .with_title("InkNote")
+            .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("the bundled icon is a valid PNG"))
             // The app draws its own title bar; switching to the system one
             // (Settings) turns decorations back on at runtime.
             .with_decorations(false)
@@ -78,4 +105,13 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(app::InkApp::new(cc)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundled_icon_decodes() {
+        let icon = eframe::icon_data::from_png_bytes(super::ICON_PNG).unwrap();
+        assert_eq!((icon.width, icon.height), (256, 256));
+    }
 }
