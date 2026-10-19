@@ -18,7 +18,7 @@ use std::path::Path;
 
 use flate2::{write::ZlibEncoder, Compression};
 
-use crate::model::{Document, PageKind, Stroke, StrokeKind};
+use crate::model::{Document, PageKind, Stroke, StrokeKind, TextBox};
 use crate::stroke_mesh::{self, Sample};
 
 /// 1 px (1/96 in) in PDF points (1/72 in).
@@ -56,8 +56,9 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
     alphas.dedup();
 
     // Object numbers: 1 catalog, 2 page tree, 3 resources, 4 info,
-    // 5.. ExtGStates, then (page, content) pairs.
-    let first_page_obj = 5 + alphas.len();
+    // 5.. ExtGStates, the font, then (page, content) pairs.
+    let font_obj = 5 + alphas.len();
+    let first_page_obj = font_obj + 1;
 
     let mut pdf = Pdf::new();
     pdf.raw(b"%PDF-1.5\n%\xE2\xE3\xCF\xD3\n");
@@ -72,7 +73,10 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
         .enumerate()
         .map(|(i, a)| format!("/GS{a} {} 0 R ", 5 + i))
         .collect();
-    pdf.obj(3, &format!("<< /ExtGState << {gs_entries}>> >>"));
+    pdf.obj(
+        3,
+        &format!("<< /ExtGState << {gs_entries}>> /Font << /F1 {font_obj} 0 R >> >>"),
+    );
 
     pdf.obj(4, "<< /Title (InkNote) /Producer (InkNote) >>");
 
@@ -80,6 +84,12 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
         let v = *a as f32 / 255.0;
         pdf.obj(5 + i, &format!("<< /Type /ExtGState /CA {v:.3} /ca {v:.3} >>"));
     }
+
+    // Text boxes use the standard Helvetica (no font embedding needed).
+    pdf.obj(
+        font_obj,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    );
 
     let (pw, ph) = (doc.page_width * PX_TO_PT, doc.page_height * PX_TO_PT);
     for p in 0..pages {
@@ -172,6 +182,9 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
     if opts.include_rules && doc.page.kind != PageKind::Blank {
         write_rules(&mut c, doc);
     }
+    for t in doc.texts.iter().filter(|t| t.page == page) {
+        write_text(&mut c, t);
+    }
     for s in doc.strokes.iter().filter(|s| s.page == page) {
         write_stroke(&mut c, s);
     }
@@ -195,6 +208,76 @@ fn write_rules(c: &mut String, doc: &Document) {
             x += spacing;
         }
     }
+}
+
+/// Text box: one `Tj` per stored line, so the PDF breaks lines exactly like the
+/// screen. Only characters of the WinAnsi (Latin-1 like) set can be printed;
+/// anything else becomes `?`.
+fn write_text(c: &mut String, t: &TextBox) {
+    if t.lines.iter().all(|l| l.trim().is_empty()) {
+        return;
+    }
+    let (r, g, b) = (
+        t.color[0] as f32 / 255.0,
+        t.color[1] as f32 / 255.0,
+        t.color[2] as f32 / 255.0,
+    );
+    c.push_str(&format!(
+        "q\n{} {} {} rg\nBT\n/F1 {} Tf\n",
+        num(r, 3),
+        num(g, 3),
+        num(b, 3),
+        num(t.size, 2)
+    ));
+    for (i, line) in t.lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let baseline = t.y + i as f32 * t.line_h + t.line_h * 0.78;
+        // The page matrix is y-down; this text matrix flips it back so glyphs are upright.
+        c.push_str(&format!(
+            "1 0 0 -1 {} {} Tm\n({}) Tj\n",
+            num(t.x, 2),
+            num(baseline, 2),
+            pdf_string(line)
+        ));
+    }
+    c.push_str("ET\nQ\n");
+}
+
+fn winansi(ch: char) -> u8 {
+    match ch {
+        '€' => 0x80,
+        '…' => 0x85,
+        '‘' => 0x91,
+        '’' => 0x92,
+        '“' => 0x93,
+        '”' => 0x94,
+        '•' => 0x95,
+        '–' => 0x96,
+        '—' => 0x97,
+        c if (c as u32) < 0x20 => b' ',
+        c if (0x80..=0x9F).contains(&(c as u32)) => b'?',
+        c if (c as u32) <= 0xFF => c as u32 as u8,
+        _ => b'?',
+    }
+}
+
+/// Escapes a line as a PDF literal string (non-ASCII bytes as octal).
+fn pdf_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let b = winansi(ch);
+        match b {
+            b'(' | b')' | b'\\' => {
+                out.push('\\');
+                out.push(b as char);
+            }
+            0x20..=0x7E => out.push(b as char),
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out
 }
 
 fn write_stroke(c: &mut String, s: &Stroke) {
@@ -296,7 +379,7 @@ fn num(v: f32, decimals: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Point;
+    use crate::model::{Point, TextBox};
 
     fn sample_doc() -> Document {
         let mut doc = Document::default();
@@ -310,6 +393,18 @@ mod tests {
         doc.strokes.push(Stroke::new(id, 1, StrokeKind::Highlighter, [255, 235, 0, 96], 14.0, pen));
         let id = doc.alloc_id();
         doc.strokes.push(Stroke::new(id, 1, StrokeKind::Pen, [0, 0, 0, 255], 3.0, vec![Point::new(5.0, 5.0, 1.0)]));
+        doc.texts.push(TextBox {
+            id: 99,
+            page: 0,
+            x: 40.0,
+            y: 200.0,
+            width: 300.0,
+            size: 18.0,
+            color: [0, 0, 0],
+            text: "Città (test) \\ €".into(),
+            lines: vec!["Città (test) \\ €".into()],
+            line_h: 22.0,
+        });
         doc
     }
 
@@ -339,6 +434,14 @@ mod tests {
             let expect = format!("{} 0 obj", i + 1);
             assert_eq!(&bytes[off..off + expect.len()], expect.as_bytes());
         }
+    }
+
+    #[test]
+    fn pdf_string_escapes() {
+        assert_eq!(pdf_string("a(b)\\"), "a\\(b\\)\\\\");
+        assert_eq!(pdf_string("è"), "\\350");
+        assert_eq!(pdf_string("€"), "\\200");
+        assert_eq!(pdf_string("漢"), "?");
     }
 
     #[test]

@@ -12,17 +12,19 @@ use eframe::egui::{
 use crate::geometry::point_in_polygon;
 use crate::history::{Action, History};
 use crate::pdf_export::{self, PdfOptions};
-use crate::model::{paper_label, Document, PageKind, Point, Stroke, StrokeKind, PAPERS};
+use crate::model::{paper_label, Document, PageKind, Point, Stroke, StrokeKind, TextBox, PAPERS};
 use crate::render::{self, Moved, StrokeCache};
 use crate::scrollbar;
 use crate::settings::{Settings, ToolbarPosition, ZoomMode};
 use crate::storage;
 use crate::stroke_builder::StrokeBuilder;
 use crate::toolbar::{self, Tool, ToolbarEvent};
-use crate::view::{Layout, View};
+use crate::view::{Layout, View, MARGIN};
 use crate::wayland_pen::{PenEvent, WaylandPen};
 use crate::windows_pen::WindowsPen;
 
+/// Width of the left page-preview panel (points).
+const PANEL_WIDTH: f32 = 164.0;
 const SETTINGS_KEY: &str = "inknote_settings";
 /// Samples closer than this (document units) are treated as jitter.
 const MIN_POINT_DIST: f32 = 0.6;
@@ -39,6 +41,35 @@ struct ActiveStroke {
     color: [u8; 4],
     width: f32,
     builder: StrokeBuilder,
+}
+
+/// A text box being typed into. It is not part of the document until it is
+/// committed, so abandoned empty boxes never reach the undo history.
+struct EditState {
+    id: u64,
+    page: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    buf: String,
+    size: f32,
+    color: [u8; 3],
+    /// Height of the editor in the previous frame (for its background).
+    last_h: f32,
+    /// Ask egui for keyboard focus on the next frame.
+    focus_pending: bool,
+    /// The box as it was before editing (None = newly created).
+    orig: Option<TextBox>,
+}
+
+/// A press with the text tool: tap = edit / create, drag = move / size.
+struct TextPress {
+    /// Existing text box under the pen.
+    hit: Option<u64>,
+    start: Pos2,
+    now: Pos2,
+    page: Option<u32>,
+    moved: bool,
 }
 
 /// Strokes picked with the select tool (all on one page).
@@ -100,6 +131,17 @@ pub struct InkApp {
     moving: Option<MoveDrag>,
     /// Cached anti-aliased meshes of finished strokes.
     cache: StrokeCache,
+    /// Same, at page-preview scale.
+    thumb_cache: StrokeCache,
+    /// Page being dragged in the preview panel.
+    page_drag: Option<u32>,
+    /// Content-space y to scroll to on the next frame (jump to page).
+    scroll_to: Option<f32>,
+    /// Page in the middle of the view (highlighted in the panel).
+    current_page: u32,
+    /// Text box being typed into.
+    edit: Option<EditState>,
+    text_press: Option<TextPress>,
 }
 
 impl InkApp {
@@ -140,6 +182,12 @@ impl InkApp {
             lasso: None,
             moving: None,
             cache: StrokeCache::default(),
+            thumb_cache: StrokeCache::default(),
+            page_drag: None,
+            scroll_to: None,
+            current_page: 0,
+            edit: None,
+            text_press: None,
         };
         if Path::new(&app.settings.file_path).exists() {
             app.load();
@@ -191,6 +239,10 @@ impl InkApp {
 
     fn reset_editing_state(&mut self) {
         self.cache.clear();
+        self.thumb_cache.clear();
+        self.page_drag = None;
+        self.edit = None;
+        self.text_press = None;
         self.history.clear();
         self.active = None;
         self.erase_session.clear();
@@ -210,7 +262,7 @@ impl InkApp {
     // ------------------------------------------------------- undo / redo
 
     fn undo(&mut self) {
-        if !self.busy() {
+        if !self.busy() && self.edit.is_none() {
             self.history.undo(&mut self.doc);
             self.ensure_pages();
             self.clear_selection();
@@ -218,7 +270,7 @@ impl InkApp {
     }
 
     fn redo(&mut self) {
-        if !self.busy() {
+        if !self.busy() && self.edit.is_none() {
             self.history.redo(&mut self.doc);
             self.ensure_pages();
             self.clear_selection();
@@ -226,12 +278,14 @@ impl InkApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // While typing, Ctrl+Z / Ctrl+Y belong to the text editor.
+        let typing = self.edit.is_some();
         // Order matters: the Shift variant must be consumed before plain Ctrl+Z.
         let (redo_shift, redo_y, undo, save, export, fullscreen) = ctx.input_mut(|i| {
             (
-                i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
-                i.consume_key(Modifiers::COMMAND, Key::Y),
-                i.consume_key(Modifiers::COMMAND, Key::Z),
+                !typing && i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
+                !typing && i.consume_key(Modifiers::COMMAND, Key::Y),
+                !typing && i.consume_key(Modifiers::COMMAND, Key::Z),
                 i.consume_key(Modifiers::COMMAND, Key::S),
                 i.consume_key(Modifiers::COMMAND, Key::E),
                 i.consume_key(Modifiers::NONE, Key::F11),
@@ -331,7 +385,6 @@ impl InkApp {
                     self.eraser_native = false;
                     self.last_pressure = 1.0;
                 }
-                PenEvent::BarrelPressed => todo!(),
             }
         }
     }
@@ -347,6 +400,164 @@ impl InkApp {
         } else if let Some(t) = self.saved_tool.take() {
             self.tool = t;
         }
+    }
+
+    // ---------------------------------------------------------- text boxes
+
+    /// Top-most text box under a content-space point.
+    fn text_at(&self, layout: &Layout, c: Pos2) -> Option<u64> {
+        self.doc
+            .texts
+            .iter()
+            .rev()
+            .find(|t| {
+                let o = layout.page_origin(t.page);
+                Rect::from_min_size(pos2(o.x + t.x, o.y + t.y), vec2(t.width, t.height()))
+                    .expand(4.0)
+                    .contains(c)
+            })
+            .map(|t| t.id)
+    }
+
+    fn begin_edit(&mut self, id: u64) {
+        let Some(t) = self.doc.texts.iter().find(|t| t.id == id).cloned() else { return };
+        // The toolbar now shows (and changes) this box's style.
+        self.settings.text.color = t.color;
+        self.settings.text.width = t.size;
+        self.edit = Some(EditState {
+            id,
+            page: t.page,
+            x: t.x,
+            y: t.y,
+            width: t.width,
+            buf: t.text.clone(),
+            size: t.size,
+            color: t.color,
+            last_h: 0.0,
+            focus_pending: true,
+            orig: Some(t),
+        });
+    }
+
+    fn begin_new_edit(&mut self, page: u32, x: f32, y: f32, width: f32) {
+        let id = self.doc.alloc_id();
+        self.edit = Some(EditState {
+            id,
+            page,
+            x,
+            y,
+            width,
+            buf: String::new(),
+            size: self.settings.text.width,
+            color: self.settings.text.color,
+            last_h: 0.0,
+            focus_pending: true,
+            orig: None,
+        });
+    }
+
+    /// Finishes editing: lays the text out, then records an add / replace /
+    /// remove in the history (nothing if unchanged, or an empty new box).
+    fn commit_edit(&mut self, ctx: &egui::Context) {
+        let Some(e) = self.edit.take() else { return };
+        if e.buf.trim().is_empty() {
+            if let Some(orig) = e.orig {
+                self.history.exec(&mut self.doc, Action::RemoveText { id: orig.id });
+            }
+            return;
+        }
+        let (lines, line_h) = layout_lines(ctx, &e.buf, e.size, e.width);
+        let tb = TextBox {
+            id: e.id,
+            page: e.page,
+            x: e.x,
+            y: e.y,
+            width: e.width,
+            size: e.size,
+            color: e.color,
+            text: e.buf,
+            lines,
+            line_h,
+        };
+        match e.orig {
+            None => {
+                let index = self.doc.texts.len();
+                self.history.exec(&mut self.doc, Action::AddText { index, text: tb });
+            }
+            Some(orig) => {
+                if orig != tb {
+                    self.history.exec(&mut self.doc, Action::ReplaceText { text: tb });
+                }
+            }
+        }
+    }
+
+    fn handle_text(&mut self, resp: &egui::Response, view: &View, press: Option<Pos2>, moves: &[Pos2]) {
+        if resp.drag_started_by(PointerButton::Primary) {
+            if let Some(pos) = press.or(resp.interact_pointer_pos()) {
+                let c = view.screen_to_content(pos);
+                self.text_press = Some(TextPress {
+                    hit: self.text_at(&view.layout, c),
+                    start: c,
+                    now: c,
+                    page: view.layout.page_at(c),
+                    moved: false,
+                });
+            }
+        } else if resp.dragged() || resp.drag_stopped() {
+            if let (Some(tp), Some(last)) = (self.text_press.as_mut(), moves.last()) {
+                tp.now = view.screen_to_content(*last);
+                if (tp.now - tp.start).length() * view.scale > 5.0 {
+                    tp.moved = true;
+                }
+            }
+        }
+        if !resp.dragged() {
+            if let Some(tp) = self.text_press.take() {
+                self.finish_text_press(tp, view.layout);
+            }
+        }
+    }
+
+    fn finish_text_press(&mut self, tp: TextPress, layout: Layout) {
+        match (tp.hit, tp.moved) {
+            (Some(id), false) => self.begin_edit(id),
+            (Some(id), true) => self.commit_text_move(id, tp.now - tp.start, layout),
+            (None, _) => {
+                // Tap = default width; drag = box as wide as the drag.
+                let Some(page) = tp.page else { return };
+                let o = layout.page_origin(page);
+                let dragged_w = (tp.now.x - tp.start.x).abs();
+                let (left, width) = if tp.moved && dragged_w > 40.0 {
+                    (tp.start.x.min(tp.now.x), dragged_w)
+                } else {
+                    let room = layout.page_w - (tp.start.x - o.x) - 20.0;
+                    (tp.start.x, room.clamp(120.0, 360.0))
+                };
+                let top = if tp.moved { tp.start.y.min(tp.now.y) } else { tp.start.y };
+                let x = (left - o.x).clamp(0.0, (layout.page_w - 40.0).max(0.0));
+                let y = (top - o.y).clamp(0.0, (layout.page_h - 20.0).max(0.0));
+                let width = width.min(layout.page_w - x).max(40.0);
+                self.begin_new_edit(page, x, y, width);
+            }
+        }
+    }
+
+    /// Drop a dragged text box, possibly onto another page, kept inside it.
+    fn commit_text_move(&mut self, id: u64, d: Vec2, layout: Layout) {
+        let Some(old) = self.doc.texts.iter().find(|t| t.id == id).cloned() else { return };
+        if d.length() < 0.5 {
+            return;
+        }
+        let src_o = layout.page_origin(old.page).to_vec2();
+        let center = pos2(old.x + old.width * 0.5, old.y + old.height() * 0.5) + src_o + d;
+        let dst = layout.page_at(center).unwrap_or(old.page);
+        let local = d + src_o - layout.page_origin(dst).to_vec2();
+        let mut new = old.clone();
+        new.page = dst;
+        new.x = (old.x + local.x).clamp(0.0, (layout.page_w - old.width).max(0.0));
+        new.y = (old.y + local.y).clamp(0.0, (layout.page_h - old.height()).max(0.0));
+        self.history.exec(&mut self.doc, Action::ReplaceText { text: new });
     }
 
     // ---------------------------------------------------- pages / selection
@@ -540,7 +751,7 @@ impl InkApp {
                     s.width,
                 ))
             }
-            Tool::Eraser | Tool::Select => None,
+            Tool::Eraser | Tool::Select | Tool::Text => None,
         }
     }
 
@@ -648,6 +859,22 @@ impl InkApp {
                     .map(|s| s.id),
             );
         }
+        // A text box is erased when the eraser centre is inside it.
+        let mut text_hits: Vec<u64> = Vec::new();
+        for page in layout.pages_overlapping(center.y - radius, center.y + radius) {
+            let local = center - layout.page_origin(page).to_vec2();
+            text_hits.extend(
+                self.doc
+                    .texts
+                    .iter()
+                    .filter(|t| t.page == page && t.rect().contains(local))
+                    .map(|t| t.id),
+            );
+        }
+        for id in text_hits {
+            let inverse = Action::RemoveText { id }.apply(&mut self.doc);
+            self.erase_session.push(inverse);
+        }
         for id in hits {
             let inverse = Action::RemoveStroke { id }.apply(&mut self.doc);
             self.erase_session.push(inverse);
@@ -718,6 +945,11 @@ impl InkApp {
 
         let canvas_resp = ui.allocate_rect(canvas, Sense::drag());
 
+        // A press on the canvas (outside the editor, which sits on top) ends text editing.
+        if self.edit.is_some() && canvas_resp.drag_started() {
+            self.commit_edit(ui.ctx());
+        }
+
         // ---- scrolling: wheel / touchpad / keys
         if idle && ui.rect_contains_pointer(full) {
             let d = ui.input(|i| i.smooth_scroll_delta);
@@ -745,6 +977,9 @@ impl InkApp {
             if end {
                 self.scroll.y = f32::MAX;
             }
+        }
+        if let Some(y) = self.scroll_to.take() {
+            self.scroll.y = y;
         }
         let max = View::max_scroll(canvas, scale, &layout);
         self.scroll = vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
@@ -829,6 +1064,7 @@ impl InkApp {
             match self.tool {
                 Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
                 Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
+                Tool::Text => self.handle_text(&canvas_resp, &view, press, &moves),
                 Tool::Pen | Tool::Highlighter => {
                     self.handle_ink(&canvas_resp, &view, press, &moves)
                 }
@@ -839,6 +1075,22 @@ impl InkApp {
         let painter = ui.painter_at(canvas);
         render::paint_background(&painter, &view, &self.doc.page);
         let ppp = ui.ctx().pixels_per_point();
+        let text_move = self.text_press.as_ref().and_then(|tp| {
+            if tp.moved {
+                tp.hit.map(|id| (id, tp.now - tp.start))
+            } else {
+                None
+            }
+        });
+        render::paint_texts(
+            &painter,
+            &view,
+            &self.doc.texts,
+            self.edit.as_ref().map(|e| e.id),
+            text_move,
+            self.tool == Tool::Text,
+        );
+
         let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
         let moved = self
             .selection
@@ -886,6 +1138,66 @@ impl InkApp {
             if let Some(pos) = canvas_resp.hover_pos().or(canvas_resp.interact_pointer_pos()) {
                 render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * scale);
             }
+        }
+
+        // Rubber band while dragging out a new text box.
+        if let Some(tp) = &self.text_press {
+            if tp.hit.is_none() && tp.moved && tp.page.is_some() {
+                let r = Rect::from_two_pos(
+                    view.content_to_screen(tp.start),
+                    view.content_to_screen(tp.now),
+                );
+                let path = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                painter.extend(egui::Shape::dashed_line(&path, egui::Stroke::new(1.5, blue), 6.0, 4.0));
+            }
+        }
+
+        // In-place editor of the text box being typed into (a real egui
+        // TextEdit: cursor, selection, clipboard, IME, its own Ctrl+Z).
+        let mut commit_now = false;
+        if let Some(e) = self.edit.as_mut() {
+            // Toolbar size / colour changes apply live.
+            e.size = self.settings.text.width;
+            e.color = self.settings.text.color;
+
+            let origin = view.page_origin_screen(e.page) + vec2(e.x, e.y) * scale;
+            let w = e.width * scale;
+            let shown = Rect::from_min_size(origin, vec2(w, e.last_h.max(e.size * scale * 1.3)));
+            painter.rect_filled(shown.expand(3.0), 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 215));
+            painter.rect_stroke(shown.expand(3.0), 3.0, egui::Stroke::new(1.5, blue));
+
+            let id = Id::new(("text_edit", e.id));
+            let color = Color32::from_rgb(e.color[0], e.color[1], e.color[2]);
+            let widget = egui::TextEdit::multiline(&mut e.buf)
+                .id(id)
+                .font(FontId::proportional((e.size * scale).max(6.0)))
+                .text_color(color)
+                .desired_width(w)
+                .desired_rows(1)
+                .frame(false)
+                .lock_focus(true);
+            let resp = ui
+                .allocate_new_ui(egui::UiBuilder::new().max_rect(Rect::from_min_size(origin, vec2(w, 10.0))), |ui| ui.add(widget))
+                .inner;
+            e.last_h = resp.rect.height();
+
+            if e.focus_pending {
+                resp.request_focus();
+                e.focus_pending = false;
+            } else if !resp.has_focus() {
+                // Focus left the editor. A press on a toolbar button only steals it
+                // temporarily (take it back); another text field or Esc ends editing.
+                let other = ui.ctx().memory(|m| m.focused()).map_or(false, |f| f != id);
+                let pressed = ui.input(|i| i.pointer.any_pressed());
+                if other || !pressed {
+                    commit_now = true;
+                } else {
+                    resp.request_focus();
+                }
+            }
+        }
+        if commit_now {
+            self.commit_edit(ui.ctx());
         }
 
         // "Add page" button below the last page.
@@ -960,11 +1272,203 @@ impl InkApp {
 
         // Scrollbars on top; the vertical one shows a page indicator while dragged.
         let center_y = self.scroll.y + canvas.height() / scale * 0.5;
-        let label = format!("Page {} / {}", layout.page_index_at_y(center_y) + 1, layout.count);
+        let cur = layout.page_index_at_y(center_y);
+        self.current_page = cur;
+        let label = format!("Page {} / {}", cur + 1, layout.count);
         let full_painter = ui.painter();
         scrollbar::paint(full_painter, vbar_rect, true, &vstate, Some(&label));
         if let Some(h) = &hstate {
             scrollbar::paint(full_painter, hbar_rect, false, h, None);
+        }
+    }
+
+    /// Collapsible left panel: previews of all pages. Click = jump to the page,
+    /// drag = reorder, "x" (on hover) = delete. Everything is undoable.
+    fn pages_panel(&mut self, ctx: &egui::Context) {
+        if !self.settings.pages_panel_open {
+            self.page_drag = None;
+            return;
+        }
+        let layout = Layout {
+            page_w: self.doc.page_width,
+            page_h: self.doc.page_height,
+            count: self.doc.page_count.max(1),
+        };
+        let ppp = ctx.pixels_per_point();
+        let current = self.current_page;
+        let blue = Color32::from_rgb(40, 120, 255);
+
+        // Disjoint field borrows, released again after `show`.
+        let strokes = &self.doc.strokes;
+        let texts = &self.doc.texts;
+        let cache = &mut self.thumb_cache;
+        let drag = &mut self.page_drag;
+
+        let mut close = false;
+        let mut jump: Option<u32> = None;
+        let mut delete: Option<u32> = None;
+        let mut add = false;
+        let mut reorder: Option<(u32, u32)> = None;
+
+        egui::SidePanel::left("pages_panel")
+            .resizable(false)
+            .exact_width(PANEL_WIDTH)
+            .frame(
+                egui::Frame::none()
+                    .fill(Color32::from_gray(30))
+                    .inner_margin(egui::Margin::same(8.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(format!("Pages ({})", layout.count));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("<").on_hover_text("Collapse").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.separator();
+
+                let thumb_w = (ui.available_width() - 14.0).max(40.0);
+                let thumb_h = thumb_w * layout.page_h / layout.page_w;
+                let scale = thumb_w / layout.page_w;
+                cache.begin_frame(scale, ppp);
+                let aa = 1.0 / ppp;
+                let pointer = ui.input(|i| i.pointer.interact_pos());
+
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let mut rects: Vec<Rect> = Vec::with_capacity(layout.count as usize);
+                    for i in 0..layout.count {
+                        let (rect, resp) = ui
+                            .allocate_exact_size(vec2(thumb_w, thumb_h), Sense::click_and_drag());
+                        rects.push(rect);
+
+                        if ui.is_rect_visible(rect) {
+                            let p = ui.painter();
+                            p.rect_filled(rect.translate(vec2(1.5, 2.5)), 0.0, Color32::from_black_alpha(90));
+                            p.rect_filled(rect, 0.0, render::PAGE_COLOR);
+                            let clipped = ui.painter_at(rect);
+                            render::paint_page_strokes(
+                                &clipped,
+                                rect.min.to_vec2(),
+                                scale,
+                                strokes,
+                                i,
+                                cache,
+                                aa,
+                            );
+                            render::paint_page_texts(&clipped, rect.min.to_vec2(), scale, texts, i);
+                            let border = if i == current {
+                                egui::Stroke::new(2.0, blue)
+                            } else {
+                                egui::Stroke::new(1.0, Color32::from_gray(75))
+                            };
+                            p.rect_stroke(rect, 0.0, border);
+                        }
+
+                        // Delete button, registered after the thumbnail so it wins hit-testing.
+                        let del_rect =
+                            Rect::from_center_size(rect.right_top() + vec2(-13.0, 13.0), vec2(22.0, 22.0));
+                        let del = ui.interact(del_rect, ui.id().with(("page_del", i)), Sense::click());
+                        if ui.rect_contains_pointer(rect) && drag.is_none() {
+                            let p = ui.painter();
+                            let fill = if del.hovered() { Color32::from_rgb(200, 60, 60) } else { Color32::from_black_alpha(190) };
+                            p.circle_filled(del_rect.center(), 10.0, fill);
+                            let a = 3.5;
+                            let x = egui::Stroke::new(1.6, Color32::WHITE);
+                            let c = del_rect.center();
+                            p.line_segment([c + vec2(-a, -a), c + vec2(a, a)], x);
+                            p.line_segment([c + vec2(-a, a), c + vec2(a, -a)], x);
+                        }
+                        if del.clicked() {
+                            delete = Some(i);
+                        } else if resp.clicked() {
+                            jump = Some(i);
+                        }
+                        if resp.drag_started() {
+                            *drag = Some(i);
+                        }
+
+                        ui.vertical_centered(|ui| ui.label(format!("{}", i + 1)));
+                        ui.add_space(4.0);
+                    }
+                    if ui.button("+ Add page").clicked() {
+                        add = true;
+                    }
+
+                    // Drag & drop reordering.
+                    if let Some(from) = *drag {
+                        match pointer {
+                            Some(p) if !rects.is_empty() => {
+                                let slot = rects.iter().filter(|r| r.center().y < p.y).count();
+                                let y = if slot < rects.len() {
+                                    rects[slot].top() - 3.0
+                                } else {
+                                    rects[rects.len() - 1].bottom() + 3.0
+                                };
+                                let r0 = rects[0];
+                                ui.painter().line_segment(
+                                    [pos2(r0.left(), y), pos2(r0.right(), y)],
+                                    egui::Stroke::new(3.0, blue),
+                                );
+
+                                // Auto-scroll near the edges of the list.
+                                let clip = ui.clip_rect();
+                                if p.y < clip.top() + 30.0 {
+                                    ui.scroll_with_delta(vec2(0.0, 14.0));
+                                } else if p.y > clip.bottom() - 30.0 {
+                                    ui.scroll_with_delta(vec2(0.0, -14.0));
+                                }
+
+                                // Floating label under the pen.
+                                let ghost = ui.ctx().layer_painter(egui::LayerId::new(
+                                    egui::Order::Tooltip,
+                                    Id::new("page_drag_ghost"),
+                                ));
+                                let tag = Rect::from_min_size(p + vec2(12.0, 8.0), vec2(74.0, 22.0));
+                                ghost.rect_filled(tag, 6.0, Color32::from_black_alpha(220));
+                                ghost.text(
+                                    tag.center(),
+                                    Align2::CENTER_CENTER,
+                                    format!("Page {}", from + 1),
+                                    FontId::proportional(13.0),
+                                    Color32::WHITE,
+                                );
+
+                                if ui.input(|i| !i.pointer.any_down()) {
+                                    let slot = slot as u32;
+                                    let to = if slot > from { slot - 1 } else { slot };
+                                    if to != from {
+                                        reorder = Some((from, to));
+                                    }
+                                    *drag = None;
+                                }
+                            }
+                            _ => *drag = None,
+                        }
+                    }
+                });
+            });
+
+        if close {
+            self.settings.pages_panel_open = false;
+        }
+        if let Some((from, to)) = reorder {
+            self.clear_selection();
+            self.history.exec(&mut self.doc, Action::MovePage { from, to });
+            self.scroll_to = Some(layout.page_top(to) - MARGIN);
+        }
+        if let Some(index) = delete {
+            self.clear_selection();
+            self.history.exec(&mut self.doc, Action::DeletePage { index });
+            self.status = format!("Page {} deleted (Ctrl+Z restores it)", index + 1);
+            self.status_at = Some(Instant::now());
+        }
+        if let Some(i) = jump {
+            self.scroll_to = Some(layout.page_top(i) - MARGIN);
+        }
+        if add {
+            self.insert_page(self.doc.page_count);
         }
     }
 
@@ -1105,6 +1609,21 @@ impl InkApp {
     }
 }
 
+/// Wraps `text` to `width` with egui's font at the box's own size and returns
+/// the lines plus the line height (all in document units).
+fn layout_lines(ctx: &egui::Context, text: &str, size: f32, width: f32) -> (Vec<String>, f32) {
+    let galley = ctx.fonts(|f| {
+        f.layout(text.to_owned(), FontId::proportional(size), Color32::BLACK, width)
+    });
+    let lines: Vec<String> = galley
+        .rows
+        .iter()
+        .map(|r| r.glyphs.iter().map(|g| g.chr).collect::<String>())
+        .collect();
+    let line_h = galley.rows.first().map_or(size * 1.25, |r| r.rect.height());
+    (lines, line_h)
+}
+
 /// Screen position -> point in the page's space, clamped to the page.
 fn to_page_point(view: &View, page: u32, pos: Pos2, pressure: f32) -> Point {
     let c = view.screen_to_content(pos);
@@ -1131,12 +1650,20 @@ impl eframe::App for InkApp {
         // Pen side button = eraser while held. Wayland pens report it through
         // `eraser_native`, Windows pens through `win_pen`; on X11 the button
         // arrives as a right or middle mouse button. Never switch in the middle of a stroke.
-        if !self.busy() {
+        if !self.busy() && self.edit.is_none() {
             let button_held = ctx.input(|i| i.pointer.secondary_down() || i.pointer.middle_down());
             let win = self.win_pen.as_ref().map(|p| p.buttons()).unwrap_or_default();
             let pen_eraser = self.eraser_native || win.barrel || win.eraser_end;
             self.apply_pen_eraser(pen_eraser || button_held);
         }
+        // Leaving the text tool ends editing.
+        if self.tool != Tool::Text && self.edit.is_some() {
+            self.commit_edit(ctx);
+        }
+        if self.tool != Tool::Text {
+            self.text_press = None;
+        }
+
         // Leaving the select tool drops the selection (the temporary eraser
         // from the pen button must not).
         if self.tool != Tool::Select && self.saved_tool != Some(Tool::Select) && !self.busy() {
@@ -1162,6 +1689,7 @@ impl eframe::App for InkApp {
             None => {}
         }
         self.settings_window(ctx);
+        self.pages_panel(ctx);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none())

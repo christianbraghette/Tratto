@@ -16,6 +16,8 @@ pub enum Tool {
     Eraser,
     /// Lasso select + move.
     Select,
+    /// Click to type text.
+    Text,
 }
 
 pub enum ToolbarEvent {
@@ -87,6 +89,7 @@ fn contents(
     ui.selectable_value(tool, Tool::Highlighter, "Highlighter");
     ui.selectable_value(tool, Tool::Eraser, "Eraser");
     ui.selectable_value(tool, Tool::Select, "Select");
+    ui.selectable_value(tool, Tool::Text, "Text");
     ui.separator();
 
     ui.spacing_mut().slider_width = 100.0;
@@ -102,6 +105,7 @@ fn contents(
         Tool::Select => {
             ui.weak("Lasso, then drag");
         }
+        Tool::Text => style_controls(ui, &mut settings.text, &PEN_PALETTE, 8.0..=96.0),
     }
     ui.separator();
 
@@ -112,6 +116,8 @@ fn contents(
         event = Some(ToolbarEvent::Redo);
     }
     ui.separator();
+    ui.toggle_value(&mut settings.pages_panel_open, "Pages")
+        .on_hover_text("Page previews: jump, reorder, delete");
     if ui.button("Settings").clicked() {
         event = Some(ToolbarEvent::ToggleSettings);
     }

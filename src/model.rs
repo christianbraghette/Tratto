@@ -1,7 +1,7 @@
 //! Serializable document model. Stroke coordinates are in *page space*:
 //! document units relative to the top-left corner of the stroke's page.
 
-use eframe::egui::Pos2;
+use eframe::egui::{pos2, vec2, Pos2, Rect};
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::point_segment_distance;
@@ -144,6 +144,40 @@ fn compute_bounds(points: &[Point]) -> [f32; 4] {
     }
 }
 
+/// A keyboard-typed text box. `x`/`y` is its top-left corner in page space.
+///
+/// `lines` is the text already wrapped to `width` (computed with egui's font
+/// when the box is committed), so the screen, the thumbnails and the PDF all
+/// show identical line breaks and no font metrics are needed to draw it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextBox {
+    pub id: u64,
+    pub page: u32,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    /// Font size in document units.
+    pub size: f32,
+    pub color: [u8; 3],
+    /// The source text (may contain explicit newlines).
+    pub text: String,
+    /// `text` wrapped to `width`.
+    pub lines: Vec<String>,
+    /// Height of one line in document units.
+    pub line_h: f32,
+}
+
+impl TextBox {
+    pub fn height(&self) -> f32 {
+        self.lines.len().max(1) as f32 * self.line_h
+    }
+
+    /// Bounding box in page space.
+    pub fn rect(&self) -> Rect {
+        Rect::from_min_size(pos2(self.x, self.y), vec2(self.width, self.height()))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageKind {
     Blank,
@@ -173,6 +207,8 @@ pub struct Document {
     pub page: PageStyle,
     /// Draw order: later strokes are painted on top.
     pub strokes: Vec<Stroke>,
+    /// Typed text boxes.
+    pub texts: Vec<TextBox>,
     next_id: u64,
 }
 
@@ -184,12 +220,25 @@ impl Default for Document {
             page_count: 1,
             page: PageStyle::default(),
             strokes: Vec::new(),
+            texts: Vec::new(),
             next_id: 1,
         }
     }
 }
 
 impl Document {
+    /// Builds a document from the fields of the pre-text-box file format (v2).
+    pub fn migrated_from_v2(
+        page_width: f32,
+        page_height: f32,
+        page_count: u32,
+        page: PageStyle,
+        strokes: Vec<Stroke>,
+        next_id: u64,
+    ) -> Self {
+        Self { page_width, page_height, page_count, page, strokes, texts: Vec::new(), next_id }
+    }
+
     /// Allocates a document-unique stroke id.
     pub fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;

@@ -35,8 +35,6 @@ pub enum PenEvent {
     },
     /// Pen left proximity of the tablet.
     Leave,
-    /// First barrel button pressed.
-    BarrelPressed,
 }
 
 #[cfg(target_os = "linux")]

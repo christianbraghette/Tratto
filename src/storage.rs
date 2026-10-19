@@ -4,12 +4,26 @@
 
 use std::{fmt, fs, io, path::Path};
 
-use crate::model::Document;
+use serde::Deserialize;
+
+use crate::model::{Document, PageStyle, Stroke};
 
 const MAGIC: &[u8; 4] = b"INK1";
 /// v2: paged documents (stroke.page, page_height, page_count).
-const FORMAT_VERSION: u32 = 2;
+/// v3: text boxes. v2 files are still readable.
+const FORMAT_VERSION: u32 = 3;
 const HEADER_LEN: usize = 8;
+
+/// Layout of a version-2 file.
+#[derive(Deserialize)]
+struct DocumentV2 {
+    page_width: f32,
+    page_height: f32,
+    page_count: u32,
+    page: PageStyle,
+    strokes: Vec<Stroke>,
+    next_id: u64,
+}
 
 #[derive(Debug)]
 pub enum StorageError {
@@ -62,10 +76,21 @@ pub fn load_document(path: &Path) -> Result<Document, StorageError> {
         return Err(StorageError::BadMagic);
     }
     let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    if version != FORMAT_VERSION {
-        return Err(StorageError::UnsupportedVersion(version));
+    match version {
+        FORMAT_VERSION => Ok(bincode::deserialize(&bytes[HEADER_LEN..])?),
+        2 => {
+            let d: DocumentV2 = bincode::deserialize(&bytes[HEADER_LEN..])?;
+            Ok(Document::migrated_from_v2(
+                d.page_width,
+                d.page_height,
+                d.page_count,
+                d.page,
+                d.strokes,
+                d.next_id,
+            ))
+        }
+        v => Err(StorageError::UnsupportedVersion(v)),
     }
-    Ok(bincode::deserialize(&bytes[HEADER_LEN..])?)
 }
 
 #[cfg(test)]

@@ -2,9 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use eframe::egui::{epaint::Mesh, pos2, vec2, Color32, Painter, Pos2, Shape, Stroke as UiStroke, Vec2};
+use eframe::egui::{
+    epaint::Mesh, pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Shape,
+    Stroke as UiStroke, Vec2,
+};
 
-use crate::model::{PageKind, PageStyle, Point, Stroke, StrokeKind};
+use crate::model::{PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
 use crate::stroke_mesh;
 use crate::view::View;
 
@@ -42,7 +45,7 @@ impl StrokeCache {
         self.map.clear();
     }
 
-    fn begin_frame(&mut self, scale: f32, ppp: f32) {
+    pub fn begin_frame(&mut self, scale: f32, ppp: f32) {
         let (s, p) = (scale.to_bits(), ppp.to_bits());
         if s != self.scale_bits || p != self.ppp_bits {
             self.map.clear();
@@ -126,6 +129,101 @@ pub fn paint_strokes(
             }
         }
         flush(painter, &mut batch, offset);
+    }
+}
+
+/// Paints one page's strokes at an arbitrary scale (page previews). The
+/// caller must have called `cache.begin_frame(scale, ppp)` this frame;
+/// `offset` is the screen position of the page's top-left corner.
+pub fn paint_page_strokes(
+    painter: &Painter,
+    offset: Vec2,
+    scale: f32,
+    strokes: &[Stroke],
+    page: u32,
+    cache: &mut StrokeCache,
+    aa: f32,
+) {
+    let mut batch = Mesh::default();
+    for s in strokes.iter().filter(|s| s.page == page) {
+        batch.append_ref(cache.get(s, scale, aa));
+        if batch.vertices.len() > MAX_BATCH_VERTS {
+            flush(painter, &mut batch, offset);
+        }
+    }
+    flush(painter, &mut batch, offset);
+}
+
+/// Paints the text boxes of the visible pages with their stored line breaks.
+///
+/// * `skip`    – a box that is being edited (the live editor draws it instead)
+/// * `moved`   – a box shown at an offset (content space) while it is dragged
+/// * `outline` – draw a faint frame around every box (text tool active)
+pub fn paint_texts(
+    painter: &Painter,
+    view: &View,
+    texts: &[TextBox],
+    skip: Option<u64>,
+    moved: Option<(u64, Vec2)>,
+    outline: bool,
+) {
+    for page in view.visible_pages() {
+        let origin = view.page_origin_screen(page);
+        for t in texts.iter().filter(|t| t.page == page && Some(t.id) != skip) {
+            let mut pos = origin + vec2(t.x, t.y) * view.scale;
+            if let Some((id, d)) = moved {
+                if id == t.id {
+                    pos += d * view.scale;
+                }
+            }
+            let line_h = t.line_h * view.scale;
+            let rect = Rect::from_min_size(pos, vec2(t.width, t.height()) * view.scale);
+            if !rect.intersects(view.rect) {
+                continue;
+            }
+            let color = Color32::from_rgb(t.color[0], t.color[1], t.color[2]);
+            let size_px = t.size * view.scale;
+            if size_px >= 2.0 {
+                for (i, line) in t.lines.iter().enumerate() {
+                    let y = pos.y + i as f32 * line_h;
+                    if line.is_empty() || y > view.rect.bottom() || y + line_h < view.rect.top() {
+                        continue;
+                    }
+                    painter.text(
+                        pos2(pos.x, y),
+                        Align2::LEFT_TOP,
+                        line,
+                        FontId::proportional(size_px),
+                        color,
+                    );
+                }
+            }
+            if outline {
+                painter.rect_stroke(
+                    rect.expand(2.0),
+                    2.0,
+                    UiStroke::new(1.0, Color32::from_rgba_unmultiplied(80, 120, 220, 110)),
+                );
+            }
+        }
+    }
+}
+
+/// Text in a page preview: one thin bar per line (no font layout needed).
+pub fn paint_page_texts(painter: &Painter, offset: Vec2, scale: f32, texts: &[TextBox], page: u32) {
+    for t in texts.iter().filter(|t| t.page == page) {
+        let color = Color32::from_rgba_unmultiplied(t.color[0], t.color[1], t.color[2], 150);
+        let h = (t.size * 0.5 * scale).max(1.0);
+        for (i, line) in t.lines.iter().enumerate() {
+            let chars = line.chars().count();
+            if chars == 0 {
+                continue;
+            }
+            let w = (chars as f32 * t.size * 0.5).min(t.width) * scale;
+            let top = offset.y + (t.y + i as f32 * t.line_h + t.line_h * 0.3) * scale;
+            let left = offset.x + t.x * scale;
+            painter.rect_filled(Rect::from_min_size(pos2(left, top), vec2(w, h)), 0.5, color);
+        }
     }
 }
 
