@@ -220,6 +220,10 @@ impl InkApp {
             row(ui, "Scroll speed", |ui| {
                 ui.add(Slider::new(&mut s.scroll_speed, 0.5..=3.0).step_by(0.1).suffix("×"));
             });
+            row(ui, "At startup", |ui| {
+                ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it")
+                    .on_hover_text("Every note opens where it was left; this also reopens the last one when InkNote starts");
+            });
         });
 
         section(ui, "Pen and input");

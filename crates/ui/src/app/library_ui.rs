@@ -427,12 +427,16 @@ impl InkApp {
             }
             Act::RenameNote(path, title) => {
                 match library::rename_note(&path, &title) {
-                    Ok(_) => self.refresh_library(),
+                    Ok(new) => {
+                        self.settings.moved(&path, &new);
+                        self.refresh_library();
+                    }
                     Err(e) => self.toast(format!("Rename failed: {e}")),
                 }
             }
             Act::RenameDir(path, name) => match library::rename_dir(&path, &name) {
                 Ok(new) => {
+                    self.settings.moved(&path, &new);
                     // The open note moved with its notebook / section.
                     if let Some(rel) = self.note_path.as_ref().and_then(|p| p.strip_prefix(&path).ok()) {
                         self.note_path = Some(new.join(rel));
@@ -476,6 +480,7 @@ impl InkApp {
                 }
                 match library::move_note(&path, &dir) {
                     Ok(new) => {
+                        self.settings.moved(&path, &new);
                         if open {
                             self.note_path = Some(new);
                         }
@@ -517,13 +522,7 @@ impl InkApp {
             }
             Act::ImportPdf(dir, text) => {
                 let src = PathBuf::from(text.trim().trim_matches('"'));
-                match library::import_pdf(&dir, &src) {
-                    Ok(path) => {
-                        self.refresh_library();
-                        self.open_note(&path);
-                    }
-                    Err(e) => self.toast(format!("Cannot import the PDF: {e}")),
-                }
+                self.import_pdf(dir, src);
             }
             Act::SetRoot(text) => {
                 let p = PathBuf::from(text.trim());

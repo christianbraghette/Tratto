@@ -74,25 +74,51 @@ impl fmt::Display for PdfError {
 
 impl std::error::Error for PdfError {}
 
-/// A rasterised page.
+/// A rasterised page, or a part of one.
 pub struct RenderedPage {
     /// `PdfFile::key` of the document.
     pub key: u64,
     pub page: u32,
-    /// The width that was asked for (the image may differ by rounding).
+    /// The width of the whole page that was asked for.
     pub requested_width: u32,
-    /// Unmultiplied RGBA, `width * height * 4` bytes, or why it failed.
+    /// The part asked for (`[x, y, width, height]` in the pixels of the whole
+    /// page at `requested_width`); `None`: the whole page.
+    pub region: Option<[u32; 4]>,
+    /// RGBA, `width * height * 4` bytes, or why it failed. Always opaque
+    /// (rendered on white), so it is premultiplied as well. A region on the
+    /// page's edge may come back smaller than asked (never past the page).
     pub image: Result<(u32, u32, Vec<u8>), PdfError>,
 }
 
+/// The height in pixels of a page of `size` (points) rendered `width`
+/// pixels wide, exactly as PDFium sizes it.
+pub fn page_height_px(size: [f32; 2], width: u32) -> u32 {
+    let scale = width as f32 / size[0];
+    (size[1] * scale).round().max(1.0) as u32
+}
+
 /// Asks for `page` of `file` rasterised `width` pixels wide (height from the
-/// page's proportions; both capped at `MAX_RENDER_PX`). The result arrives
-/// on `reply`; `wake` is called after sending it (e.g. to repaint the UI).
-pub fn render(file: &Arc<PdfFile>, page: u32, width: u32, reply: Sender<RenderedPage>, wake: Arc<dyn Fn() + Send + Sync>) {
-    let job = Job::Render { file: file.clone(), page, width: width.clamp(1, MAX_RENDER_PX), reply, wake };
-    if let Err(mpsc::SendError(Job::Render { file, page, width, reply, wake })) = worker().send(job) {
+/// page's proportions): all of it (`region` `None`, both sides capped at
+/// `MAX_RENDER_PX`), or only `region` (`[x, y, width, height]` in those
+/// pixels; any page size). The result arrives on `reply`; `wake` is called
+/// after sending it (e.g. to repaint the UI).
+///
+/// Regions (tiles) are what keeps zooming into large or scanned PDFs fast:
+/// only what is on screen is rasterised, and the pages stay open in the
+/// worker, so their decoded images are reused from one tile to the next.
+pub fn render(
+    file: &Arc<PdfFile>,
+    page: u32,
+    width: u32,
+    region: Option<[u32; 4]>,
+    reply: Sender<RenderedPage>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    let width = if region.is_some() { width.max(1) } else { width.clamp(1, MAX_RENDER_PX) };
+    let job = Job::Render { file: file.clone(), page, width, region, reply, wake };
+    if let Err(mpsc::SendError(Job::Render { file, page, width, region, reply, wake })) = worker().send(job) {
         let err = PdfError::Unavailable("the PDF worker stopped".into());
-        let _ = reply.send(RenderedPage { key: file.key, page, requested_width: width, image: Err(err) });
+        let _ = reply.send(RenderedPage { key: file.key, page, requested_width: width, region, image: Err(err) });
         wake();
     }
 }
@@ -129,10 +155,33 @@ pub fn page_sizes(file: &Arc<PdfFile>) -> Result<Vec<[f32; 2]>, PdfError> {
 
 // ------------------------------------------------------------------ worker
 
+/// Pages kept open in the worker (their decoded images are cached by PDFium).
+const OPEN_PAGES: usize = 8;
+
 enum Job {
     Sizes { file: Arc<PdfFile>, reply: Sender<Result<Vec<[f32; 2]>, PdfError>> },
-    Render { file: Arc<PdfFile>, page: u32, width: u32, reply: Sender<RenderedPage>, wake: Arc<dyn Fn() + Send + Sync> },
+    Render {
+        file: Arc<PdfFile>,
+        page: u32,
+        width: u32,
+        region: Option<[u32; 4]>,
+        reply: Sender<RenderedPage>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    },
     Underlay { pdf: Vec<u8>, pages: Vec<Underlay>, reply: Sender<Result<Vec<u8>, PdfError>> },
+}
+
+impl Job {
+    /// The same render asked for again (the older one need not be done).
+    fn same_render(&self, other: &Job) -> bool {
+        match (self, other) {
+            (
+                Job::Render { file: a, page: pa, width: wa, region: ra, .. },
+                Job::Render { file: b, page: pb, width: wb, region: rb, .. },
+            ) => a.key == b.key && pa == pb && wa == wb && ra == rb,
+            _ => false,
+        }
+    }
 }
 
 fn worker() -> &'static Sender<Job> {
@@ -159,20 +208,71 @@ fn bind() -> Result<Pdfium, PdfError> {
     bindings.map(Pdfium::new).map_err(|e| PdfError::Unavailable(e.to_string()))
 }
 
+/// The documents and pages the worker keeps open, most recently used last.
+/// A page is always closed before its document.
+struct Open<'a> {
+    pdfium: &'a Pdfium,
+    documents: Vec<(u64, PdfDocument<'a>)>,
+    pages: Vec<(u64, u32, PdfPage<'a>)>,
+}
+
+impl<'a> Open<'a> {
+    fn document(&mut self, file: &PdfFile) -> Result<&PdfDocument<'a>, PdfError> {
+        if let Some(i) = self.documents.iter().position(|(k, _)| *k == file.key) {
+            let entry = self.documents.remove(i);
+            self.documents.push(entry);
+        } else {
+            let doc = self
+                .pdfium
+                .load_pdf_from_byte_vec(file.bytes.clone(), None)
+                .map_err(|e| PdfError::Unreadable(e.to_string()))?;
+            if self.documents.len() >= OPEN_DOCUMENTS {
+                let (old, _) = self.documents[0];
+                self.pages.retain(|(k, _, _)| *k != old);
+                self.documents.remove(0);
+            }
+            self.documents.push((file.key, doc));
+        }
+        Ok(&self.documents.last().expect("just opened").1)
+    }
+
+    fn page(&mut self, file: &PdfFile, index: u32) -> Result<&PdfPage<'a>, PdfError> {
+        if let Some(i) = self.pages.iter().position(|(k, p, _)| *k == file.key && *p == index) {
+            let entry = self.pages.remove(i);
+            self.pages.push(entry);
+        } else {
+            let pdf_index = PdfPageIndex::try_from(index).map_err(|_| PdfError::Unreadable(format!("no page {}", index + 1)))?;
+            let page = self.document(file)?.pages().get(pdf_index).map_err(|e| PdfError::Unreadable(e.to_string()))?;
+            if self.pages.len() >= OPEN_PAGES {
+                self.pages.remove(0);
+            }
+            self.pages.push((file.key, index, page));
+        }
+        Ok(&self.pages.last().expect("just opened").2)
+    }
+}
+
+impl Drop for Open<'_> {
+    fn drop(&mut self) {
+        // Pages before their documents.
+        self.pages.clear();
+    }
+}
+
 fn run(jobs: Receiver<Job>) {
     let pdfium = bind();
-    // Open documents, most recently used last.
-    let mut open: Vec<(u64, PdfDocument)> = Vec::new();
+    let mut open = pdfium.as_ref().ok().map(|pdfium| Open { pdfium, documents: Vec::new(), pages: Vec::new() });
 
     while let Ok(mut job) = jobs.recv() {
-        // A burst of render requests (scrolling, zooming): only the latest
-        // one per page is worth doing.
+        // A burst of requests (scrolling, zooming): a render asked for again
+        // later in the queue is only done then.
         let mut pending: Vec<Job> = jobs.try_iter().collect();
         loop {
-            let superseded = matches!(&job, Job::Render { file, page, .. }
-                if pending.iter().any(|j| matches!(j, Job::Render { file: f, page: p, .. } if f.key == file.key && p == page)));
-            if !superseded {
-                handle(&pdfium, &mut open, job);
+            if !pending.iter().any(|later| job.same_render(later)) {
+                match open.as_mut() {
+                    Some(open) => handle(open, job),
+                    None => fail(job, pdfium.as_ref().err().cloned().expect("not bound")),
+                }
             }
             if pending.is_empty() {
                 break;
@@ -182,56 +282,36 @@ fn run(jobs: Receiver<Job>) {
     }
 }
 
-/// Runs `job` on its document, opening it if needed (the least recently used
-/// one is closed beyond `OPEN_DOCUMENTS`).
-fn handle<'a>(pdfium: &'a Result<Pdfium, PdfError>, open: &mut Vec<(u64, PdfDocument<'a>)>, job: Job) {
-    let (file, run): (Arc<PdfFile>, Box<dyn FnOnce(Result<&PdfDocument<'a>, PdfError>)>) = match job {
-        Job::Underlay { pdf, pages, reply } => {
-            let result = match pdfium {
-                Ok(p) => underlay_pages(p, pdf, &pages),
-                Err(e) => Err(e.clone()),
-            };
-            let _ = reply.send(result);
-            return;
+/// Answers `job` with `err` (PDFium is not available).
+fn fail(job: Job, err: PdfError) {
+    match job {
+        Job::Sizes { reply, .. } => {
+            let _ = reply.send(Err(err));
         }
-        Job::Sizes { file, reply } => (
-            file,
-            Box::new(move |doc| {
-                let _ = reply.send(doc.and_then(sizes));
-            }),
-        ),
-        Job::Render { file, page, width, reply, wake } => {
-            let key = file.key;
-            (
-                file,
-                Box::new(move |doc| {
-                    let image = doc.and_then(|d| rasterise(d, page, width));
-                    let _ = reply.send(RenderedPage { key, page, requested_width: width, image });
-                    wake();
-                }),
-            )
+        Job::Render { file, page, width, region, reply, wake } => {
+            let _ = reply.send(RenderedPage { key: file.key, page, requested_width: width, region, image: Err(err) });
+            wake();
         }
-    };
-    let pdfium = match pdfium {
-        Ok(p) => p,
-        Err(e) => return run(Err(e.clone())),
-    };
-    if let Some(i) = open.iter().position(|(k, _)| *k == file.key) {
-        let entry = open.remove(i);
-        open.push(entry);
-    } else {
-        match pdfium.load_pdf_from_byte_vec(file.bytes.clone(), None) {
-            Ok(doc) => {
-                if open.len() >= OPEN_DOCUMENTS {
-                    open.remove(0);
-                }
-                open.push((file.key, doc));
-            }
-            Err(e) => return run(Err(PdfError::Unreadable(e.to_string()))),
+        Job::Underlay { reply, .. } => {
+            let _ = reply.send(Err(err));
         }
     }
-    let (_, doc) = open.last().expect("just opened");
-    run(Ok(doc));
+}
+
+fn handle(open: &mut Open, job: Job) {
+    match job {
+        Job::Sizes { file, reply } => {
+            let _ = reply.send(open.document(&file).and_then(sizes));
+        }
+        Job::Render { file, page, width, region, reply, wake } => {
+            let image = open.page(&file, page).and_then(|p| rasterise(p, width, region));
+            let _ = reply.send(RenderedPage { key: file.key, page, requested_width: width, region, image });
+            wake();
+        }
+        Job::Underlay { pdf, pages, reply } => {
+            let _ = reply.send(underlay_pages(open.pdfium, pdf, &pages));
+        }
+    }
 }
 
 fn underlay_pages(pdfium: &Pdfium, pdf: Vec<u8>, pages: &[Underlay]) -> Result<Vec<u8>, PdfError> {
@@ -311,17 +391,31 @@ fn sizes(doc: &PdfDocument) -> Result<Vec<[f32; 2]>, PdfError> {
         .collect()
 }
 
-fn rasterise(doc: &PdfDocument, page: u32, width: u32) -> Result<(u32, u32, Vec<u8>), PdfError> {
+/// Renders the page `width` pixels wide: all of it, or only `region`.
+fn rasterise(page: &PdfPage, width: u32, region: Option<[u32; 4]>) -> Result<(u32, u32, Vec<u8>), PdfError> {
     let unreadable = |e: PdfiumError| PdfError::Unreadable(e.to_string());
-    let index = PdfPageIndex::try_from(page).map_err(|_| PdfError::Unreadable(format!("no page {}", page + 1)))?;
-    let page = doc.pages().get(index).map_err(unreadable)?;
     let config = PdfRenderConfig::new()
+        .set_clear_color(PdfColor::WHITE)
         .set_target_width(width as Pixels)
-        .set_maximum_height(MAX_RENDER_PX as Pixels)
         .render_form_data(true)
         .render_annotations(true);
-    let bitmap = page.render_with_config(&config).map_err(unreadable)?;
-    Ok((bitmap.width() as u32, bitmap.height() as u32, bitmap.as_rgba_bytes()))
+    let Some([x, y, w, h]) = region else {
+        let config = config.set_maximum_height(MAX_RENDER_PX as Pixels);
+        let bitmap = page.render_with_config(&config).map_err(unreadable)?;
+        return Ok((bitmap.width() as u32, bitmap.height() as u32, bitmap.as_rgba_bytes()));
+    };
+    // The page is laid out at its full size, shifted so the region's corner
+    // is the bitmap's; only the bitmap is drawn. Never past the page's edge:
+    // the bitmap would keep whatever it held there.
+    let page_h = page_height_px([page.width().value, page.height().value], width);
+    let (w, h) = (w.min(width.saturating_sub(x)), h.min(page_h.saturating_sub(y)));
+    if w == 0 || h == 0 {
+        return Err(PdfError::Unreadable("the region is outside the page".into()));
+    }
+    let mut bitmap = PdfBitmap::empty(w as Pixels, h as Pixels, PdfBitmapFormat::BGRA).map_err(unreadable)?;
+    let config = config.set_origin(-(x as Pixels), -(y as Pixels));
+    page.render_into_bitmap_with_config(&mut bitmap, &config).map_err(unreadable)?;
+    Ok((w, h, bitmap.as_rgba_bytes()))
 }
 
 #[cfg(test)]
@@ -374,7 +468,7 @@ mod tests {
         assert!((sizes[0][0] - 595.5).abs() < 1.0 && (sizes[0][1] - 842.25).abs() < 1.0, "{sizes:?}");
 
         let (tx, rx) = mpsc::channel();
-        render(&file, 1, 400, tx, Arc::new(|| {}));
+        render(&file, 1, 400, None, tx, Arc::new(|| {}));
         let page = rx.recv().unwrap();
         let (w, h, rgba) = page.image.unwrap();
         assert_eq!(w, 400);
@@ -415,7 +509,7 @@ mod tests {
         // The stored PDF still renders.
         let file = loaded.pdf.unwrap().file.unwrap();
         let (tx, rx) = mpsc::channel();
-        render(&file, 2, 300, tx, Arc::new(|| {}));
+        render(&file, 2, 300, None, tx, Arc::new(|| {}));
         assert!(rx.recv().unwrap().image.is_ok());
 
         let not_pdf = dir.join("notes.pdf");
@@ -473,7 +567,7 @@ mod tests {
 
         // Rendered 1:1 (794 px wide A4).
         let (tx, rx) = mpsc::channel();
-        render(&exported, 0, 794, tx, Arc::new(|| {}));
+        render(&exported, 0, 794, None, tx, Arc::new(|| {}));
         let (w, _, rgba) = rx.recv().unwrap().image.unwrap();
         let px = |x: u32, y: u32| -> [u8; 3] { rgba[((y * w + x) * 4) as usize..][..3].try_into().unwrap() };
         let dark = |p: [u8; 3]| p.iter().all(|&c| c < 60);
@@ -485,5 +579,80 @@ mod tests {
         assert!(r > 150 && g < 80 && b < 80, "pen ink: {:?}", [r, g, b]);
         // No paper fill over the PDF page (it would hide it), so white here.
         assert!(px(700, 200).iter().all(|&c| c > 250), "{:?}", px(700, 200));
+    }
+
+    #[test]
+    fn tiles_match_the_whole_page() {
+        if !pdfium_available() {
+            return;
+        }
+        // A4 with a diagonal black stroke, so every part of the page differs.
+        let mut doc = Document::default();
+        let id = doc.alloc_id();
+        let line = (0..=100).map(|i| Point::new(50.0 + i as f32 * 7.0, 60.0 + i as f32 * 10.0, 1.0)).collect();
+        doc.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 12.0, line));
+        let path = std::env::temp_dir().join("inknote_tiles_test.pdf");
+        pdf_export::export_notes(&[PdfNote { doc: &doc, title: "t".into() }], &path, &PdfOptions::default()).unwrap();
+        let file = PdfFile::new(std::fs::read(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+        let size = page_sizes(&file).unwrap()[0];
+
+        let width = 1000;
+        let get = |region| {
+            let (tx, rx) = mpsc::channel();
+            render(&file, 0, width, region, tx, Arc::new(|| {}));
+            let r = rx.recv().unwrap();
+            assert_eq!(r.region, region);
+            r.image.unwrap()
+        };
+        let (w, h, whole) = get(None);
+        assert_eq!((w, h), (width, page_height_px(size, width)));
+
+        // An inner tile and one over the bottom-right corner (clamped to the
+        // page) hold the whole page's pixels.
+        for [x, y, tw, th] in [[300, 400, 256, 256], [900, h - 100, 256, 256]] {
+            let (rw, rh, tile) = get(Some([x, y, tw, th]));
+            assert_eq!((rw, rh), (tw.min(w - x), th.min(h - y)));
+            for row in 0..rh {
+                let a = ((y + row) * w + x) as usize * 4;
+                let b = (row * rw) as usize * 4;
+                let n = rw as usize * 4;
+                // Equal but for antialiasing rounding (a step or two on edges).
+                let off = whole[a..a + n].iter().zip(&tile[b..b + n]).position(|(p, q)| p.abs_diff(*q) > 3);
+                assert!(off.is_none(), "row {row} of the tile at {x},{y} differs at byte {off:?}");
+            }
+        }
+        // Outside the page: an error, not garbage.
+        let (tx, rx) = mpsc::channel();
+        render(&file, 0, width, Some([w + 10, 0, 64, 64]), tx, Arc::new(|| {}));
+        assert!(rx.recv().unwrap().image.is_err());
+    }
+
+    /// Timings on a real (e.g. scanned) PDF: `INKNOTE_BENCH_PDF=<file>
+    /// cargo test -p inknote-core --release bench_tiles -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_tiles() {
+        let Some(path) = std::env::var_os("INKNOTE_BENCH_PDF") else { return };
+        if !pdfium_available() {
+            return;
+        }
+        let file = PdfFile::new(std::fs::read(path).unwrap());
+        let sizes = page_sizes(&file).unwrap();
+        let time = |page: u32, width: u32, region: Option<[u32; 4]>| {
+            let start = std::time::Instant::now();
+            let (tx, rx) = mpsc::channel();
+            render(&file, page, width, region, tx, Arc::new(|| {}));
+            rx.recv().unwrap().image.unwrap();
+            start.elapsed().as_secs_f64() * 1000.0
+        };
+        let width = 4096;
+        println!("page 1 whole at {width}px: {:.0} ms (cold), {:.0} ms (again)", time(0, width, None), time(0, width, None));
+        let h = page_height_px(sizes[1], width);
+        println!("page 2 at {width}x{h}px, 512px tiles:");
+        let first = time(1, width, Some([1024, 1024, 512, 512]));
+        let rest: Vec<f64> = (0..6).map(|i| time(1, width, Some([512 * (i % 3), 512 * (i / 3), 512, 512]))).collect();
+        println!("  first tile {first:.0} ms (cold), next six {:.0?} ms", rest);
+        println!("  a screenful (~12 tiles) after the first: ~{:.0} ms", rest.iter().sum::<f64>() / 6.0 * 12.0);
     }
 }

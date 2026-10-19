@@ -31,6 +31,17 @@ impl LeftPanel {
     }
 }
 
+/// Where a note was left: the scroll position (content space, so it does
+/// not depend on the zoom or the window size) and the zoom.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NoteView {
+    pub scroll: [f32; 2],
+    pub zoom: ZoomMode,
+}
+
+/// Notes whose place is remembered, at most (the least recent is forgotten).
+pub const NOTE_VIEWS: usize = 200;
+
 /// How the pages are scaled in the window.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ZoomMode {
@@ -126,6 +137,42 @@ pub struct Settings {
     pub pdf_margin: f32,
     pub pdf_author: String,
     pub pdf_open_after: bool,
+    /// Reopen, at startup, the note that was open when the app was closed.
+    pub reopen_last_note: bool,
+    /// The note open when the app was last closed (`None`: the library).
+    pub last_note: Option<String>,
+    /// Where each recently opened note was left (by path), most recent last.
+    pub note_views: Vec<(String, NoteView)>,
+}
+
+impl Settings {
+    /// Where the note at `path` was left, if remembered.
+    pub fn note_view(&self, path: &str) -> Option<NoteView> {
+        self.note_views.iter().rev().find(|(p, _)| p == path).map(|(_, v)| *v)
+    }
+
+    /// A note or folder moved from `old` to `new` (renamed, moved): the
+    /// places of the notes in it follow.
+    pub fn moved(&mut self, old: &std::path::Path, new: &std::path::Path) {
+        let follow = |p: &mut String| {
+            if let Ok(rest) = std::path::Path::new(p.as_str()).strip_prefix(old) {
+                let moved = if rest.as_os_str().is_empty() { new.to_path_buf() } else { new.join(rest) };
+                *p = moved.to_string_lossy().into_owned();
+            }
+        };
+        self.note_views.iter_mut().for_each(|(p, _)| follow(p));
+        if let Some(p) = self.last_note.as_mut() {
+            follow(p);
+        }
+    }
+
+    /// Remembers where the note at `path` is left (most recent last).
+    pub fn set_note_view(&mut self, path: &str, view: NoteView) {
+        self.note_views.retain(|(p, _)| p != path);
+        self.note_views.push((path.to_owned(), view));
+        let excess = self.note_views.len().saturating_sub(NOTE_VIEWS);
+        self.note_views.drain(..excess);
+    }
 }
 
 impl Default for Settings {
@@ -165,6 +212,58 @@ impl Default for Settings {
             pdf_margin: 37.8,
             pdf_author: String::new(),
             pdf_open_after: false,
+            reopen_last_note: true,
+            last_note: None,
+            note_views: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn view(y: f32) -> NoteView {
+        NoteView { scroll: [0.0, y], zoom: ZoomMode::FitWidth }
+    }
+
+    #[test]
+    fn note_places_are_remembered_most_recent_last() {
+        let mut s = Settings::default();
+        s.set_note_view("a.ink", view(1.0));
+        s.set_note_view("b.ink", view(2.0));
+        s.set_note_view("a.ink", view(3.0));
+        assert_eq!(s.note_view("a.ink"), Some(view(3.0)));
+        assert_eq!(s.note_views.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["b.ink", "a.ink"]);
+        for i in 0..NOTE_VIEWS {
+            s.set_note_view(&format!("n{i}.ink"), view(0.0));
+        }
+        assert_eq!(s.note_views.len(), NOTE_VIEWS);
+        assert_eq!(s.note_view("b.ink"), None, "the least recent is forgotten");
+    }
+
+    #[test]
+    fn places_follow_renames_and_moves() {
+        let mut s = Settings::default();
+        let nb = Path::new("lib").join("Work");
+        let note = nb.join("Section 1").join("Plan.ink");
+        let note_s = note.to_string_lossy().into_owned();
+        s.set_note_view(&note_s, view(5.0));
+        s.set_note_view("lib/Other.ink", view(6.0));
+        s.last_note = Some(note_s);
+
+        // The notebook renamed: the note inside follows.
+        let renamed = Path::new("lib").join("Job");
+        s.moved(&nb, &renamed);
+        let now = renamed.join("Section 1").join("Plan.ink");
+        assert_eq!(s.note_view(&now.to_string_lossy()), Some(view(5.0)));
+        assert_eq!(s.last_note.as_deref(), Some(now.to_string_lossy().as_ref()));
+        // The note itself renamed.
+        let final_path = renamed.join("Section 1").join("Plan v2.ink");
+        s.moved(&now, &final_path);
+        assert_eq!(s.note_view(&final_path.to_string_lossy()), Some(view(5.0)));
+        // Others untouched.
+        assert_eq!(s.note_view("lib/Other.ink"), Some(view(6.0)));
     }
 }

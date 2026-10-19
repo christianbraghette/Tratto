@@ -234,7 +234,10 @@ impl InkApp {
         }
         if let Some(path) = self.note_path.clone() {
             match library::rename_note_file(&path, title) {
-                Ok(new) => self.note_path = Some(new),
+                Ok(new) => {
+                    self.settings.moved(&path, &new);
+                    self.note_path = Some(new);
+                }
                 Err(e) => self.toast(format!("Renamed, but the file keeps its name: {e}")),
             }
         }

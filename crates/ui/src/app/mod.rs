@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -27,7 +29,7 @@ use crate::kinetic::Kinetic;
 use crate::pdf_view::PdfTextures;
 use crate::render::{self, Layer, Moved, StrokeCache};
 use crate::scrollbar;
-use crate::settings::{LeftPanel, Settings, ZoomMode};
+use crate::settings::{LeftPanel, NoteView, Settings, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::view::{Layout, MARGIN, TOP_PAD_PX, View};
@@ -173,6 +175,11 @@ pub struct InkApp {
     thumb_cache: StrokeCache,
     /// Notes written on a PDF: its pages as textures.
     pdf_textures: PdfTextures,
+    /// A note read (or a PDF imported) in the background; a loading screen
+    /// covers the window meanwhile.
+    loading: Option<Loading>,
+    /// To wake the UI from background threads.
+    egui_ctx: egui::Context,
     /// Page being dragged in the preview panel.
     page_drag: Option<u32>,
     /// Current page the pages panel last scrolled to.
@@ -272,6 +279,8 @@ impl InkApp {
             cache: StrokeCache::default(),
             thumb_cache: StrokeCache::default(),
             pdf_textures: PdfTextures::default(),
+            loading: None,
+            egui_ctx: cc.egui_ctx.clone(),
             page_drag: None,
             panel_page: None,
             scroll_to: None,
@@ -308,6 +317,11 @@ impl InkApp {
             zoom_request: None,
         };
         app.refresh_library();
+        // Back where the app was closed: the note that was open, if any.
+        let last = app.settings.last_note.clone().filter(|_| app.settings.reopen_last_note).map(PathBuf::from);
+        if let Some(path) = last.filter(|p| p.is_file()) {
+            app.open_note(&path);
+        }
         app
     }
 
@@ -374,20 +388,100 @@ impl InkApp {
         }
     }
 
+    /// Opens a note. A large one (written on a PDF) is read in the background
+    /// behind a loading screen, so the window never freezes.
     fn open_note(&mut self, path: &Path) {
+        let large = std::fs::metadata(path).is_ok_and(|m| m.len() > LOAD_IN_BACKGROUND);
+        if large {
+            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let path = path.to_path_buf();
+            self.load_in_background(format!("Opening \u{201c}{name}\u{201d}..."), move || Ok(path));
+            return;
+        }
         match storage::load_note(path) {
-            Ok((meta, doc)) => {
-                self.doc = doc;
-                self.note_meta = meta;
-                self.note_path = Some(path.to_path_buf());
-                self.ensure_pages();
-                self.reset_editing_state();
-                self.last_fp = self.current_fingerprint();
-                self.dirty = false;
-                self.screen = Screen::Editor;
-            }
+            Ok((meta, doc)) => self.show_note(path, meta, doc),
             Err(e) => self.toast(format!("Cannot open note: {e}")),
         }
+    }
+
+    /// Makes a loaded note the open one, in the editor, where it was left.
+    fn show_note(&mut self, path: &Path, meta: NoteMeta, doc: Document) {
+        self.doc = doc;
+        self.note_meta = meta;
+        self.note_path = Some(path.to_path_buf());
+        self.ensure_pages();
+        self.reset_editing_state();
+        let key = path.to_string_lossy();
+        if let Some(view) = self.settings.note_view(&key) {
+            // The canvas clamps it to the note (e.g. pages deleted elsewhere).
+            self.scroll = vec2(view.scroll[0], view.scroll[1]);
+            self.settings.zoom = view.zoom;
+        }
+        self.settings.last_note = Some(key.into_owned());
+        self.last_fp = self.current_fingerprint();
+        self.dirty = false;
+        self.screen = Screen::Editor;
+    }
+
+    /// Remembers where the open note is left (scroll and zoom), and that it
+    /// is the open one.
+    fn remember_view(&mut self) {
+        let Some(path) = self.note_path.as_ref().map(|p| p.to_string_lossy().into_owned()) else { return };
+        // The place the view is gliding to, if it is.
+        let scroll = self.kinetic.target().unwrap_or(self.scroll);
+        let view = NoteView { scroll: [scroll.x, scroll.y], zoom: self.settings.zoom };
+        self.settings.set_note_view(&path, view);
+        self.settings.last_note = Some(path);
+    }
+
+    /// Runs `find` (e.g. importing a PDF, which returns the new note) and
+    /// reads the note it names on a background thread; the note opens when
+    /// it is ready. `label` is shown on the loading screen meanwhile.
+    fn load_in_background(&mut self, label: String, find: impl FnOnce() -> Result<PathBuf, String> + Send + 'static) {
+        let (tx, done) = mpsc::channel();
+        let ctx = self.egui_ctx.clone();
+        let spawned = thread::Builder::new().name("load-note".into()).spawn(move || {
+            let loaded = find().and_then(|path| {
+                storage::load_note(&path)
+                    .map(|(meta, doc)| (path, meta, doc))
+                    .map_err(|e| format!("Cannot open note: {e}"))
+            });
+            let _ = tx.send(loaded);
+            ctx.request_repaint();
+        });
+        match spawned {
+            Ok(_) => self.loading = Some(Loading { label, done }),
+            Err(e) => self.toast(format!("Cannot open note: {e}")),
+        }
+    }
+
+    /// Opens the note loaded in the background once it is ready.
+    fn poll_loading(&mut self) {
+        let Some(loading) = &self.loading else { return };
+        let loaded = match loading.done.try_recv() {
+            Ok(loaded) => loaded,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("Cannot open note: the loading stopped unexpectedly".into()),
+        };
+        self.loading = None;
+        match loaded {
+            Ok((path, meta, doc)) => {
+                self.refresh_library();
+                self.show_note(&path, meta, doc);
+            }
+            Err(e) => {
+                self.refresh_library();
+                self.toast(e);
+            }
+        }
+    }
+
+    /// Imports a PDF into `dir` in the background and opens the new note.
+    fn import_pdf(&mut self, dir: PathBuf, src: PathBuf) {
+        let name = src.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        self.load_in_background(format!("Importing \u{201c}{name}\u{201d}..."), move || {
+            library::import_pdf(&dir, &src).map_err(|e| format!("Cannot import the PDF: {e}"))
+        });
     }
 
     /// Saves and returns to the library. Stays in the editor if saving fails,
@@ -400,6 +494,9 @@ impl InkApp {
         if self.dirty && !self.save_note(false) {
             return;
         }
+        self.remember_view();
+        // Closed by hand: the app starts in the library next time.
+        self.settings.last_note = None;
         self.note_path = None;
         self.context_menu = None;
         self.export_dialog = None;
@@ -438,13 +535,7 @@ impl InkApp {
             }
         }
         let dir = dir.unwrap_or_else(|| self.library_target_dir());
-        match library::import_pdf(&dir, &src) {
-            Ok(path) => {
-                self.refresh_library();
-                self.open_note(&path);
-            }
-            Err(e) => self.toast(format!("Cannot import the PDF: {e}")),
-        }
+        self.import_pdf(dir, src);
     }
 
     fn reset_editing_state(&mut self) {
@@ -2181,6 +2272,43 @@ impl InkApp {
 
 }
 
+/// A note being read (or a PDF imported) on a background thread.
+struct Loading {
+    /// What the loading screen says.
+    label: String,
+    done: Receiver<Result<(PathBuf, NoteMeta, Document), String>>,
+}
+
+/// Notes larger than this (bytes) are read in the background: notes written
+/// on a PDF.
+const LOAD_IN_BACKGROUND: u64 = 4 * 1024 * 1024;
+
+/// Covers the window while a note loads: dimmed, a card with a spinner and
+/// what is happening, and every click absorbed.
+fn loading_screen(ctx: &egui::Context, label: &str) {
+    let screen = ctx.screen_rect();
+    egui::Area::new(Id::new("loading_screen"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            ui.allocate_response(screen.size(), Sense::click_and_drag());
+            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
+            let card = Rect::from_center_size(screen.center(), vec2(320.0, 128.0));
+            ui.painter().add(theme::card_shadow().as_shape(card, radius::LARGE));
+            ui.painter().rect(card, radius::LARGE, color::SURFACE, egui::Stroke::new(1.0, color::BORDER));
+            let inner = card.shrink(space::L);
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(space::S);
+                    ui.add(egui::Spinner::new().size(28.0).color(color::ACCENT));
+                    ui.add_space(space::M);
+                    ui.add(egui::Label::new(theme::heading(label)).truncate());
+                    ui.label(theme::muted("Large PDFs can take a moment."));
+                });
+            });
+        });
+}
+
 /// Wraps `text` to `width` with egui's font at the box's own size and returns
 /// the lines plus the line height (all in document units).
 fn layout_lines(ctx: &egui::Context, text: &str, size: f32, width: f32) -> (Vec<String>, f32) {
@@ -2242,14 +2370,21 @@ impl eframe::App for InkApp {
         if let Some(e) = self.pdf_textures.error.take() {
             self.toast(format!("The PDF pages cannot be shown: {e}"));
         }
-        self.dropped_pdf(ctx);
-        self.menu_shortcuts(ctx);
+        self.poll_loading();
+        // While a note loads, the window waits: no shortcuts, no drops.
+        if self.loading.is_none() {
+            self.dropped_pdf(ctx);
+            self.menu_shortcuts(ctx);
+        }
         self.window_chrome(ctx);
         match self.screen {
             Screen::Library => self.library_screen(ctx),
             Screen::Editor => self.editor_screen(ctx),
         }
         self.finish_chrome(ctx);
+        if let Some(loading) = &self.loading {
+            loading_screen(ctx, &loading.label);
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -2263,6 +2398,10 @@ impl eframe::App for InkApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Periodically and on exit: where the open note is.
+        if self.screen == Screen::Editor {
+            self.remember_view();
+        }
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
         // Overwrite the window state saved by earlier versions (eframe's key);
         // an unparsable value makes eframe skip restoring it.
