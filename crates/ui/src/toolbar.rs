@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Floating pill-shaped toolbars.
+//! The editor's toolbars, all drawn as notches attached to the canvas edges.
 //!
-//! * the main toolbar (tools, styles, undo / redo) at the top or bottom centre
+//! * the tools (tools, styles, undo / redo) centred on the top or bottom edge
 //! * library in a notch in the top-right corner
 //! * pages panel toggle and settings in notches in the top-left and
 //!   bottom-left corners, which become part of the pages panel when it is open
@@ -19,11 +19,9 @@ use eframe::egui::{
 use egui_phosphor::regular as icon;
 
 use crate::scrollbar;
-use crate::settings::{Settings, ToolStyle, ToolbarPosition};
+use crate::settings::{LeftPanel, Settings, ToolStyle, ToolbarPosition};
 use crate::theme::{self, color, radius, space};
 
-/// Fixed distance between the toolbars and the window edge.
-pub const MARGIN: f32 = space::L;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -39,9 +37,6 @@ pub enum Tool {
 pub enum ToolbarEvent {
     Undo,
     Redo,
-    ToggleSettings,
-    /// Back to the library.
-    Library,
 }
 
 impl Tool {
@@ -84,8 +79,12 @@ const HIGHLIGHTER_PALETTE: [[u8; 3]; 5] = [
     [255, 170, 60],
 ];
 
-/// Shows the toolbar at the top or bottom edge; returns a clicked action.
+/// Shows the tool bar as a notch centred on the top edge (below the title
+/// bar) or on the bottom edge of the canvas; returns a clicked action.
 ///
+/// Call after the title bar and the side panels, so it is centred over the
+/// canvas. When the window is too narrow for it to fit between the corner
+/// notches at the chosen edge, it moves to the other edge.
 /// `bottom_inset` keeps it clear of the horizontal scrollbar when that is visible.
 pub fn show(
     ctx: &egui::Context,
@@ -95,41 +94,76 @@ pub fn show(
     can_redo: bool,
     bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
-    // Centred over the canvas, below the title bar (call after the title bar
-    // and the side panels), so it never covers the menus or the pages panel.
     let free = ctx.available_rect();
-    let id = egui::Id::new("floating_toolbar");
-    // When the window is too narrow for the toolbar to fit between the corner
-    // notches, it moves past them (size from the previous frame).
+    let id = egui::Id::new("tool_notch");
+    // Size from the previous frame.
     let width = ctx.memory(|m| m.area_rect(id)).map_or(0.0, |r| r.width());
-    let clear = if width + 2.0 * CORNER_ZONE > free.width() { NOTCH_HEIGHT } else { 0.0 };
-    let (pivot, pos) = match settings.toolbar_position {
-        ToolbarPosition::Top => {
-            (Align2::CENTER_TOP, pos2(free.center().x, free.top() + MARGIN + clear))
-        }
-        ToolbarPosition::Bottom => (
-            Align2::CENTER_BOTTOM,
-            pos2(free.center().x, free.bottom() - MARGIN - bottom_inset - clear),
-        ),
+    let fits = width + 2.0 * CORNER_ZONE <= free.width();
+    let top = match settings.toolbar_position {
+        ToolbarPosition::Top => fits,
+        ToolbarPosition::Bottom => !fits,
+    };
+    let (at, pos) = if top {
+        (Edge::Top, pos2(free.center().x, free.top()))
+    } else {
+        (Edge::Bottom, pos2(free.center().x, free.bottom() - bottom_inset))
     };
 
     let mut event = None;
     egui::Area::new(id)
         .order(Order::Foreground)
-        .pivot(pivot)
+        .pivot(if top { Align2::CENTER_TOP } else { Align2::CENTER_BOTTOM })
         .fixed_pos(pos)
         .show(ctx, |ui| {
-            theme::floating_frame().show(ui, |ui| {
-                tool_buttons_style(ui);
-                ui.horizontal(|ui| event = contents(ui, tool, settings, can_undo, can_redo));
-            })
+            let background = ui.painter().add(Shape::Noop);
+            let mut margin = notch_margin(top);
+            margin.left = space::M;
+            margin.right = space::M;
+            let rect = egui::Frame::none()
+                .inner_margin(margin)
+                .show(ui, |ui| {
+                    tool_buttons_style(ui);
+                    ui.horizontal(|ui| event = contents(ui, tool, settings, can_undo, can_redo));
+                })
+                .response
+                .rect;
+            ui.painter().set(background, edge_notch_shape(rect, at, color::CHROME));
         });
     event
 }
 
+/// The edge a centred notch is attached to.
+#[derive(Clone, Copy, PartialEq)]
+enum Edge {
+    Top,
+    Bottom,
+}
+
+/// A centred notch: both free corners rounded, concave fillets at both ends
+/// of the attached edge. One polygon, fanned from the middle of the attached
+/// edge, from which every point is visible.
+fn edge_notch_shape(rect: Rect, at: Edge, fill: Color32) -> Shape {
+    let (big, small) = (NOTCH_ROUNDING, NOTCH_FILLET);
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    // Attached to the top, clockwise; edges along the border reach 1 px past it.
+    let mut pts = vec![pos2(rect.center().x, t - 1.0), pos2(r + small, t - 1.0)];
+    arc(&mut pts, pos2(r + small, t + small), small, -90.0, -180.0);
+    arc(&mut pts, pos2(r - big, b - big), big, 0.0, 90.0);
+    arc(&mut pts, pos2(l + big, b - big), big, 90.0, 180.0);
+    arc(&mut pts, pos2(l - small, t + small), small, 0.0, -90.0);
+    pts.push(pos2(l - small, t - 1.0));
+    if at == Edge::Bottom {
+        for p in &mut pts {
+            p.y = t + b - p.y;
+        }
+    }
+    Shape::convex_polygon(clockwise(pts), fill, Stroke::NONE)
+}
+
 /// The editor's corner buttons:
 ///
-/// * library in a notch in the top-right corner (against the scrollbar)
+/// * library panel toggle in a notch in the top-right corner (against the
+///   scrollbar); it becomes part of the library panel when that is open
 /// * pages panel toggle in a notch in the top-left corner
 /// * settings in a notch in the bottom-left corner
 ///
@@ -140,59 +174,68 @@ pub fn show(
 ///
 /// Call after the side panels: `available_rect` is the canvas area then.
 /// `bottom_inset` keeps the bottom notch above the horizontal scrollbar.
-pub fn show_corners(
-    ctx: &egui::Context,
-    settings: &mut Settings,
-    settings_open: bool,
-    bottom_inset: f32,
-) -> Option<ToolbarEvent> {
+pub fn show_corners(ctx: &egui::Context, settings: &mut Settings, bottom_inset: f32) {
     let free = ctx.available_rect();
-    let mut event = None;
 
-    // Against the vertical scrollbar, which always occupies the right edge.
+    // Panel joins: above the canvas, but below menus and popups (which are
+    // foreground areas).
+    let joins = ctx.layer_painter(egui::LayerId::new(Order::Middle, egui::Id::new("panel_joins")));
+
+    // Against the vertical scrollbar, which always occupies the right edge of
+    // the canvas (and, being the same surface, joins the library panel).
     let right = pos2(free.right() - scrollbar::THICKNESS, free.top());
-    notch(ctx, "corner_notch_library", Corner::TopRight, right, |ui| {
-        if ui
-            .button(theme::icon(icon::BOOKS))
-            .on_hover_text("Library: save and go back to your notes")
-            .clicked()
-        {
-            event = Some(ToolbarEvent::Library);
-        }
-    });
+    if settings.library_panel_open {
+        joins.add(fillet(right, -1.0, 1.0, color::CHROME));
+        joins.add(fillet(pos2(right.x, free.bottom() - bottom_inset), -1.0, -1.0, color::CHROME));
+    } else {
+        notch(ctx, "corner_notch_library", Corner::TopRight, right, |ui| {
+            library_button(ui, &mut settings.library_panel_open);
+        });
+    }
 
-    if settings.pages_panel_open {
-        // Join the panel to the title bar and to the bottom edge. Above the
-        // canvas, but below menus and popups (which are foreground areas).
-        let layer = egui::LayerId::new(Order::Middle, egui::Id::new("pages_panel_joins"));
-        let painter = ctx.layer_painter(layer);
-        painter.add(fillet(free.left_top(), 1.0, 1.0, color::CHROME));
-        painter.add(fillet(free.left_bottom(), 1.0, -1.0, color::CHROME));
+    if settings.left_panel != LeftPanel::Closed {
+        // Join the panel to the title bar and to the bottom edge.
+        joins.add(fillet(free.left_top(), 1.0, 1.0, color::CHROME));
+        joins.add(fillet(free.left_bottom(), 1.0, -1.0, color::CHROME));
     } else {
         notch(ctx, "corner_notch_pages", Corner::TopLeft, free.left_top(), |ui| {
-            pages_button(ui, &mut settings.pages_panel_open);
+            if pages_button(ui, false) {
+                settings.left_panel = LeftPanel::Pages;
+            }
         });
         let bottom_left = pos2(free.left(), free.bottom() - bottom_inset);
         notch(ctx, "corner_notch_settings", Corner::BottomLeft, bottom_left, |ui| {
-            if settings_button(ui, settings_open) {
-                event = Some(ToolbarEvent::ToggleSettings);
+            if settings_button(ui, false) {
+                settings.left_panel = LeftPanel::Settings;
             }
         });
     }
-    event
+}
+
+/// Width of the left panel's button strip: a corner notch's width, so its
+/// buttons sit exactly where they are in the notches.
+pub const STRIP_WIDTH: f32 = 2.0 * space::S + 32.0;
+
+/// Toggles the library panel (in its notch, or in the panel header).
+pub fn library_button(ui: &mut egui::Ui, open: &mut bool) {
+    let tip = if *open { "Hide the library" } else { "Library: your notebooks and notes" };
+    ui.toggle_value(open, theme::icon(icon::BOOKS)).on_hover_text(tip);
 }
 
 /// Toggles the pages panel (in its notch, or in the panel header).
-pub fn pages_button(ui: &mut egui::Ui, open: &mut bool) {
-    let tip = if *open { "Hide pages" } else { "Pages: jump, reorder, delete" };
-    ui.toggle_value(open, theme::icon(icon::SIDEBAR_SIMPLE)).on_hover_text(tip);
+/// Returns true when clicked; `shown` highlights it.
+pub fn pages_button(ui: &mut egui::Ui, shown: bool) -> bool {
+    let tip = if shown { "Hide pages" } else { "Pages: jump, reorder, delete" };
+    ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::SIDEBAR_SIMPLE)))
+        .on_hover_text(tip)
+        .clicked()
 }
 
-/// Opens or closes the settings (in its notch, or in the panel footer).
-/// Returns true when clicked.
-pub fn settings_button(ui: &mut egui::Ui, open: bool) -> bool {
-    ui.add(egui::SelectableLabel::new(open, theme::icon(icon::GEAR_SIX)))
-        .on_hover_text("Settings")
+/// Returns true when clicked; `shown` highlights it.
+pub fn settings_button(ui: &mut egui::Ui, shown: bool) -> bool {
+    let tip = if shown { "Hide settings" } else { "Settings" };
+    ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::GEAR_SIX)))
+        .on_hover_text(tip)
         .clicked()
 }
 
@@ -235,11 +278,10 @@ impl Corner {
     }
 }
 
-/// Radius of the notch's free corner (same as the floating toolbar).
+/// Radius of the notches' free corners.
 const NOTCH_ROUNDING: f32 = radius::LARGE;
-/// Height of a notch with one button, and the width kept free for the
-/// notches (plus the scrollbar) at each side of the floating toolbar.
-const NOTCH_HEIGHT: f32 = 48.0;
+/// Width kept free for the corner notches (plus the scrollbar) at each side
+/// of the tool notch.
 const CORNER_ZONE: f32 = 80.0;
 /// Radius of the concave joins between the notch and the window edges.
 const NOTCH_FILLET: f32 = 10.0;

@@ -25,18 +25,26 @@ use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
 use crate::render::{self, Moved, StrokeCache};
 use crate::scrollbar;
-use crate::settings::{Settings, ToolbarPosition, ZoomMode};
+use crate::settings::{LeftPanel, Settings, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::view::{Layout, MARGIN, View};
 
+mod library_panel;
 mod library_ui;
 mod menus;
 
 use menus::{Command, ContextMenu, HelpWindows};
 
 /// Width of the left page-preview panel (points).
-const PANEL_WIDTH: f32 = 164.0;
+/// Left panel views: default width and resize range of each (each view
+/// remembers its own width).
+const PAGES_WIDTH: f32 = 164.0;
+const PAGES_WIDTHS: std::ops::RangeInclusive<f32> = 120.0..=360.0;
+/// Page previews never get wider than this, however wide the panel.
+const THUMB_MAX_W: f32 = 200.0;
+const SETTINGS_WIDTH: f32 = 360.0;
+const SETTINGS_WIDTHS: std::ops::RangeInclusive<f32> = 300.0..=560.0;
 /// Autosave this long after the last change.
 /// Key under which eframe stores the window state (not public in eframe).
 const WINDOW_STATE_KEY: &str = "window";
@@ -122,7 +130,6 @@ pub struct InkApp {
     history: History,
     tool: Tool,
     settings: Settings,
-    settings_open: bool,
     /// Content-space position at the top-left of the writing area.
     scroll: Vec2,
     /// Momentum, wheel acceleration and eased jumps of `scroll`.
@@ -162,6 +169,8 @@ pub struct InkApp {
     thumb_cache: StrokeCache,
     /// Page being dragged in the preview panel.
     page_drag: Option<u32>,
+    /// Current page the pages panel last scrolled to.
+    panel_page: Option<u32>,
     /// Content-space y to scroll to on the next frame (jump to page).
     scroll_to: Option<f32>,
     /// Page in the middle of the view (highlighted in the panel).
@@ -193,6 +202,12 @@ pub struct InkApp {
     maximize_after_fullscreen: bool,
     /// Window title last sent to the OS.
     os_title: String,
+    /// Text of the note title field in the title bar, and whether it has focus.
+    title_buf: String,
+    title_focused: bool,
+    /// Same for the notebook name in the notebook panel.
+    notebook_buf: String,
+    notebook_focused: bool,
     /// Zoom of the last frame (points per document unit).
     view_scale: f32,
     /// Zoom factor requested by a menu command, applied around the centre.
@@ -215,7 +230,6 @@ impl InkApp {
             history: History::default(),
             tool: Tool::Pen,
             settings,
-            settings_open: false,
             scroll: Vec2::ZERO,
             kinetic: Kinetic::default(),
             vbar_grab: None,
@@ -241,6 +255,7 @@ impl InkApp {
             cache: StrokeCache::default(),
             thumb_cache: StrokeCache::default(),
             page_drag: None,
+            panel_page: None,
             scroll_to: None,
             current_page: 0,
             screen: Screen::Library,
@@ -262,6 +277,10 @@ impl InkApp {
             window_checked: false,
             maximize_after_fullscreen: false,
             os_title: "InkNote".to_owned(),
+            title_buf: String::new(),
+            title_focused: false,
+            notebook_buf: String::new(),
+            notebook_focused: false,
             view_scale: 1.0,
             zoom_request: None,
         };
@@ -362,7 +381,6 @@ impl InkApp {
         self.context_menu = None;
         self.doc = Document::default();
         self.reset_editing_state();
-        self.settings_open = false;
         self.screen = Screen::Library;
         self.refresh_library();
     }
@@ -431,8 +449,9 @@ impl InkApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        // While typing, Ctrl+Z / Ctrl+Y belong to the text editor.
-        let typing = self.edit.is_some();
+        // While typing (a text box or a text field such as the note title),
+        // Ctrl+Z / Ctrl+Y belong to the text editor.
+        let typing = self.edit.is_some() || ctx.wants_keyboard_input();
         // Order matters: the Shift variant must be consumed before plain Ctrl+Z.
         let (redo_shift, redo_y, undo, save, export) = ctx.input_mut(|i| {
             (
@@ -1646,11 +1665,73 @@ impl InkApp {
 
     /// Collapsible left panel: previews of all pages. Click = jump to the page,
     /// drag = reorder, "x" (on hover) = delete. Everything is undoable.
-    fn pages_panel(&mut self, ctx: &egui::Context) {
-        if !self.settings.pages_panel_open {
+    /// The left panel: a strip with the pages and settings buttons (the two
+    /// left notches joined), and the shown view to its right. Each view is
+    /// its own resizable panel, so each keeps its own width.
+    fn left_panel(&mut self, ctx: &egui::Context) {
+        let view = self.settings.left_panel;
+        if view != LeftPanel::Pages {
             self.page_drag = None;
+        }
+        if view == LeftPanel::Closed {
             return;
         }
+        let (top, bottom) = (toolbar::notch_margin(true), toolbar::notch_margin(false));
+        let mut clicked = None;
+        egui::SidePanel::left("left_panel_strip")
+            .resizable(false)
+            .exact_width(toolbar::STRIP_WIDTH)
+            .show_separator_line(false)
+            .frame(egui::Frame::none().fill(color::CHROME).inner_margin(egui::Margin {
+                left: top.left,
+                right: top.right,
+                top: top.top,
+                bottom: bottom.bottom,
+            }))
+            .show(ctx, |ui| {
+                toolbar::notch_buttons_style(ui);
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    if toolbar::settings_button(ui, view == LeftPanel::Settings) {
+                        clicked = Some(LeftPanel::Settings);
+                    }
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        if toolbar::pages_button(ui, view == LeftPanel::Pages) {
+                            clicked = Some(LeftPanel::Pages);
+                        }
+                    });
+                });
+            });
+        match view {
+            LeftPanel::Pages => self.pages_view(ctx),
+            LeftPanel::Settings => self.settings_view(ctx),
+            LeftPanel::Closed => {}
+        }
+        if let Some(v) = clicked {
+            self.settings.left_panel.toggle(v);
+        }
+    }
+
+    /// Frame of a left panel view: the strip's surface, content starting
+    /// level with the top button.
+    fn view_frame() -> egui::Frame {
+        let top = toolbar::notch_margin(true);
+        egui::Frame::none().fill(color::CHROME).inner_margin(egui::Margin {
+            left: space::S,
+            right: space::S,
+            top: top.top,
+            bottom: space::S,
+        })
+    }
+
+    /// Hairline between the button strip and a left panel view.
+    fn view_divider(ui: &egui::Ui) {
+        let r = ui.max_rect();
+        let x = r.left() - space::S + 0.5;
+        let y = (r.top() + space::XS)..=(r.bottom() - space::XS);
+        ui.painter().vline(x, y, egui::Stroke::new(1.0, color::BORDER));
+    }
+
+    fn pages_view(&mut self, ctx: &egui::Context) {
         let layout = Layout {
             page_w: self.doc.page_width,
             page_h: self.doc.page_height,
@@ -1666,102 +1747,89 @@ impl InkApp {
         let cache = &mut self.thumb_cache;
         let drag = &mut self.page_drag;
 
-        let mut close = false;
-        let settings_open = self.settings_open;
-        let mut toggle_settings = false;
+        // Scroll the list to the current page when it changes.
+        let follow = self.panel_page != Some(current) && drag.is_none();
+        self.panel_page = Some(current);
         let mut jump: Option<u32> = None;
         let mut delete: Option<u32> = None;
         let mut add = false;
+        let mut insert: Option<u32> = None;
         let mut reorder: Option<(u32, u32)> = None;
 
-        // The panel is the top-left and bottom-left notches grown into a
-        // sidebar: same surface, no outline, and the pages and settings
-        // buttons at exactly the positions they have in the notches (same
-        // margins; the concave joins are drawn by `toolbar::show_corners`).
-        let (top, bottom) = (toolbar::notch_margin(true), toolbar::notch_margin(false));
-        egui::SidePanel::left("pages_panel")
-            .resizable(false)
-            .exact_width(PANEL_WIDTH)
+        // The concave joins with the title bar and the bottom edge are drawn
+        // by `toolbar::show_corners`.
+        egui::SidePanel::left("left_panel_pages")
+            .resizable(true)
+            .default_width(PAGES_WIDTH)
+            .width_range(PAGES_WIDTHS)
             .show_separator_line(false)
-            .frame(egui::Frame::none().fill(color::CHROME).inner_margin(egui::Margin {
-                left: top.left,
-                right: top.right,
-                top: top.top,
-                bottom: bottom.bottom,
-            }))
+            .frame(Self::view_frame())
             .show(ctx, |ui| {
-                egui::TopBottomPanel::bottom("pages_panel_footer")
-                    .frame(egui::Frame::none().inner_margin(egui::Margin { top: space::S, ..Default::default() }))
-                    .show_separator_line(false)
-                    .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            toolbar::notch_buttons_style(ui);
-                            toggle_settings = toolbar::settings_button(ui, settings_open);
-                        });
-                    });
+                Self::view_divider(ui);
 
-                ui.horizontal(|ui| {
-                    toolbar::notch_buttons_style(ui);
-                    let mut open = true;
-                    toolbar::pages_button(ui, &mut open);
-                    close = !open;
-                    ui.add_space(space::XS);
-                    ui.label(theme::heading("Pages"));
-                    ui.label(theme::muted(format!("{}", layout.count)));
-                });
-                ui.add_space(space::S);
-
-                let thumb_w = (ui.available_width() - 14.0).max(40.0);
+                // Page cards, centred; the scroll bar floats over the content,
+                // so the full width is usable.
+                let avail = ui.available_width();
+                let thumb_w = (avail - 2.0 * space::M).clamp(40.0, THUMB_MAX_W);
                 let thumb_h = thumb_w * layout.page_h / layout.page_w;
                 let scale = thumb_w / layout.page_w;
                 cache.begin_frame(scale, ppp);
                 let aa = 1.0 / ppp;
                 let pointer = ui.input(|i| i.pointer.interact_pos());
+                const PAD: f32 = 6.0;
+                const NUMBER_H: f32 = 18.0;
 
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
                         let mut rects: Vec<Rect> = Vec::with_capacity(layout.count as usize);
                         for i in 0..layout.count {
-                            let (rect, resp) = ui.allocate_exact_size(
+                            let (card, _) = ui.allocate_exact_size(
+                                vec2(avail, PAD + thumb_h + PAD + NUMBER_H + PAD),
+                                Sense::hover(),
+                            );
+                            let rect = Rect::from_min_size(
+                                pos2(card.center().x - thumb_w * 0.5, card.top() + PAD),
                                 vec2(thumb_w, thumb_h),
-                                Sense::click_and_drag(),
                             );
                             rects.push(rect);
+                            // The whole card (page and number) is the target.
+                            let resp = ui.interact(card, ui.id().with(("page_card", i)), Sense::click_and_drag());
+                            if follow && i == current {
+                                ui.scroll_to_rect(card, None);
+                            }
 
-                            if ui.is_rect_visible(rect) {
+                            if ui.is_rect_visible(card) {
                                 let p = ui.painter();
-                                p.rect_filled(
-                                    rect.translate(vec2(0.0, 2.0)),
-                                    2.0,
-                                    Color32::from_black_alpha(90),
-                                );
+                                if resp.hovered() && drag.is_none() {
+                                    p.rect_filled(card, radius::MEDIUM, color::HOVER.gamma_multiply(0.6));
+                                }
+                                p.rect_filled(rect.translate(vec2(0.0, 2.0)), 2.0, Color32::from_black_alpha(90));
                                 p.rect_filled(rect, 0.0, render::PAGE_COLOR);
                                 let clipped = ui.painter_at(rect);
-                                render::paint_page_strokes(
-                                    &clipped,
-                                    rect.min.to_vec2(),
-                                    scale,
-                                    strokes,
-                                    i,
-                                    cache,
-                                    aa,
-                                );
-                                render::paint_page_texts(
-                                    &clipped,
-                                    rect.min.to_vec2(),
-                                    scale,
-                                    texts,
-                                    i,
-                                );
+                                render::paint_page_strokes(&clipped, rect.min.to_vec2(), scale, strokes, i, cache, aa);
+                                render::paint_page_texts(&clipped, rect.min.to_vec2(), scale, texts, i);
+                                let p = ui.painter();
                                 if i == current {
                                     p.rect_stroke(rect.expand(2.5), 3.0, egui::Stroke::new(2.0, blue));
-                                } else if resp.hovered() {
-                                    p.rect_stroke(rect.expand(2.0), 3.0, egui::Stroke::new(1.0, color::BORDER_STRONG));
+                                } else {
+                                    p.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, color::BORDER));
+                                }
+                                // Page number; the current one in an accent pill.
+                                let center = pos2(card.center().x, rect.bottom() + PAD + NUMBER_H * 0.5);
+                                let text = format!("{}", i + 1);
+                                if i == current {
+                                    let w = (text.len() as f32 * 7.0 + 14.0).max(NUMBER_H);
+                                    let pill = Rect::from_center_size(center, vec2(w, NUMBER_H));
+                                    p.rect_filled(pill, NUMBER_H * 0.5, blue);
+                                    p.text(center, Align2::CENTER_CENTER, text, theme::font_strong(theme::size::CAPTION), color::ON_ACCENT);
+                                } else {
+                                    p.text(center, Align2::CENTER_CENTER, text, theme::font(theme::size::CAPTION), color::TEXT_MUTED);
                                 }
                             }
 
-                            // Delete button, registered after the thumbnail so it wins hit-testing.
+                            // Delete button, registered after the card so it wins hit-testing.
                             let del_rect = Rect::from_center_size(
                                 rect.right_top() + vec2(-13.0, 13.0),
                                 vec2(22.0, 22.0),
@@ -1771,7 +1839,7 @@ impl InkApp {
                                 ui.id().with(("page_del", i)),
                                 Sense::click(),
                             );
-                            if ui.rect_contains_pointer(rect) && drag.is_none() {
+                            if ui.rect_contains_pointer(card) && drag.is_none() {
                                 let p = ui.painter();
                                 let fill = if del.hovered() { color::DANGER } else { color::CHROME };
                                 p.circle(del_rect.center(), 10.0, fill, egui::Stroke::new(1.0, color::BORDER));
@@ -1781,6 +1849,28 @@ impl InkApp {
                                 p.line_segment([c + vec2(-a, -a), c + vec2(a, a)], x);
                                 p.line_segment([c + vec2(-a, a), c + vec2(a, -a)], x);
                             }
+                            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                            resp.context_menu(|ui| {
+                                use egui_phosphor::regular as icon;
+                                if menus::entry(ui, icon::ARROW_SQUARE_OUT, "Go to page", "", true) {
+                                    jump = Some(i);
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if menus::entry(ui, icon::ARROW_LINE_UP, "Insert page before", "", true) {
+                                    insert = Some(i);
+                                    ui.close_menu();
+                                }
+                                if menus::entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
+                                    insert = Some(i + 1);
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if menus::entry(ui, icon::TRASH, &format!("Delete page {}", i + 1), "", true) {
+                                    delete = Some(i);
+                                    ui.close_menu();
+                                }
+                            });
                             if del.clicked() {
                                 delete = Some(i);
                             } else if resp.clicked() {
@@ -1789,17 +1879,11 @@ impl InkApp {
                             if resp.drag_started() {
                                 *drag = Some(i);
                             }
-
-                            ui.vertical_centered(|ui| {
-                                let n = RichText::new(format!("{}", i + 1)).small();
-                                ui.label(if i == current { n.color(blue) } else { n.color(color::TEXT_MUTED) });
-                            });
-                            ui.add_space(space::XS);
                         }
-                        theme::ghost_buttons(ui);
-                        let add_btn = egui::Button::new(format!("{}  Add page", egui_phosphor::regular::PLUS))
-                            .min_size(vec2(thumb_w, 30.0));
-                        if ui.add(add_btn).clicked() {
+                        ui.add_space(space::XS);
+                        let (row, _) = ui.allocate_exact_size(vec2(avail, 36.0), Sense::hover());
+                        let tile = Rect::from_center_size(row.center(), vec2(thumb_w, 36.0));
+                        if theme::add_tile(ui, tile, Id::new("add_page_tile"), "Add page").clicked() {
                             add = true;
                         }
 
@@ -1849,12 +1933,6 @@ impl InkApp {
                     });
             });
 
-        if close {
-            self.settings.pages_panel_open = false;
-        }
-        if toggle_settings {
-            self.settings_open = !self.settings_open;
-        }
         if let Some((from, to)) = reorder {
             self.clear_selection();
             self.history
@@ -1869,6 +1947,10 @@ impl InkApp {
         }
         if add {
             self.insert_page(self.doc.page_count);
+        }
+        if let Some(index) = insert {
+            self.insert_page(index);
+            self.scroll_to = Some(layout.page_top(index) - MARGIN);
         }
     }
 
@@ -1912,9 +1994,14 @@ impl InkApp {
         } else {
             0.0
         };
-        self.settings_window(ctx);
-        self.pages_panel(ctx);
-        // After the pages panel, so the toolbar is centred over the canvas.
+        let library_was_open = self.settings.library_panel_open;
+        self.left_panel(ctx);
+        self.library_panel(ctx);
+        if self.screen != Screen::Editor {
+            // A note was picked in the library panel and the editor closed.
+            return;
+        }
+        // After the side panels, so the toolbar is centred over the canvas.
         let event = toolbar::show(
             ctx,
             &mut self.tool,
@@ -1924,18 +2011,21 @@ impl InkApp {
             bottom_inset,
         );
         // After the pages panel, so the corner buttons sit next to it.
-        let corner = toolbar::show_corners(ctx, &mut self.settings, self.settings_open, bottom_inset);
+        toolbar::show_corners(ctx, &mut self.settings, bottom_inset);
         // Before the canvas, which must not see the press that closes it.
         self.context_menu_ui(ctx);
+        // Rename / delete / new section from the notebook panel.
+        self.editor_dialogs(ctx);
 
-        let mut leave = false;
-        for event in [event, corner].into_iter().flatten() {
-            match event {
-                ToolbarEvent::Undo => self.undo(),
-                ToolbarEvent::Redo => self.redo(),
-                ToolbarEvent::ToggleSettings => self.settings_open = !self.settings_open,
-                ToolbarEvent::Library => leave = true,
-            }
+        // Show the library as it is on disk now (it may have changed).
+        if self.settings.library_panel_open && !library_was_open {
+            self.refresh_library();
+        }
+
+        match event {
+            Some(ToolbarEvent::Undo) => self.undo(),
+            Some(ToolbarEvent::Redo) => self.redo(),
+            None => {}
         }
 
         egui::CentralPanel::default()
@@ -1952,24 +2042,26 @@ impl InkApp {
                 ctx.request_repaint_after(AUTOSAVE_DELAY - waited);
             }
         }
-
-        if leave {
-            self.close_note(ctx);
-        }
     }
 
-    fn settings_window(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("Settings")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .min_width(380.0)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+    fn settings_view(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("left_panel_settings")
+            .resizable(true)
+            .default_width(SETTINGS_WIDTH)
+            .width_range(SETTINGS_WIDTHS)
+            .show_separator_line(false)
+            .frame(Self::view_frame())
             .show(ctx, |ui| {
+                Self::view_divider(ui);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    self.settings_contents(ui);
+                });
+            });
+    }
+
+    fn settings_contents(&mut self, ui: &mut egui::Ui) {
+        {
+            {
                 // Label | control rows, aligned across all sections.
                 fn rows(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
                     egui::Grid::new(id)
@@ -2071,11 +2163,9 @@ impl InkApp {
                     });
                 });
 
-                section(ui, "Pen and window");
+                section(ui, "Pen");
                 ui.checkbox(&mut self.settings.predict_pen, "Predict the pen tip (lower perceived latency)");
-                ui.checkbox(&mut self.settings.custom_title_bar, "Custom title bar with the menus")
-                    .on_hover_text("Off: use the system title bar, with the menus below it");
-                if self.pen.is_some() {
+                /*if self.pen.is_some() {
                     hint(ui, "Wayland pen: pressure; eraser end or side button erases.");
                 }
                 if self.win_pen.is_some() {
@@ -2093,22 +2183,10 @@ impl InkApp {
                         self.export_pdf();
                     }
                 });
-                hint(ui, "The PDF is written next to the note, with the same name.");
+                hint(ui, "The PDF is written next to the note, with the same name.");*/
 
-                section(ui, "Note");
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&self.note_meta.title).strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Save now").clicked() {
-                            self.save_note(true);
-                        }
-                    });
-                });
-                hint(ui, "Notes save automatically a moment after each change.");
-                ui.add_space(space::S);
-                hint(ui, "All keyboard shortcuts: Help > Keyboard shortcuts");
-            });
-        self.settings_open = open;
+            }
+        }
     }
 }
 
@@ -2175,6 +2253,12 @@ impl eframe::App for InkApp {
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.inject_pen_events(ctx, raw_input);
+    }
+
+    /// The window background, visible only through gaps between panels:
+    /// the bars' colour, so a gap can never show as a dark line.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        color::CHROME.to_normalized_gamma_f32()
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

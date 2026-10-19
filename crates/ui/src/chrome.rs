@@ -20,8 +20,6 @@ use crate::theme::{self, color, size, space};
 
 /// Height of the custom title bar.
 pub const TITLE_BAR_HEIGHT: f32 = 32.0;
-/// Height of the bar when it only holds the menus (native frame, fullscreen).
-const MENU_BAR_HEIGHT: f32 = 26.0;
 const WINDOW_BUTTON_WIDTH: f32 = 46.0;
 /// Width of the invisible resize borders.
 const RESIZE_BORDER: f32 = 5.0;
@@ -51,11 +49,27 @@ impl WindowState {
     }
 }
 
+/// What the centre of the title bar shows.
+pub enum Title<'a> {
+    Text(&'a str),
+    /// An editable title (the open note): plain text until hovered or clicked.
+    Editable { text: &'a mut String, hint: &'a str },
+}
+
 /// Shows the top bar. Call it before any other panel so it spans the whole
 /// window. `menus` adds the menu buttons (inside an `egui::menu::bar`).
-pub fn title_bar(ctx: &egui::Context, state: WindowState, title: &str, menus: impl FnOnce(&mut Ui)) {
+/// Returns the text field's response for an editable title.
+pub fn title_bar(
+    ctx: &egui::Context,
+    state: WindowState,
+    title: Title<'_>,
+    menus: impl FnOnce(&mut Ui),
+) -> Option<egui::Response> {
     let controls = state.frame_controls();
-    let height = if controls { TITLE_BAR_HEIGHT } else { MENU_BAR_HEIGHT };
+    // Same height with or without the window buttons: the menu buttons need
+    // it, and a lower bar would leave a gap below its painted background.
+    let height = TITLE_BAR_HEIGHT;
+    let mut response = None;
     egui::TopBottomPanel::top("title_bar")
         .exact_height(height)
         .show_separator_line(false)
@@ -84,9 +98,11 @@ pub fn title_bar(ctx: &egui::Context, state: WindowState, title: &str, menus: im
                     theme::ghost_buttons(ui);
                     ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_MUTED;
                     ui.spacing_mut().button_padding = vec2(space::S, space::XS);
-                    menus(ui)
+                    menus(ui);
+                    // The bar fills the row, so its rect says nothing; the
+                    // cursor is where the next item would go.
+                    menus_right = ui.cursor().left();
                 });
-                menus_right = ui.min_rect().right();
             });
             // In their own area spanning exactly the bar: nested in the row
             // above, the right-to-left layout would start one item spacing
@@ -101,20 +117,63 @@ pub fn title_bar(ctx: &egui::Context, state: WindowState, title: &str, menus: im
             }
 
             // Centred title, moved aside (or dropped) when the window is too narrow.
-            let color = color::TEXT_MUTED;
-            let galley = ui.painter().layout_no_wrap(title.to_owned(), theme::font(size::BODY), color);
             let (min_x, max_x) = (menus_right + 16.0, buttons_left - 16.0);
-            let w = galley.size().x;
-            if max_x - min_x >= w {
-                let x = (bar.center().x - w * 0.5).clamp(min_x, max_x - w);
-                let pos = pos2(x, bar.center().y - galley.size().y * 0.5);
-                ui.painter().galley(pos, galley, color);
+            let place = |w: f32| {
+                (max_x - min_x >= w).then(|| (bar.center().x - w * 0.5).clamp(min_x, max_x - w))
+            };
+            match title {
+                Title::Text(text) => {
+                    let color = color::TEXT_MUTED;
+                    let galley = ui.painter().layout_no_wrap(text.to_owned(), theme::font(size::BODY), color);
+                    if let Some(x) = place(galley.size().x) {
+                        let pos = pos2(x, bar.center().y - galley.size().y * 0.5);
+                        ui.painter().galley(pos, galley, color);
+                    }
+                }
+                Title::Editable { text, hint } => {
+                    response = editable_title(ui, bar, text, hint, &place);
+                }
             }
         });
+    response
 }
 
 /// Minimize, maximize / restore and close. No tooltips: the icons are
 /// standard, and a tooltip would open over the editor's top-right notch.
+/// The note title as a borderless text field: a hover fill shows that it can
+/// be edited; while typing it gets the input look of the other text fields.
+fn editable_title(
+    ui: &mut Ui,
+    bar: Rect,
+    text: &mut String,
+    hint: &str,
+    place: &dyn Fn(f32) -> Option<f32>,
+) -> Option<egui::Response> {
+    let font = theme::font(size::BODY);
+    let shown = if text.is_empty() { hint } else { text.as_str() };
+    let text_w = ui.painter().layout_no_wrap(shown.to_owned(), font.clone(), color::TEXT).size().x;
+    let w = (text_w + 2.0 * space::L).clamp(160.0, 420.0);
+    // Narrower (but still editable) when the window is tight, hidden when it
+    // does not fit at all.
+    let (x, w) = match place(w) {
+        Some(x) => (x, w),
+        None => (place(120.0)?, 120.0),
+    };
+    let rect = Rect::from_min_size(pos2(x, bar.center().y - 12.0), vec2(w, 24.0));
+
+    let resp = theme::inline_edit(
+        ui,
+        rect,
+        Id::new("note_title_edit"),
+        text,
+        hint,
+        font,
+        Align::Center,
+        color::TEXT_MUTED,
+    );
+    Some(resp.on_hover_text("Rename the note"))
+}
+
 fn window_buttons(ui: &mut Ui, state: WindowState, height: f32) {
     let ctx = ui.ctx().clone();
     if window_button(ui, icon::X, CLOSE_HOVER, height).clicked() {

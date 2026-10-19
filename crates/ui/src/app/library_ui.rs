@@ -52,8 +52,8 @@ pub struct LibraryUi {
 }
 
 /// Everything the UI can ask for; applied after drawing, so drawing only
-/// ever borrows the data immutably.
-enum Act {
+/// ever borrows the data immutably. Also used by the editor's notebook panel.
+pub(super) enum Act {
     Open(PathBuf),
     NewNote(PathBuf),
     OpenNotebook(PathBuf),
@@ -186,6 +186,19 @@ impl InkApp {
     }
 
     // ------------------------------------------------------------ dialogs
+
+    /// The library dialogs, also shown over the editor (notebook panel).
+    pub(super) fn editor_dialogs(&mut self, ctx: &egui::Context) {
+        if self.lib_ui.dialog.is_none() {
+            return;
+        }
+        let (root, target) = (self.library_root(), self.library_target_dir());
+        let mut acts = Vec::new();
+        self.dialogs(ctx, &root, &target, &mut acts);
+        for a in acts {
+            self.apply_act(a);
+        }
+    }
 
     fn dialogs(&mut self, ctx: &egui::Context, root: &Path, target_dir: &Path, acts: &mut Vec<Act>) {
         let Some(dialog) = self.lib_ui.dialog.as_mut() else { return };
@@ -329,7 +342,7 @@ impl InkApp {
         }
     }
 
-    fn apply_act(&mut self, a: Act) {
+    pub(super) fn apply_act(&mut self, a: Act) {
         let root = self.library_root();
         match a {
             Act::Open(p) => self.open_note(&p),
@@ -361,6 +374,10 @@ impl InkApp {
                 }
                 Err(e) => self.toast(format!("Cannot create section: {e}")),
             },
+            // The open note's header is kept in memory and written on save.
+            Act::RenameNote(path, title) if self.note_path.as_ref() == Some(&path) => {
+                self.rename_open_note(&title);
+            }
             Act::RenameNote(path, title) => {
                 match library::rename_note(&path, &title) {
                     Ok(()) => self.refresh_library(),
@@ -369,6 +386,10 @@ impl InkApp {
             }
             Act::RenameDir(path, name) => match library::rename_dir(&path, &name) {
                 Ok(new) => {
+                    // The open note moved with its notebook / section.
+                    if let Some(rel) = self.note_path.as_ref().and_then(|p| p.strip_prefix(&path).ok()) {
+                        self.note_path = Some(new.join(rel));
+                    }
                     if self.lib_ui.notebook.as_ref() == Some(&path) {
                         self.lib_ui.notebook = Some(new.clone());
                         self.lib_ui.section = None;
@@ -379,6 +400,9 @@ impl InkApp {
                 }
                 Err(e) => self.toast(format!("Rename failed: {e}")),
             },
+            Act::Trash(path) if self.note_path.as_ref().is_some_and(|p| p.starts_with(&path)) => {
+                self.toast("The open note cannot be deleted; close it first");
+            }
             Act::Trash(path) => match library::trash(&root, &path) {
                 Ok(()) => {
                     if self.lib_ui.notebook.as_ref() == Some(&path) {

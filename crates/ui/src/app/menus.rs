@@ -20,8 +20,11 @@ use super::library_ui::Dialog;
 use super::{InkApp, Screen};
 use crate::chrome::{self, WindowState};
 use crate::theme::{self, color};
-use crate::settings::{ToolbarPosition, ZoomMode};
+use crate::settings::{LeftPanel, ToolbarPosition, ZoomMode};
 use crate::toolbar::Tool;
+
+/// Minimum width of every menu (title bar, context menus).
+const MENU_MIN_WIDTH: f32 = 200.0;
 
 /// Zoom levels stepped through by Zoom in / Zoom out, in percent.
 const ZOOM_STEPS: [u32; 15] = [25, 33, 50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400];
@@ -45,7 +48,7 @@ pub(super) enum Command {
     EditText(u64),
     DeleteText(u64),
     Tool(Tool),
-    TogglePages,
+    ToggleTitleBar,
     ZoomIn,
     ZoomOut,
     Zoom(ZoomMode),
@@ -80,7 +83,9 @@ fn shortcut(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> String {
 
 /// One menu entry: icon, label and shortcut. Returns true when clicked.
 pub(super) fn entry(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: bool) -> bool {
-    // The menu widens to fit the label and the shortcut instead of wrapping.
+    // All menus share a minimum width, and widen to fit the label and the
+    // shortcut instead of wrapping.
+    ui.set_min_width(MENU_MIN_WIDTH);
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     // Icon column of a fixed width: entries without an icon get an invisible
     // one, so all labels line up. PLACEHOLDER takes the button's text colour
@@ -146,8 +151,40 @@ impl InkApp {
         }
 
         let mut cmds = Vec::new();
-        chrome::title_bar(ctx, self.window_state(ctx), &title, |ui| self.menu_bar(ui, &mut cmds));
+        let state = self.window_state(ctx);
+        if self.screen == Screen::Editor {
+            // The note title is editable in place. While the field has focus
+            // it keeps what is typed; otherwise it follows the note.
+            let mut buf = std::mem::take(&mut self.title_buf);
+            if !self.title_focused {
+                buf = self.note_meta.title.clone();
+            }
+            let field = chrome::Title::Editable { text: &mut buf, hint: "Untitled note" };
+            let resp = chrome::title_bar(ctx, state, field, |ui| self.menu_bar(ui, &mut cmds));
+            self.title_focused = resp.as_ref().is_some_and(|r| r.has_focus());
+            // Enter or a click elsewhere renames; Escape keeps the old title.
+            if resp.is_some_and(|r| r.lost_focus()) && !ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.rename_open_note(&buf);
+            }
+            self.title_buf = buf;
+        } else {
+            chrome::title_bar(ctx, state, chrome::Title::Text("InkNote"), |ui| self.menu_bar(ui, &mut cmds));
+        }
         self.pending.extend(cmds);
+    }
+
+    /// Renames the open note (title only; the file keeps its name).
+    pub(super) fn rename_open_note(&mut self, title: &str) {
+        let title = title.trim();
+        if title.is_empty() || title == self.note_meta.title {
+            return;
+        }
+        self.note_meta.title = title.to_owned();
+        // A title chosen by the user no longer follows the first text box.
+        self.note_meta.auto_title = false;
+        if self.save_note(false) {
+            self.refresh_library();
+        }
     }
 
     /// Runs the queued commands, draws the help windows and the resize
@@ -195,9 +232,9 @@ impl InkApp {
         }
 
         ui.menu_button("View", |ui| {
+            push(check(ui, self.settings.custom_title_bar, "Custom title bar", ""), ui, Command::ToggleTitleBar);
+            ui.separator();
             if editor {
-                push(check(ui, self.settings.pages_panel_open, "Pages panel", ""), ui, Command::TogglePages);
-                ui.separator();
                 push(entry(ui, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", &shortcut(&ctx, cmd, Key::Plus), true), ui, Command::ZoomIn);
                 push(entry(ui, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", &shortcut(&ctx, cmd, Key::Minus), true), ui, Command::ZoomOut);
                 let zoom = self.settings.zoom;
@@ -441,7 +478,7 @@ impl InkApp {
                 self.history.exec(&mut self.doc, Action::RemoveText { id });
             }
             Command::Tool(t) => self.tool = t,
-            Command::TogglePages => self.settings.pages_panel_open ^= true,
+            Command::ToggleTitleBar => self.settings.custom_title_bar ^= true,
             Command::ZoomIn | Command::ZoomOut => {
                 let now = (self.view_scale * 100.0).round() as u32;
                 let next = if cmd == Command::ZoomIn {
@@ -474,7 +511,7 @@ impl InkApp {
                 }
             }
             Command::ToolbarAt(p) => self.settings.toolbar_position = p,
-            Command::Settings if editor => self.settings_open = true,
+            Command::Settings if editor => self.settings.left_panel = LeftPanel::Settings,
             Command::InsertPage(i) if editor => self.insert_page(i),
             Command::DeletePage(i) if editor => self.delete_page(i),
             Command::PaperStyle(k) if editor => self.doc.page.kind = k,

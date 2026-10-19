@@ -14,6 +14,21 @@ pub enum ToolbarPosition {
     Bottom,
 }
 
+/// What the left panel of the editor shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LeftPanel {
+    Closed,
+    Pages,
+    Settings,
+}
+
+impl LeftPanel {
+    /// Shows `view`, or closes the panel if `view` is already shown.
+    pub fn toggle(&mut self, view: LeftPanel) {
+        *self = if *self == view { LeftPanel::Closed } else { view };
+    }
+}
+
 /// How the pages are scaled in the window.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ZoomMode {
@@ -67,8 +82,10 @@ pub struct Settings {
     /// Extrapolate the live stroke slightly ahead of the pen (hides latency).
     pub predict_pen: bool,
     pub zoom: ZoomMode,
-    /// Left panel with page previews.
-    pub pages_panel_open: bool,
+    /// Left panel: page previews or settings.
+    pub left_panel: LeftPanel,
+    /// Right panel with the notebook hierarchy.
+    pub library_panel_open: bool,
     /// Draw the ruled/grid lines into the exported PDF.
     pub pdf_rules: bool,
     /// Folder that holds all notebooks and notes.
@@ -87,7 +104,8 @@ impl Default for Settings {
             eraser_radius: 12.0,
             predict_pen: true,
             zoom: ZoomMode::Percent(100),
-            pages_panel_open: false,
+            left_panel: LeftPanel::Closed,
+            library_panel_open: false,
             pdf_rules: true,
             library_root: inknote_core::library::default_root().to_string_lossy().into_owned(),
             custom_title_bar: true,

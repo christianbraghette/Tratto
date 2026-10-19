@@ -17,7 +17,7 @@
 //! One accent colour marks the selected / active / primary element.
 
 use eframe::egui::{
-    self, vec2, Button, Color32, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin,
+    self, pos2, vec2, Button, Color32, FontData, FontDefinitions, FontFamily, FontId, Margin,
     Painter, Pos2, Rect, RichText, Rounding, Shadow, Stroke, TextStyle, Theme, ThemePreference, Ui,
     WidgetText,
 };
@@ -262,14 +262,105 @@ pub fn card_shadow() -> Shadow {
     Shadow { offset: vec2(0.0, 4.0), blur: 12.0, spread: 0.0, color: Color32::from_black_alpha(90) }
 }
 
-/// Frame of the floating toolbar.
-pub fn floating_frame() -> Frame {
-    Frame::none()
-        .fill(color::CHROME)
-        .stroke(Stroke::new(1.0, color::BORDER))
-        .rounding(Rounding::same(radius::LARGE))
-        .shadow(Shadow { offset: vec2(0.0, 6.0), blur: 18.0, spread: 0.0, color: Color32::from_black_alpha(110) })
-        .inner_margin(Margin::symmetric(space::S, 6.0))
+/// A borderless text field for renaming in place (note title, notebook
+/// name): plain text at rest, a hover fill when it can be clicked, the input
+/// look (dark fill, accent outline) while typing.
+#[allow(clippy::too_many_arguments)]
+pub fn inline_edit(
+    ui: &mut Ui,
+    rect: Rect,
+    id: egui::Id,
+    text: &mut String,
+    hint: &str,
+    font: FontId,
+    align: egui::Align,
+    idle: Color32,
+) -> egui::Response {
+    let focused = ui.ctx().memory(|m| m.has_focus(id));
+    let hovered = ui.rect_contains_pointer(rect);
+    let background = ui.painter().add(egui::Shape::Noop);
+    let resp = ui.put(
+        rect,
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .font(font)
+            .text_color(if focused || hovered { color::TEXT_STRONG } else { idle })
+            .hint_text(hint)
+            .horizontal_align(align)
+            .vertical_align(egui::Align::Center)
+            .margin(vec2(space::S, 2.0))
+            .frame(false)
+            .char_limit(120),
+    );
+    let rounding = Rounding::same(radius::SMALL);
+    let fill = if resp.has_focus() {
+        Some(color::INPUT)
+    } else if resp.hovered() {
+        Some(color::HOVER)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().set(background, egui::Shape::rect_filled(rect, rounding, fill));
+    }
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect, rounding, Stroke::new(1.0, color::ACCENT));
+    }
+    resp
+}
+
+/// Height of a [`list_row`].
+const ROW_HEIGHT: f32 = 28.0;
+
+/// A full-width list row (notes in the notebook panel): icon and label, a
+/// hover fill, and for the selected row a soft accent fill with an accent bar.
+/// Long labels end with "…".
+pub fn list_row(ui: &mut Ui, glyph: &str, label: &str, selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let hovered = resp.hovered();
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, radius::SMALL, color::accent_alpha(46));
+        let bar = Rect::from_min_size(rect.left_top() + vec2(0.0, 6.0), vec2(3.0, rect.height() - 12.0));
+        p.rect_filled(bar, 1.5, color::ACCENT);
+    } else if hovered {
+        p.rect_filled(rect, radius::SMALL, color::HOVER);
+    }
+    let (icon_color, text_color) = match (selected, hovered) {
+        (true, _) => (color::ACCENT_HOVER, color::TEXT_STRONG),
+        (false, true) => (color::TEXT, color::TEXT_STRONG),
+        (false, false) => (color::TEXT_MUTED, color::TEXT),
+    };
+    let y = rect.center().y;
+    p.text(pos2(rect.left() + space::M, y), egui::Align2::LEFT_CENTER, glyph, font(size::BODY), icon_color);
+    let text_left = rect.left() + space::M + 22.0;
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font(size::BODY), text_color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - space::S - text_left).max(0.0));
+    let galley = ui.fonts(|f| f.layout_job(job));
+    ui.painter().galley(pos2(text_left, y - galley.size().y * 0.5), galley, text_color);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A dashed "add" placeholder (add a page, a note): outline and label turn
+/// accent on hover.
+pub fn add_tile(ui: &mut Ui, rect: Rect, id: egui::Id, label: &str) -> egui::Response {
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    let (line, text, fill) = if resp.hovered() {
+        (color::ACCENT, color::ACCENT_HOVER, color::accent_alpha(18))
+    } else {
+        (color::BORDER_STRONG, color::TEXT_MUTED, Color32::TRANSPARENT)
+    };
+    let p = ui.painter();
+    p.rect_filled(rect, radius::SMALL, fill);
+    let r = rect.shrink(0.5);
+    let outline = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+    p.extend(egui::Shape::dashed_line(&outline, Stroke::new(1.0, line), 4.0, 3.0));
+    let caption = format!("{}  {label}", egui_phosphor::regular::PLUS);
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, caption, font(size::BODY), text);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A short message pill (saved, exported, errors, drag labels) centred on `center`.

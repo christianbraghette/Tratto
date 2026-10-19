@@ -45,6 +45,8 @@ the GPU and, optionally, predicted slightly ahead of the pen tip.
 - VS Code-style title bar with File, Edit, View, Page and Help menus (or the system title bar, if you prefer)
 - Context menu on right-click, adapted to what is under the pointer
 - Icon buttons, with names and shortcuts in tooltips
+- Controls in notches attached to the canvas edges; resizable page and notebook panels
+- Rename the note from the title bar and the notebook from the notebook panel
 
 **Organisation**
 - A library of notebooks (with colour covers), sections and quick notes
@@ -108,46 +110,59 @@ resize.
 | --- | --- |
 | **File** | New note, new notebook, import, save, export as PDF, close note, library folder, settings, exit |
 | **Edit** | Undo, redo, select all on page, delete selection, deselect |
-| **View** | Pages panel, zoom in / out, actual size, fit width / page, toolbar position, full screen |
+| **View** | Custom title bar, zoom in / out, actual size, fit width / page, toolbar position, full screen |
 | **Page** | Insert a page before / after the current one, delete it, paper style, page setup |
 | **Help** | Keyboard shortcuts, about InkNote |
 
-If you prefer the system title bar, turn off **Custom title bar** in the
-settings. The menus then appear below it.
+If you prefer the system title bar, turn off **View > Custom title bar**. The
+menus then appear below it.
 
 ### Editor
 
-The editor keeps its controls in notches attached to the window corners and
-a floating toolbar. All buttons are icons; hover over one to see its name.
+All editor controls sit in notches attached to the edges of the canvas. All
+buttons are icons; hover over one to see its name.
 
 | Where | Buttons |
 | --- | --- |
-| Top-left notch | **Pages** (toggle the page panel) |
-| Bottom-left notch | **Settings** |
-| Top-right notch | **Library** (save and go back) |
-| Floating toolbar, bottom (or top) centre | Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size, Undo, Redo |
+| Top-centre notch (or bottom, see **View**) | Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size, Undo, Redo |
+| Top-left notch | **Pages** (page panel) |
+| Bottom-left notch | **Settings** (settings panel) |
+| Top-right notch | **Library** (toggle the notebook panel) |
 
-When the page panel is open, the two left notches grow into it: **Pages** sits
-in its header and **Settings** in its footer, in the same places.
+If the window is too narrow for the tool notch to fit between the corner
+notches, it moves to the other edge.
 
-The floating toolbar can sit at the top or the bottom (**View** menu or
-settings).
+The corner notches grow into side panels. Both panels can be resized by
+dragging their inner edge, and both have a context menu (right-click):
 
-**Right-click** the canvas for a context menu that matches what is under the
-pointer:
+- **Left panel**: a strip along its left edge joins the two left notches,
+  with **Pages** at the top and **Settings** at the bottom, in the same places
+  as their notches. Next to it, the panel shows either the page previews (drag
+  to reorder; right-click a page to go to it, insert a page before or after
+  it, or delete it) or the settings. Click the other button to switch, or the
+  highlighted one to close the panel. Each view keeps its own width. The page
+  list follows the page you are on, and the dashed tile at its end adds a page.
+- **Notebook panel** (right): the sections and notes of the open note's
+  notebook, with the open note highlighted. Click a note to switch to it (the
+  current one is saved first). The header is the notebook's name: click it to
+  rename the notebook. Right-click a note to open, rename, duplicate or delete
+  it, a section to add a note to it, rename or delete it, and the empty space
+  to add a note or a section. A quick note (outside any notebook) shows the
+  quick notes instead. Each group shows how many notes it holds; the dashed
+  tile adds a note next to the open one. The button next to **Library** opens
+  the full library screen.
 
-- on a text box: edit it or delete it
-- on the selection: delete it or deselect
-- anywhere: undo, redo and a tool switch
-- on a page: select everything on it, insert a page before or after, or delete it
+The note's title is shown in the middle of the title bar. Click it to rename
+the note; Enter or clicking elsewhere saves, Escape cancels.
 
 To pan, drag on the grey area around the pages, or use the scrollbars, the
 mouse wheel or a touchpad. Flick the drag and the view keeps gliding.
 
-The settings panel includes zoom, paper size and orientation, paper style and
-line spacing, pen prediction, the title bar style, PDF export options and
+The settings include zoom, paper size and orientation, paper style and
+line spacing, pen prediction, PDF export options and
 **Save now**. Notes save automatically, so you don't need to save before
-closing. **Library** saves the note and goes back to the library.
+closing. **File > Close note** (`Ctrl+W`) saves the note and goes back to the
+library screen.
 
 ### Keyboard shortcuts
 
@@ -156,7 +171,7 @@ closing. **Library** saves the note and goes back to the library.
 | `Ctrl+N` | New note (in the same notebook or section) |
 | `Ctrl+S` | Save now |
 | `Ctrl+E` | Export the note as PDF |
-| `Ctrl+W` | Close the note and go back to the library |
+| `Ctrl+W` | Close the note and go back to the library screen |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
 | `Ctrl+A` | Select everything on the current page |
