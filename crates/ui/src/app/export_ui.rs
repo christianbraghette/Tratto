@@ -3,21 +3,41 @@
 
 //! The Export PDF dialog (File > Export as PDF, `Ctrl+E`, Note settings).
 //!
-//! The choices that describe *how* to export (content, ink, page size,
-//! margin, author, open afterwards) are remembered in the settings; the ones
-//! about *this* export (pages, title, file) start fresh each time.
+//! * **What**: the open note (all pages, the current one or a range), its
+//!   whole section, or a selection of the notebook's notes; several notes go
+//!   into one PDF with a bookmark each.
+//! * **How**: content, ink colours, page size and margin, document title and
+//!   author, file, open afterwards.
+//! * **Preview**: the exported pages as they will look, page by page.
+//!
+//! The choices that describe *how* to export are remembered in the settings;
+//! the ones about *this* export (what, pages, title, file) start fresh.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Align2, DragValue, RichText, Slider, Ui};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui};
 use egui_phosphor::regular as icon;
-use inknote_core::model::PAPERS;
-use inknote_core::pdf_export::{self, InkColors, PdfOptions};
+use inknote_core::library::NoteInfo;
+use inknote_core::model::{Document, PageKind, StrokeKind, PAPERS};
+use inknote_core::pdf_export::{self, InkColors, PdfNote, PdfOptions};
+use inknote_core::{storage, stroke_path};
 
 use super::InkApp;
-use crate::theme::{self, color, space};
+use crate::theme::{self, color, radius, space};
 
-/// Which pages to export.
+/// What to export.
+#[derive(Clone, Copy, PartialEq)]
+enum Scope {
+    /// The open note.
+    Note,
+    /// Every note of the open note's section (or "General", or the quick notes).
+    Section,
+    /// Notes ticked in the notebook.
+    Selection,
+}
+
+/// Which pages of the open note.
 #[derive(Clone, Copy, PartialEq)]
 enum Pages {
     All,
@@ -27,13 +47,31 @@ enum Pages {
 
 /// The state of an open Export dialog.
 pub(super) struct ExportDialog {
+    scope: Scope,
     pages: Pages,
     /// 1-based, inclusive.
     from: u32,
     to: u32,
     title: String,
     path: String,
+    /// Notes ticked for `Scope::Selection`.
+    selected: HashSet<PathBuf>,
+    /// Other notes, loaded once for the preview and the export (`None` =
+    /// unreadable). The open note is always taken from memory.
+    loaded: HashMap<PathBuf, Option<Document>>,
+    /// Index of the previewed page among the exported pages.
+    preview: usize,
 }
+
+/// A group of notes as the notebook panel shows it.
+struct Group {
+    name: String,
+    notes: Vec<NoteInfo>,
+}
+
+/// Preview area (the page is fitted inside, keeping its proportions).
+const PREVIEW_W: f32 = 300.0;
+const PREVIEW_H: f32 = 400.0;
 
 /// 1 px = 1/96 in.
 fn px_to_mm(px: f32) -> f32 {
@@ -85,43 +123,183 @@ fn open_with_system(path: &Path) -> std::io::Result<()> {
 }
 
 impl InkApp {
+    // ---------------------------------------------------------- the notes
+
+    /// The groups of the open note's notebook ("General" and the sections),
+    /// or the quick notes for a note outside any notebook; plus the name of
+    /// the notebook (or "Quick notes").
+    fn export_groups(&self) -> (String, Vec<Group>) {
+        let current = self.note_path.as_deref();
+        let notebook = current.and_then(|p| self.library.notebooks.iter().find(|nb| p.starts_with(&nb.path)));
+        match notebook {
+            Some(nb) => {
+                let mut groups = Vec::new();
+                if !nb.loose.is_empty() || nb.sections.is_empty() {
+                    groups.push(Group { name: "General".to_owned(), notes: nb.loose.clone() });
+                }
+                for s in &nb.sections {
+                    groups.push(Group { name: s.name.clone(), notes: s.notes.clone() });
+                }
+                (nb.name.clone(), groups)
+            }
+            None => ("Quick notes".to_owned(), vec![Group { name: "Quick notes".to_owned(), notes: self.library.quick.clone() }]),
+        }
+    }
+
+    /// The group that holds the open note.
+    fn export_section(&self) -> Option<Group> {
+        let current = self.note_path.as_deref()?;
+        self.export_groups().1.into_iter().find(|g| g.notes.iter().any(|n| n.path == current))
+    }
+
+    /// The notes to export, in panel order: (path, title).
+    fn export_list(&self, d: &ExportDialog) -> Vec<(PathBuf, String)> {
+        let title_of = |n: &NoteInfo| {
+            if Some(&n.path) == self.note_path.as_ref() { self.note_meta.title.clone() } else { n.meta.title.clone() }
+        };
+        match d.scope {
+            Scope::Note => self.note_path.iter().map(|p| (p.clone(), self.note_meta.title.clone())).collect(),
+            Scope::Section => self
+                .export_section()
+                .map(|g| g.notes.iter().map(|n| (n.path.clone(), title_of(n))).collect())
+                .unwrap_or_default(),
+            Scope::Selection => self
+                .export_groups()
+                .1
+                .iter()
+                .flat_map(|g| g.notes.iter())
+                .filter(|n| d.selected.contains(&n.path))
+                .map(|n| (n.path.clone(), title_of(n)))
+                .collect(),
+        }
+    }
+
+    /// Loads the listed notes that are not loaded yet (not the open one).
+    fn load_for_export(&self, d: &mut ExportDialog, list: &[(PathBuf, String)]) {
+        for (path, _) in list {
+            if Some(path) != self.note_path.as_ref() && !d.loaded.contains_key(path) {
+                d.loaded.insert(path.clone(), storage::load_note(path).ok().map(|(_, doc)| doc));
+            }
+        }
+    }
+
+    /// The document of a listed note (the open one from memory).
+    fn export_doc<'a>(&'a self, loaded: &'a HashMap<PathBuf, Option<Document>>, path: &Path) -> Option<&'a Document> {
+        if Some(path) == self.note_path.as_deref() {
+            Some(&self.doc)
+        } else {
+            loaded.get(path).and_then(Option::as_ref)
+        }
+    }
+
+    fn pdf_options(&self, d: &ExportDialog, title: &str) -> PdfOptions {
+        let count = self.doc.page_count.max(1);
+        let s = &self.settings;
+        let pages = match (d.scope, d.pages) {
+            (Scope::Note, Pages::Current) => Some(self.current_page..=self.current_page),
+            (Scope::Note, Pages::Range) => {
+                let (a, b) = (d.from.clamp(1, count) - 1, d.to.clamp(1, count) - 1);
+                Some(a.min(b)..=a.max(b))
+            }
+            _ => None,
+        };
+        PdfOptions {
+            include_rules: s.pdf_rules,
+            pages,
+            include_highlighter: s.pdf_highlighter,
+            include_text: s.pdf_text,
+            paper_background: s.pdf_paper_background,
+            ink: s.pdf_ink,
+            page_size: s.pdf_page_size,
+            margin: if s.pdf_page_size.is_some() { s.pdf_margin } else { 0.0 },
+            title: title.to_owned(),
+            author: s.pdf_author.clone(),
+        }
+    }
+
+    /// Default title of the PDF for a scope.
+    fn scope_title(&self, scope: Scope) -> String {
+        match scope {
+            Scope::Note => self.note_meta.title.clone(),
+            Scope::Section => self.export_section().map(|g| g.name).unwrap_or_else(|| self.note_meta.title.clone()),
+            Scope::Selection => self.export_groups().0,
+        }
+    }
+
+    /// Sets the title and the file name to the defaults of the scope.
+    fn apply_scope_defaults(&self, d: &mut ExportDialog) {
+        d.title = self.scope_title(d.scope);
+        if let Some(note) = &self.note_path {
+            // Next to the note, named after the title.
+            d.path = note.with_file_name(format!("{}.pdf", file_name(&d.title))).to_string_lossy().into_owned();
+        }
+        d.preview = 0;
+    }
+
+    // ------------------------------------------------------------ dialog
+
     /// Opens the dialog for the open note.
     pub(super) fn open_export_dialog(&mut self) {
-        let Some(note) = &self.note_path else { return };
+        if self.note_path.is_none() {
+            return;
+        }
+        // The notebook as it is on disk now.
+        self.refresh_library();
         let count = self.doc.page_count.max(1);
-        self.export_dialog = Some(ExportDialog {
+        let section: HashSet<PathBuf> =
+            self.export_section().map(|g| g.notes.into_iter().map(|n| n.path).collect()).unwrap_or_default();
+        let mut d = ExportDialog {
+            scope: Scope::Note,
             pages: Pages::All,
             from: 1,
             to: count,
-            title: self.note_meta.title.clone(),
-            // Next to the note, named after its title.
-            path: note
-                .with_file_name(format!("{}.pdf", file_name(&self.note_meta.title)))
-                .to_string_lossy()
-                .into_owned(),
-        });
+            title: String::new(),
+            path: String::new(),
+            selected: section,
+            loaded: HashMap::new(),
+            preview: 0,
+        };
+        self.apply_scope_defaults(&mut d);
+        self.export_dialog = Some(d);
     }
 
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.export_dialog.take() else { return };
+        let list = self.export_list(&dialog);
+        self.load_for_export(&mut dialog, &list);
+
         let mut open = true;
         let mut cancel = false;
         let mut export = false;
-        let max_h = ctx.screen_rect().height() * 0.75;
+        let max_h = (ctx.screen_rect().height() * 0.75).max(300.0);
         egui::Window::new("Export PDF")
             .open(&mut open)
             .collapsible(false)
+            // Above the notches and the toolbar.
+            .order(egui::Order::Foreground)
             .resizable(false)
-            .default_width(460.0)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
-                    self.export_options(ui, &mut dialog);
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(440.0);
+                        egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+                            self.export_options(ui, &mut dialog);
+                        });
+                    });
+                    // No separator: in a row it would take all the height it is
+                    // offered and stretch the window; the preview's page and its
+                    // shadow set the columns apart.
+                    ui.add_space(space::XL);
+                    ui.vertical(|ui| {
+                        ui.set_width(PREVIEW_W);
+                        self.export_preview(ui, &mut dialog, &list);
+                    });
                 });
                 ui.add_space(space::M);
                 ui.horizontal(|ui| {
                     let label = format!("{}  Export", icon::FILE_PDF);
-                    let ready = !dialog.path.trim().is_empty();
+                    let ready = !dialog.path.trim().is_empty() && !list.is_empty();
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.ctx().wants_keyboard_input();
                     if (ui.add_enabled(ready, theme::primary_button(label)).clicked() || enter) && ready {
                         export = true;
@@ -132,7 +310,7 @@ impl InkApp {
                 });
             });
         if export {
-            self.run_export(&dialog);
+            self.run_export(&dialog, &list);
         } else if open && !cancel {
             self.export_dialog = Some(dialog);
         }
@@ -141,20 +319,42 @@ impl InkApp {
     fn export_options(&mut self, ui: &mut Ui, d: &mut ExportDialog) {
         let count = self.doc.page_count.max(1);
         let current = self.current_page + 1;
-        let s = &mut self.settings;
 
-        section(ui, "Pages");
+        section(ui, "Export");
+        let before = d.scope;
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut d.pages, Pages::All, format!("All ({count})"));
-            ui.selectable_value(&mut d.pages, Pages::Current, format!("Current ({current})"));
-            ui.selectable_value(&mut d.pages, Pages::Range, "Range");
-            if d.pages == Pages::Range {
-                ui.add(DragValue::new(&mut d.from).range(1..=count));
-                ui.label(theme::muted("to"));
-                ui.add(DragValue::new(&mut d.to).range(1..=count));
-            }
+            ui.selectable_value(&mut d.scope, Scope::Note, "This note");
+            let section_name = self.export_section().map(|g| g.name).unwrap_or_default();
+            ui.selectable_value(&mut d.scope, Scope::Section, "This section")
+                .on_hover_text(format!("Every note of \"{section_name}\", in the panel's order"));
+            ui.selectable_value(&mut d.scope, Scope::Selection, "Selected notes");
         });
+        if d.scope != before {
+            self.apply_scope_defaults(d);
+        }
+        match d.scope {
+            Scope::Note => {
+                ui.add_space(space::XS);
+                ui.horizontal(|ui| {
+                    ui.label(theme::muted("Pages"));
+                    ui.selectable_value(&mut d.pages, Pages::All, format!("All ({count})"));
+                    ui.selectable_value(&mut d.pages, Pages::Current, format!("Current ({current})"));
+                    ui.selectable_value(&mut d.pages, Pages::Range, "Range");
+                    if d.pages == Pages::Range {
+                        ui.add(DragValue::new(&mut d.from).range(1..=count));
+                        ui.label(theme::muted("to"));
+                        ui.add(DragValue::new(&mut d.to).range(1..=count));
+                    }
+                });
+            }
+            Scope::Section => {
+                let n = self.export_section().map_or(0, |g| g.notes.len());
+                ui.label(theme::muted(format!("{n} notes, in the order of the notebook panel.")).small());
+            }
+            Scope::Selection => self.note_checklist(ui, d),
+        }
 
+        let s = &mut self.settings;
         section(ui, "Content");
         ui.checkbox(&mut s.pdf_rules, "Ruled lines and grid");
         ui.checkbox(&mut s.pdf_highlighter, "Highlighter strokes");
@@ -211,42 +411,135 @@ impl InkApp {
                 ui.add(egui::TextEdit::singleline(&mut s.pdf_author).hint_text("Optional").desired_width(260.0));
             });
         });
+        if d.scope != Scope::Note {
+            ui.label(RichText::new("Each note gets a bookmark in the PDF.").small().color(color::TEXT_FAINT));
+        }
 
         section(ui, "File");
         ui.add(egui::TextEdit::singleline(&mut d.path).desired_width(f32::INFINITY));
         ui.checkbox(&mut s.pdf_open_after, "Open the PDF after exporting");
     }
 
-    fn run_export(&mut self, d: &ExportDialog) {
-        let count = self.doc.page_count.max(1);
-        let s = &self.settings;
-        let pages = match d.pages {
-            Pages::All => None,
-            Pages::Current => Some(self.current_page..=self.current_page),
-            Pages::Range => {
-                let (a, b) = (d.from.clamp(1, count) - 1, d.to.clamp(1, count) - 1);
-                Some(a.min(b)..=a.max(b))
+    /// The notebook's notes with a tick each, grouped like the panel.
+    fn note_checklist(&self, ui: &mut Ui, d: &mut ExportDialog) {
+        let (_, groups) = self.export_groups();
+        let all: Vec<PathBuf> = groups.iter().flat_map(|g| g.notes.iter().map(|n| n.path.clone())).collect();
+        ui.add_space(space::XS);
+        ui.horizontal(|ui| {
+            let n = all.iter().filter(|p| d.selected.contains(*p)).count();
+            ui.label(theme::muted(format!("{n} of {} notes", all.len())));
+            theme::ghost_buttons(ui);
+            if ui.small_button("All").clicked() {
+                d.selected.extend(all.iter().cloned());
             }
-        };
-        let opts = PdfOptions {
-            include_rules: s.pdf_rules,
-            pages,
-            include_highlighter: s.pdf_highlighter,
-            include_text: s.pdf_text,
-            paper_background: s.pdf_paper_background,
-            ink: s.pdf_ink,
-            page_size: s.pdf_page_size,
-            margin: if s.pdf_page_size.is_some() { s.pdf_margin } else { 0.0 },
-            title: if d.title.trim().is_empty() { self.note_meta.title.clone() } else { d.title.trim().to_owned() },
-            author: s.pdf_author.clone(),
-        };
+            if ui.small_button("None").clicked() {
+                d.selected.clear();
+            }
+        });
+        egui::Frame::none()
+            .fill(color::INPUT)
+            .rounding(radius::SMALL)
+            .inner_margin(space::S)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("export_checklist").max_height(200.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    for g in &groups {
+                        // The group's tick selects or clears all its notes.
+                        let paths: Vec<&PathBuf> = g.notes.iter().map(|n| &n.path).collect();
+                        let ticked = paths.iter().filter(|p| d.selected.contains(**p)).count();
+                        let mut all_on = !paths.is_empty() && ticked == paths.len();
+                        let label = RichText::new(format!("{}  {}", icon::FOLDER_SIMPLE, g.name)).strong();
+                        let resp = ui.add(egui::Checkbox::new(&mut all_on, label).indeterminate(ticked > 0 && ticked < paths.len()));
+                        if resp.changed() {
+                            for p in &paths {
+                                if all_on {
+                                    d.selected.insert((*p).clone());
+                                } else {
+                                    d.selected.remove(*p);
+                                }
+                            }
+                        }
+                        ui.indent(("export_group", &g.name), |ui| {
+                            for n in &g.notes {
+                                let mut on = d.selected.contains(&n.path);
+                                if ui.checkbox(&mut on, &n.meta.title).changed() {
+                                    if on {
+                                        d.selected.insert(n.path.clone());
+                                    } else {
+                                        d.selected.remove(&n.path);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+    }
+
+    // ----------------------------------------------------------- preview
+
+    fn export_preview(&self, ui: &mut Ui, d: &mut ExportDialog, list: &[(PathBuf, String)]) {
+        theme::caption(ui, "Preview");
+        ui.add_space(space::XS);
+        let docs: Vec<(&Document, &str)> = list
+            .iter()
+            .filter_map(|(p, t)| self.export_doc(&d.loaded, p).map(|doc| (doc, t.as_str())))
+            .collect();
+        let notes: Vec<PdfNote> = docs.iter().map(|(doc, t)| PdfNote { doc, title: (*t).to_owned() }).collect();
+        let opts = self.pdf_options(d, &d.title);
+        let pages = pdf_export::export_pages(&notes, &opts);
+
+        let (area, _) = ui.allocate_exact_size(vec2(PREVIEW_W, PREVIEW_H), Sense::hover());
+        if pages.is_empty() {
+            ui.painter().text(area.center(), Align2::CENTER_CENTER, "Nothing to export", theme::font(theme::size::BODY), color::TEXT_FAINT);
+            return;
+        }
+        d.preview = d.preview.min(pages.len() - 1);
+        let (note, page) = pages[d.preview];
+        paint_page(ui, area, notes[note].doc, page, &opts);
+
+        ui.add_space(space::S);
+        ui.horizontal(|ui| {
+            theme::ghost_buttons(ui);
+            if ui.add_enabled(d.preview > 0, egui::Button::new(icon::CARET_LEFT)).clicked() {
+                d.preview -= 1;
+            }
+            ui.label(format!("Page {} of {}", d.preview + 1, pages.len()));
+            if ui.add_enabled(d.preview + 1 < pages.len(), egui::Button::new(icon::CARET_RIGHT)).clicked() {
+                d.preview += 1;
+            }
+        });
+        if notes.len() > 1 {
+            let label = format!("{} · page {}", notes[note].title, page + 1);
+            ui.add(egui::Label::new(theme::muted(label).small()).truncate());
+        }
+        let missing = list.len() - docs.len();
+        if missing > 0 {
+            ui.label(RichText::new(format!("{missing} note(s) cannot be read and will be skipped.")).small().color(color::DANGER));
+        }
+    }
+
+    fn run_export(&mut self, d: &ExportDialog, list: &[(PathBuf, String)]) {
+        let docs: Vec<(&Document, &str)> = list
+            .iter()
+            .filter_map(|(p, t)| self.export_doc(&d.loaded, p).map(|doc| (doc, t.as_str())))
+            .collect();
+        let notes: Vec<PdfNote> = docs.iter().map(|(doc, t)| PdfNote { doc, title: (*t).to_owned() }).collect();
+        let title = if d.title.trim().is_empty() { self.scope_title(d.scope) } else { d.title.trim().to_owned() };
+        let opts = self.pdf_options(d, &title);
         let mut path = PathBuf::from(d.path.trim().trim_matches('"'));
         if path.extension().is_none() {
             path.set_extension("pdf");
         }
-        match pdf_export::export_pdf(&self.doc, &path, &opts) {
+        let skipped = list.len() - notes.len();
+        let result = pdf_export::export_notes(&notes, &path, &opts);
+        match result {
             Ok(()) => {
-                self.toast(format!("Exported PDF to {}", path.display()));
+                let mut msg = format!("Exported PDF to {}", path.display());
+                if skipped > 0 {
+                    msg.push_str(&format!(" ({skipped} unreadable note(s) skipped)"));
+                }
+                self.toast(msg);
                 if self.settings.pdf_open_after {
                     if let Err(e) = open_with_system(&path) {
                         self.toast(format!("Exported, but cannot open it: {e}"));
@@ -254,6 +547,77 @@ impl InkApp {
                 }
             }
             Err(e) => self.toast(format!("PDF export failed: {e}")),
+        }
+    }
+}
+
+/// One exported page as the PDF will show it, fitted into `area`: the output
+/// page (white), the note's page scaled and centred on it, paper, rules,
+/// strokes and text boxes with the chosen ink colours.
+fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions) {
+    let ((out_w, out_h), s, (ox, oy)) = opts.placement(doc);
+    let k = (area.width() / out_w).min(area.height() / out_h);
+    let sheet = Rect::from_center_size(area.center(), vec2(out_w * k, out_h * k));
+    let p = ui.painter_at(sheet.expand(8.0));
+    p.add(theme::card_shadow().as_shape(sheet, 2.0));
+    p.rect_filled(sheet, 0.0, Color32::WHITE);
+
+    let f = s * k;
+    let origin = sheet.min + vec2(ox * k, oy * k);
+    let at = |x: f32, y: f32| pos2(origin.x + x * f, origin.y + y * f);
+    let paper = Rect::from_min_max(at(0.0, 0.0), at(doc.page_width, doc.page_height));
+    let p = ui.painter_at(paper);
+    if opts.paper_background {
+        p.rect_filled(paper, 0.0, color::PAGE);
+    }
+    if opts.include_rules && doc.page.kind != PageKind::Blank {
+        let spacing = doc.page.spacing.max(8.0);
+        if spacing * f >= 2.5 {
+            let rule = Stroke::new(0.6, color::PAGE_RULE);
+            let mut y = spacing;
+            while y < doc.page_height {
+                p.line_segment([at(0.0, y), at(doc.page_width, y)], rule);
+                y += spacing;
+            }
+            if doc.page.kind == PageKind::Grid {
+                let mut x = spacing;
+                while x < doc.page_width {
+                    p.line_segment([at(x, 0.0), at(x, doc.page_height)], rule);
+                    x += spacing;
+                }
+            }
+        }
+    }
+    let rgb = |(r, g, b): (f32, f32, f32), a: u8| {
+        Color32::from_rgba_unmultiplied((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, a)
+    };
+    if opts.include_text {
+        for t in doc.texts.iter().filter(|t| t.page == page) {
+            let ink = rgb(opts.ink_rgb(t.color, false), 255);
+            for (i, line) in t.lines.iter().enumerate() {
+                let size = (t.size * f).max(1.0);
+                p.text(at(t.x, t.y + i as f32 * t.line_h), Align2::LEFT_TOP, line, FontId::proportional(size), ink);
+            }
+        }
+    }
+    for st in doc.strokes.iter().filter(|st| st.page == page) {
+        let highlighter = st.kind == StrokeKind::Highlighter;
+        if highlighter && !opts.include_highlighter {
+            continue;
+        }
+        let ink = rgb(opts.ink_rgb([st.color[0], st.color[1], st.color[2]], highlighter), st.color[3]);
+        let samples = stroke_path::centerline(st.kind, st.width, &st.points, 2.0);
+        let width = |r: f32| (r * 2.0 * f).max(0.6);
+        match samples.as_slice() {
+            [] => {}
+            [one] => {
+                p.circle_filled(at(one.x, one.y), width(one.r) * 0.5, ink);
+            }
+            many => {
+                let r = many.iter().map(|s| s.r).sum::<f32>() / many.len() as f32;
+                let pts = many.iter().map(|s| at(s.x, s.y)).collect();
+                p.add(Shape::line(pts, Stroke::new(width(r), ink)));
+            }
         }
     }
 }

@@ -316,7 +316,8 @@ const ROW_HEIGHT: f32 = 28.0;
 /// hover fill, and for the selected row a soft accent fill with an accent bar.
 /// Long labels end with "…".
 pub fn list_row(ui: &mut Ui, glyph: &str, label: &str, selected: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::click());
+    // Draggable too (reordering); a click is still a click.
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), egui::Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
         return resp;
     }

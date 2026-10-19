@@ -537,6 +537,8 @@ impl InkApp {
         egui::Window::new("About InkNote")
             .open(&mut open)
             .collapsible(false)
+            // Above the notches and the toolbar.
+            .order(egui::Order::Foreground)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
@@ -562,6 +564,8 @@ impl InkApp {
         egui::Window::new("Keyboard shortcuts")
             .open(&mut open)
             .collapsible(false)
+            // Above the notches and the toolbar.
+            .order(egui::Order::Foreground)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {

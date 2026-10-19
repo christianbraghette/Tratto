@@ -93,7 +93,7 @@ impl PdfOptions {
     }
 
     /// Output page size, scale and offset of the note's page on it (page units).
-    fn placement(&self, doc: &Document) -> ((f32, f32), f32, (f32, f32)) {
+    pub fn placement(&self, doc: &Document) -> ((f32, f32), f32, (f32, f32)) {
         let (pw, ph) = (doc.page_width, doc.page_height);
         match self.page_size {
             None => ((pw, ph), 1.0, (0.0, 0.0)),
@@ -106,7 +106,7 @@ impl PdfOptions {
     }
 
     /// Ink colour (0..1) for a stroke or text of colour `rgb`.
-    fn ink_rgb(&self, rgb: [u8; 3], highlighter: bool) -> (f32, f32, f32) {
+    pub fn ink_rgb(&self, rgb: [u8; 3], highlighter: bool) -> (f32, f32, f32) {
         let f = |v: u8| v as f32 / 255.0;
         let gray = || {
             let l = 0.299 * f(rgb[0]) + 0.587 * f(rgb[1]) + 0.114 * f(rgb[2]);
@@ -123,22 +123,48 @@ impl PdfOptions {
 /// Writes `doc` to `path` (via a temp file, so a failure never truncates an
 /// existing export).
 pub fn export_pdf(doc: &Document, path: &Path, opts: &PdfOptions) -> io::Result<()> {
-    let bytes = build_pdf(doc, opts)?;
+    export_notes(&[PdfNote { doc, title: opts.title.clone() }], path, opts)
+}
+
+/// One note of a multi-note export.
+pub struct PdfNote<'a> {
+    pub doc: &'a Document,
+    /// Its bookmark in the PDF.
+    pub title: String,
+}
+
+/// Writes several notes, one after the other, to one PDF (`opts.pages` only
+/// applies to a single note). With more than one note the PDF gets a
+/// bookmark per note. Via a temp file, like `export_pdf`.
+pub fn export_notes(notes: &[PdfNote], path: &Path, opts: &PdfOptions) -> io::Result<()> {
+    let bytes = build_pdf(notes, opts)?;
     let tmp = path.with_extension("pdf.tmp");
     fs::write(&tmp, &bytes)?;
     fs::rename(&tmp, path)
 }
 
+/// The (note, page) pairs that become the PDF's pages, in order.
+pub fn export_pages(notes: &[PdfNote], opts: &PdfOptions) -> Vec<(usize, u32)> {
+    if let [one] = notes {
+        return opts.page_list(one.doc).into_iter().map(|p| (0, p)).collect();
+    }
+    notes
+        .iter()
+        .enumerate()
+        .flat_map(|(i, n)| (0..n.doc.page_count.max(1)).map(move |p| (i, p)))
+        .collect()
+}
+
 // ------------------------------------------------------------ file layout
 
-fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
-    let page_list = opts.page_list(doc);
+fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
+    let page_list = export_pages(notes, opts);
     let pages = page_list.len();
 
     // One ExtGState per distinct highlighter alpha.
-    let mut alphas: Vec<u8> = doc
-        .strokes
+    let mut alphas: Vec<u8> = notes
         .iter()
+        .flat_map(|n| n.doc.strokes.iter())
         .filter(|s| s.kind == StrokeKind::Highlighter && opts.include_highlighter)
         .map(|s| s.color[3])
         .collect();
@@ -146,14 +172,21 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
     alphas.dedup();
 
     // Object numbers: 1 catalog, 2 page tree, 3 resources, 4 info,
-    // 5.. ExtGStates, the font, then (page, content) pairs.
+    // 5.. ExtGStates, the font, then (page, content) pairs, then (several
+    // notes only) the outline root and one bookmark per note.
     let font_obj = 5 + alphas.len();
     let first_page_obj = font_obj + 1;
+    let outline_obj = first_page_obj + 2 * pages;
+    let outlined = notes.len() > 1;
 
     let mut pdf = Pdf::new();
     pdf.raw(b"%PDF-1.5\n%\xE2\xE3\xCF\xD3\n");
 
-    pdf.obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
+    if outlined {
+        pdf.obj(1, &format!("<< /Type /Catalog /Pages 2 0 R /Outlines {outline_obj} 0 R /PageMode /UseOutlines >>"));
+    } else {
+        pdf.obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
+    }
 
     let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", first_page_obj + 2 * i)).collect();
     pdf.obj(2, &format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" ")));
@@ -186,9 +219,10 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     );
 
-    let ((out_w, out_h), _, _) = opts.placement(doc);
-    let (pw, ph) = (out_w * PX_TO_PT, out_h * PX_TO_PT);
-    for (p, &page) in page_list.iter().enumerate() {
+    for (p, &(note, page)) in page_list.iter().enumerate() {
+        let doc = notes[note].doc;
+        let ((out_w, out_h), _, _) = opts.placement(doc);
+        let (pw, ph) = (out_w * PX_TO_PT, out_h * PX_TO_PT);
         let content = page_content(doc, page, opts);
         let packed = deflate(content.as_bytes())?;
         let page_obj = first_page_obj + 2 * p;
@@ -202,6 +236,34 @@ fn build_pdf(doc: &Document, opts: &PdfOptions) -> io::Result<Vec<u8>> {
             ),
         );
         pdf.stream_obj(page_obj + 1, "/Filter /FlateDecode", &packed);
+    }
+
+    if outlined {
+        // Bookmarks: each note points at its first exported page.
+        let firsts: Vec<(usize, usize)> = (0..notes.len())
+            .filter_map(|n| page_list.iter().position(|&(m, _)| m == n).map(|p| (n, first_page_obj + 2 * p)))
+            .collect();
+        let items: Vec<usize> = (0..firsts.len()).map(|i| outline_obj + 1 + i).collect();
+        pdf.obj(
+            outline_obj,
+            &format!(
+                "<< /Type /Outlines /First {} 0 R /Last {} 0 R /Count {} >>",
+                items[0],
+                items[items.len() - 1],
+                items.len()
+            ),
+        );
+        for (i, &(n, page_obj)) in firsts.iter().enumerate() {
+            let prev = if i > 0 { format!("/Prev {} 0 R ", items[i - 1]) } else { String::new() };
+            let next = if i + 1 < items.len() { format!("/Next {} 0 R ", items[i + 1]) } else { String::new() };
+            pdf.obj(
+                items[i],
+                &format!(
+                    "<< /Title ({}) /Parent {outline_obj} 0 R {prev}{next}/Dest [{page_obj} 0 R /Fit] >>",
+                    pdf_string(&notes[n].title)
+                ),
+            );
+        }
     }
 
     Ok(pdf.finish(1, 4))
@@ -517,7 +579,8 @@ mod tests {
 
     #[test]
     fn structure_is_consistent() {
-        let bytes = build_pdf(&sample_doc(), &PdfOptions::default()).unwrap();
+        let doc = sample_doc();
+        let bytes = build_pdf(&[PdfNote { doc: &doc, title: "A".into() }], &PdfOptions::default()).unwrap();
         assert!(bytes.starts_with(b"%PDF-1.5"));
         assert!(bytes.ends_with(b"%%EOF\n"));
 
@@ -544,7 +607,26 @@ mod tests {
     }
 
     fn pdf_text(opts: &PdfOptions) -> String {
-        String::from_utf8_lossy(&build_pdf(&sample_doc(), opts).unwrap()).into_owned()
+        let doc = sample_doc();
+        let notes = [PdfNote { doc: &doc, title: opts.title.clone() }];
+        String::from_utf8_lossy(&build_pdf(&notes, opts).unwrap()).into_owned()
+    }
+
+    #[test]
+    fn several_notes_with_bookmarks() {
+        let (a, b) = (sample_doc(), Document::default());
+        let notes = [PdfNote { doc: &a, title: "First".into() }, PdfNote { doc: &b, title: "Second".into() }];
+        let opts = PdfOptions::default();
+        // 2 + 1 pages; a page range only applies to a single note.
+        assert_eq!(export_pages(&notes, &opts).len(), 3);
+        let ranged = PdfOptions { pages: Some(0..=0), ..Default::default() };
+        assert_eq!(export_pages(&notes, &ranged).len(), 3);
+        let text = String::from_utf8_lossy(&build_pdf(&notes, &opts).unwrap()).into_owned();
+        assert!(text.contains("/Count 3 "));
+        assert!(text.contains("/Type /Outlines") && text.contains("(First)") && text.contains("(Second)"));
+        assert!(text.contains("/PageMode /UseOutlines"));
+        // A single note has no bookmarks.
+        assert!(!pdf_text(&opts).contains("/Outlines"));
     }
 
     #[test]

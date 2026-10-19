@@ -209,6 +209,8 @@ pub struct InkApp {
     global_settings_open: bool,
     /// Export PDF dialog, if open.
     export_dialog: Option<export_ui::ExportDialog>,
+    /// Note being dragged in the notebook panel.
+    note_drag: Option<library_panel::NoteDrag>,
     /// Same for the notebook name in the notebook panel.
     notebook_buf: String,
     notebook_focused: bool,
@@ -285,6 +287,7 @@ impl InkApp {
             title_focused: false,
             global_settings_open: false,
             export_dialog: None,
+            note_drag: None,
             notebook_buf: String::new(),
             notebook_focused: false,
             view_scale: 1.0,

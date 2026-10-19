@@ -29,6 +29,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const NOTE_EXT: &str = "ink";
 const NOTEBOOK_FILE: &str = ".notebook";
+/// Manual order of the notes in a folder: one file name per line.
+const ORDER_FILE: &str = ".order";
 const TRASH_DIR: &str = ".trash";
 
 const NOTEBOOK_COLORS: [[u8; 3]; 6] = [
@@ -109,7 +111,7 @@ impl Library {
             }
         }
         lib.notebooks.sort_by_key(|n| n.name.to_lowercase());
-        sort_notes(&mut lib.quick);
+        sort_notes(root, &mut lib.quick);
         Ok(lib)
     }
 
@@ -142,8 +144,37 @@ fn read_note(path: &Path) -> Option<NoteInfo> {
     storage::read_meta(path).ok().map(|meta| NoteInfo { path: path.to_path_buf(), meta })
 }
 
-fn sort_notes(notes: &mut [NoteInfo]) {
-    notes.sort_by(|a, b| b.meta.modified.cmp(&a.meta.modified));
+/// Notes of a folder in their order: the manual order saved for the folder
+/// (by dragging in the notebook panel) first, then the remaining notes in the
+/// order they were created.
+fn sort_notes(dir: &Path, notes: &mut [NoteInfo]) {
+    let order = read_order(dir);
+    let rank = |n: &NoteInfo| {
+        let name = n.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        order.iter().position(|o| *o == name).unwrap_or(usize::MAX)
+    };
+    notes.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then(a.meta.created.cmp(&b.meta.created))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+}
+
+fn read_order(dir: &Path) -> Vec<String> {
+    fs::read_to_string(dir.join(ORDER_FILE))
+        .map(|t| t.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// Saves the manual order of the notes in `dir` (the notes' paths, in order).
+pub fn set_note_order(dir: &Path, notes: &[PathBuf]) -> Result<()> {
+    let names: Vec<String> = notes
+        .iter()
+        .filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+        .collect();
+    fs::write(dir.join(ORDER_FILE), names.join("\n") + "\n")?;
+    Ok(())
 }
 
 fn scan_notebook(path: &Path, name: String) -> NotebookInfo {
@@ -165,7 +196,7 @@ fn scan_notebook(path: &Path, name: String) -> NotebookInfo {
                 let mut notes: Vec<NoteInfo> = fs::read_dir(&p)
                     .map(|rd| rd.flatten().map(|e| e.path()).filter(|q| is_note(q)).filter_map(|q| read_note(&q)).collect())
                     .unwrap_or_default();
-                sort_notes(&mut notes);
+                sort_notes(&p, &mut notes);
                 nb.sections.push(SectionInfo { name, path: p, notes });
             } else if is_note(&p) {
                 if let Some(n) = read_note(&p) {
@@ -175,7 +206,7 @@ fn scan_notebook(path: &Path, name: String) -> NotebookInfo {
         }
     }
     nb.sections.sort_by_key(|s| s.name.to_lowercase());
-    sort_notes(&mut nb.loose);
+    sort_notes(path, &mut nb.loose);
     nb
 }
 
@@ -321,6 +352,29 @@ pub fn import_file(root: &Path, src: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notes_in_creation_or_manual_order() {
+        let dir = std::env::temp_dir().join("inknote_order_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let note = |name: &str, created: u64| {
+            let mut meta = NoteMeta::new(name, false);
+            meta.created = created;
+            meta.modified = 1000 - created; // newest-modified first would reverse them
+            NoteInfo { path: dir.join(format!("{name}.ink")), meta }
+        };
+        let mut notes = vec![note("c", 3), note("a", 1), note("b", 2)];
+        sort_notes(&dir, &mut notes);
+        let names = |n: &[NoteInfo]| n.iter().map(|n| n.meta.title.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&notes), ["a", "b", "c"]);
+
+        // Manual order; notes it does not list follow in creation order.
+        set_note_order(&dir, &[dir.join("c.ink"), dir.join("a.ink")]).unwrap();
+        sort_notes(&dir, &mut notes);
+        assert_eq!(names(&notes), ["c", "a", "b"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sanitize_and_unique() {

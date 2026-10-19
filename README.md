@@ -149,8 +149,10 @@ dragging their inner edge, and both have a context menu (right-click):
   it, a section to add a note to it, rename or delete it, and the empty space
   to add a note or a section. A quick note (outside any notebook) shows the
   quick notes instead. Each group shows how many notes it holds; the dashed
-  tile adds a note next to the open one. The button next to **Library** opens
-  the full library screen.
+  tile adds a note next to the open one. Notes are listed in the order they
+  were created; drag a note within its group to reorder it (the order is saved
+  in a hidden `.order` file in the folder, and the library screen uses it
+  too). The button next to **Library** opens the full library screen.
 
 The note's title is shown in the middle of the title bar. Click it to rename
 the note; Enter or clicking elsewhere saves, Escape cancels.
@@ -205,9 +207,11 @@ Keyboard shortcuts**.
 ### PDF export
 
 `Ctrl+E` (**File > Export as PDF**, or **Export PDF** in the note settings)
-opens the export dialog:
+opens the export dialog, with a live preview of the exported pages:
 
-- **Pages**: all, the current one, or a range
+- **Export**: this note (all pages, the current one, or a range), every note of
+  its section, or a selection of the notebook's notes. Several notes go into
+  one PDF, in the notebook panel's order, with a bookmark per note
 - **Content**: ruled lines and grid, highlighter strokes, text boxes, and the
   paper colour as background
 - **Ink colours**: as drawn, black (highlighter in grey) or grayscale
@@ -217,7 +221,8 @@ opens the export dialog:
 - **File**: where to write it (next to the note, named after its title, by
   default) and whether to open it afterwards
 
-The dialog remembers your choices, except the pages, the title and the file.
+The dialog remembers your choices, except what to export, the title and the
+file.
 Each exported note page becomes one PDF page. Ink is exported as vector paths
 that follow the same smoothed curves as on screen.
 
@@ -232,6 +237,7 @@ InkNote/
 ├── Quick note.ink          quick notes
 ├── My notebook/            a notebook
 │   ├── .notebook           cover colour
+│   ├── .order              manual order of the notes (if you reordered them)
 │   ├── Section 1/          a section
 │   │   └── Some note.ink
 │   └── Loose note.ink      notes outside any section ("General")

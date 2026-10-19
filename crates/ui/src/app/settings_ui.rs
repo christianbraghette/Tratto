@@ -175,6 +175,8 @@ impl InkApp {
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
+            // Above the notches and the toolbar.
+            .order(egui::Order::Foreground)
             .resizable(false)
             .default_width(460.0)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])

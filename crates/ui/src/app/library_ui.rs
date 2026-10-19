@@ -225,6 +225,8 @@ impl InkApp {
 
         egui::Window::new(title)
             .collapsible(false)
+            // Above the notches and the toolbar.
+            .order(egui::Order::Foreground)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {

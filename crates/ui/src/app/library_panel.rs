@@ -9,6 +9,8 @@
 //! * "General" holds the notes directly in the notebook, then one group per
 //!   section; the open note is highlighted
 //! * right-click a note, a section or the empty space for its actions
+//! * drag a note within its group to reorder it (saved per folder; the
+//!   default order is the order of creation)
 //! * a quick note (outside any notebook) shows the quick notes instead
 //!
 //! Like the pages panel it is a corner notch (top right) grown into a
@@ -20,7 +22,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, vec2, Align, Color32, Id, Layout, Sense, Ui};
 use egui_phosphor::regular as icon;
 
-use inknote_core::library::{NoteInfo, NotebookInfo};
+use inknote_core::library::{self, NoteInfo, NotebookInfo};
 
 use super::library_ui::{Act, Dialog};
 use super::menus::entry;
@@ -38,6 +40,16 @@ enum Pick {
     NewNote(PathBuf),
     LibraryScreen,
     Act(Act),
+    /// New order of the notes of a folder.
+    Reorder(PathBuf, Vec<PathBuf>),
+}
+
+/// A note being dragged to a new place in its group.
+pub(super) struct NoteDrag {
+    /// The group's folder.
+    dir: PathBuf,
+    from: usize,
+    title: String,
 }
 
 impl InkApp {
@@ -61,6 +73,8 @@ impl InkApp {
         let mut name_resp = None;
         let mut open = true;
         let mut picks: Vec<Pick> = Vec::new();
+        let mut drag = self.note_drag.take();
+        let root = self.library_root();
 
         egui::SidePanel::right("library_panel")
             .resizable(true)
@@ -124,12 +138,8 @@ impl InkApp {
                         // Long titles are cut with "…" instead of wrapping.
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                         match &notebook {
-                            Some(nb) => notebook_tree(ui, nb, current.as_deref(), &mut picks),
-                            None => {
-                                for n in &self.library.quick {
-                                    note_row(ui, n, current.as_deref(), &mut picks);
-                                }
-                            }
+                            Some(nb) => notebook_tree(ui, nb, current.as_deref(), &mut picks, &mut drag),
+                            None => note_list(ui, &root, &self.library.quick, current.as_deref(), &mut picks, &mut drag),
                         }
                         // New note next to the open one (same notebook / section).
                         if let Some(dir) = current.as_deref().and_then(Path::parent) {
@@ -175,6 +185,12 @@ impl InkApp {
         }
         self.notebook_buf = name;
 
+        // A drag released outside every group just ends.
+        if ctx.input(|i| !i.pointer.any_down()) {
+            drag = None;
+        }
+        self.note_drag = drag;
+
         if !open {
             self.settings.library_panel_open = false;
         }
@@ -195,13 +211,23 @@ impl InkApp {
                 }
                 Pick::LibraryScreen => self.close_note(ctx),
                 Pick::Act(act) => self.apply_act(act),
+                Pick::Reorder(dir, order) => match library::set_note_order(&dir, &order) {
+                    Ok(()) => self.refresh_library(),
+                    Err(e) => self.toast(format!("Cannot save the order: {e}")),
+                },
             }
         }
     }
 }
 
 /// "General" (notes directly in the notebook), then one group per section.
-fn notebook_tree(ui: &mut Ui, nb: &NotebookInfo, current: Option<&Path>, picks: &mut Vec<Pick>) {
+fn notebook_tree(
+    ui: &mut Ui,
+    nb: &NotebookInfo,
+    current: Option<&Path>,
+    picks: &mut Vec<Pick>,
+    drag: &mut Option<NoteDrag>,
+) {
     let contains = |notes: &[NoteInfo]| notes.iter().any(|n| Some(n.path.as_path()) == current);
     let tint = Color32::from_rgb(nb.color[0], nb.color[1], nb.color[2]);
 
@@ -215,9 +241,7 @@ fn notebook_tree(ui: &mut Ui, nb: &NotebookInfo, current: Option<&Path>, picks: 
                 if nb.loose.is_empty() {
                     ui.label(theme::muted("No notes").small());
                 }
-                for n in &nb.loose {
-                    note_row(ui, n, current, picks);
-                }
+                note_list(ui, &nb.path, &nb.loose, current, picks, drag);
             });
         group.header_response.context_menu(|ui| {
             if entry(ui, icon::NOTE_PENCIL, "New note here", "", true) {
@@ -238,9 +262,7 @@ fn notebook_tree(ui: &mut Ui, nb: &NotebookInfo, current: Option<&Path>, picks: 
                 if s.notes.is_empty() {
                     ui.label(theme::muted("No notes").small());
                 }
-                for n in &s.notes {
-                    note_row(ui, n, current, picks);
-                }
+                note_list(ui, &s.path, &s.notes, current, picks, drag);
             });
         group.header_response.context_menu(|ui| {
             if entry(ui, icon::NOTE_PENCIL, "New note here", "", true) {
@@ -266,8 +288,57 @@ fn notebook_tree(ui: &mut Ui, nb: &NotebookInfo, current: Option<&Path>, picks: 
     }
 }
 
+/// The notes of one folder; drag a row to reorder them.
+fn note_list(
+    ui: &mut Ui,
+    dir: &Path,
+    notes: &[NoteInfo],
+    current: Option<&Path>,
+    picks: &mut Vec<Pick>,
+    drag: &mut Option<NoteDrag>,
+) {
+    let mut rects = Vec::with_capacity(notes.len());
+    for (i, n) in notes.iter().enumerate() {
+        let resp = note_row(ui, n, current, picks);
+        if resp.drag_started() {
+            *drag = Some(NoteDrag { dir: dir.to_path_buf(), from: i, title: n.meta.title.clone() });
+        }
+        rects.push(resp.rect);
+    }
+    let Some(d) = drag.as_ref().filter(|d| d.dir == dir) else { return };
+    let (Some(p), Some(first)) = (ui.input(|i| i.pointer.interact_pos()), rects.first()) else { return };
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+
+    // Where it would land: an accent line between the rows.
+    let slot = rects.iter().filter(|r| r.center().y < p.y).count();
+    let y = if slot < rects.len() { rects[slot].top() - 1.0 } else { rects[rects.len() - 1].bottom() + 1.0 };
+    let line = egui::Rect::from_min_max(egui::pos2(first.left(), y - 1.0), egui::pos2(first.right(), y + 1.0));
+    ui.painter().rect_filled(line, 1.0, color::ACCENT);
+
+    // Scroll the list near its edges; a label follows the pointer.
+    let clip = ui.clip_rect();
+    if p.y < clip.top() + 24.0 {
+        ui.scroll_with_delta(vec2(0.0, 10.0));
+    } else if p.y > clip.bottom() - 24.0 {
+        ui.scroll_with_delta(vec2(0.0, -10.0));
+    }
+    let ghost = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("note_drag_ghost")));
+    theme::paint_toast(&ghost, p + vec2(64.0, 22.0), &d.title);
+
+    if ui.input(|i| !i.pointer.any_down()) {
+        let to = if slot > d.from { slot - 1 } else { slot };
+        if to != d.from {
+            let mut order: Vec<PathBuf> = notes.iter().map(|n| n.path.clone()).collect();
+            let moved = order.remove(d.from);
+            order.insert(to, moved);
+            picks.push(Pick::Reorder(dir.to_path_buf(), order));
+        }
+        *drag = None;
+    }
+}
+
 /// One note; the open note is highlighted. Right-click for its actions.
-fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Vec<Pick>) {
+fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Vec<Pick>) -> egui::Response {
     let is_current = Some(note.path.as_path()) == current;
     let resp = theme::list_row(ui, icon::NOTE_BLANK, &note.meta.title, is_current);
     if resp.clicked() && !is_current {
@@ -298,6 +369,7 @@ fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Ve
             resp.response.on_hover_text("This is the open note");
         }
     });
+    resp
 }
 
 /// A group header: icon and name, then the number of notes, muted.
