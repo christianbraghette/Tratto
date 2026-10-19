@@ -33,6 +33,7 @@ const ZOOM_STEPS: [u32; 15] = [25, 33, 50, 67, 75, 90, 100, 110, 125, 150, 175, 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Command {
     NewNote,
+    QuickNote,
     NewNotebook,
     Import,
     ImportPdf,
@@ -276,6 +277,7 @@ impl InkApp {
         ui.menu_button("File", |ui| {
             open = true;
             push(entry(ui, icon::NOTE_PENCIL, "New note", &shortcut(&ctx, cmd, Key::N), true), ui, Command::NewNote);
+            push(entry(ui, icon::LIGHTNING, "Quick note", &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::N), true), ui, Command::QuickNote);
             push(entry(ui, icon::NOTEBOOK, "New notebook...", "", true), ui, Command::NewNotebook);
             push(entry(ui, icon::DOWNLOAD_SIMPLE, "Import note file...", "", true), ui, Command::Import);
             push(entry(ui, icon::FILE_ARROW_DOWN, "Write on a PDF...", "", true), ui, Command::ImportPdf);
@@ -465,6 +467,10 @@ impl InkApp {
             if i.consume_key(cmd, Key::Q) {
                 out.push(Command::Quit);
             }
+            // Before Ctrl+N, which would also match Ctrl+Shift+N.
+            if i.consume_key(cmd | Modifiers::SHIFT, Key::N) {
+                out.push(Command::QuickNote);
+            }
             if i.consume_key(cmd, Key::N) {
                 out.push(Command::NewNote);
             }
@@ -510,6 +516,15 @@ impl InkApp {
                 }
                 if self.screen == Screen::Library {
                     self.new_note(&dir);
+                }
+            }
+            Command::QuickNote => {
+                if editor {
+                    self.close_note(ctx);
+                }
+                if self.screen == Screen::Library {
+                    let root = self.library_root();
+                    self.new_note(&root);
                 }
             }
             Command::NewNotebook | Command::Import | Command::ImportPdf | Command::LibraryFolder => {

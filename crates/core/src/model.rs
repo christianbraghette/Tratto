@@ -208,7 +208,7 @@ pub enum PageKind {
     Grid,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PageStyle {
     pub kind: PageKind,
     /// Distance between rules/grid lines in document units.
@@ -336,6 +336,15 @@ impl Document {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    /// The id `alloc_id` hands out next (the journal records it).
+    pub(crate) fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
+    pub(crate) fn set_next_id(&mut self, id: u64) {
+        self.next_id = id;
     }
 }
 

@@ -39,6 +39,27 @@ pub struct NoteView {
     pub zoom: ZoomMode,
 }
 
+/// The order of the notes in the library's grids.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LibrarySort {
+    /// The folder's own order (dragged in the notebook panel).
+    #[default]
+    Manual,
+    /// Most recently edited first.
+    Edited,
+    Title,
+}
+
+impl LibrarySort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "Your order",
+            Self::Edited => "Last edited",
+            Self::Title => "Title",
+        }
+    }
+}
+
 /// Notes whose place is remembered, at most (the least recent is forgotten).
 pub const NOTE_VIEWS: usize = 200;
 
@@ -139,6 +160,8 @@ pub struct Settings {
     pub pdf_open_after: bool,
     /// Reopen, at startup, the note that was open when the app was closed.
     pub reopen_last_note: bool,
+    /// The order of the notes in the library.
+    pub library_sort: LibrarySort,
     /// The note open when the app was last closed (`None`: the library).
     pub last_note: Option<String>,
     /// Where each recently opened note was left (by path), most recent last.
@@ -213,6 +236,7 @@ impl Default for Settings {
             pdf_author: String::new(),
             pdf_open_after: false,
             reopen_last_note: true,
+            library_sort: LibrarySort::Manual,
             last_note: None,
             note_views: Vec::new(),
         }

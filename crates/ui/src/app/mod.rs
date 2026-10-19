@@ -20,7 +20,7 @@ use inknote_core::library::{self, Library};
 use inknote_core::model::{
     Document, Point, Stroke, StrokeKind, TextBox,
 };
-use inknote_core::storage::{self, NoteMeta};
+use inknote_core::storage::{self, NoteMeta, NoteWriter};
 use inknote_core::stroke_builder::StrokeBuilder;
 
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
@@ -194,6 +194,8 @@ pub struct InkApp {
     /// File of the open note.
     note_path: Option<PathBuf>,
     note_meta: NoteMeta,
+    /// Appends the open note's changes to its file.
+    writer: NoteWriter,
     dirty: bool,
     last_change: Instant,
     last_fp: Fingerprint,
@@ -290,6 +292,7 @@ impl InkApp {
             lib_ui: library_ui::LibraryUi::default(),
             note_path: None,
             note_meta: NoteMeta::new("Untitled note", true),
+            writer: NoteWriter::default(),
             dirty: false,
             last_change: Instant::now(),
             last_fp: (0, 0, 0, 0, 0),
@@ -373,7 +376,7 @@ impl InkApp {
         let Some(path) = self.note_path.clone() else {
             return false;
         };
-        match storage::save_note(&path, &mut self.note_meta, &self.doc) {
+        match self.writer.save(&path, &mut self.note_meta, &self.doc) {
             Ok(()) => {
                 self.dirty = false;
                 if announce {
@@ -398,16 +401,17 @@ impl InkApp {
             self.load_in_background(format!("Opening \u{201c}{name}\u{201d}..."), move || Ok(path));
             return;
         }
-        match storage::load_note(path) {
-            Ok((meta, doc)) => self.show_note(path, meta, doc),
+        match storage::open_note(path) {
+            Ok((meta, doc, writer)) => self.show_note(path, meta, doc, writer),
             Err(e) => self.toast(format!("Cannot open note: {e}")),
         }
     }
 
     /// Makes a loaded note the open one, in the editor, where it was left.
-    fn show_note(&mut self, path: &Path, meta: NoteMeta, doc: Document) {
+    fn show_note(&mut self, path: &Path, meta: NoteMeta, doc: Document, writer: NoteWriter) {
         self.doc = doc;
         self.note_meta = meta;
+        self.writer = writer;
         self.note_path = Some(path.to_path_buf());
         self.ensure_pages();
         self.reset_editing_state();
@@ -442,8 +446,8 @@ impl InkApp {
         let ctx = self.egui_ctx.clone();
         let spawned = thread::Builder::new().name("load-note".into()).spawn(move || {
             let loaded = find().and_then(|path| {
-                storage::load_note(&path)
-                    .map(|(meta, doc)| (path, meta, doc))
+                storage::open_note(&path)
+                    .map(|(meta, doc, writer)| (path, meta, doc, writer))
                     .map_err(|e| format!("Cannot open note: {e}"))
             });
             let _ = tx.send(loaded);
@@ -465,9 +469,9 @@ impl InkApp {
         };
         self.loading = None;
         match loaded {
-            Ok((path, meta, doc)) => {
+            Ok((path, meta, doc, writer)) => {
                 self.refresh_library();
-                self.show_note(&path, meta, doc);
+                self.show_note(&path, meta, doc, writer);
             }
             Err(e) => {
                 self.refresh_library();
@@ -501,6 +505,7 @@ impl InkApp {
         self.context_menu = None;
         self.export_dialog = None;
         self.doc = Document::default();
+        self.writer = NoteWriter::default();
         self.reset_editing_state();
         self.screen = Screen::Library;
         self.refresh_library();
@@ -2276,7 +2281,7 @@ impl InkApp {
 struct Loading {
     /// What the loading screen says.
     label: String,
-    done: Receiver<Result<(PathBuf, NoteMeta, Document), String>>,
+    done: Receiver<Result<(PathBuf, NoteMeta, Document, NoteWriter), String>>,
 }
 
 /// Notes larger than this (bytes) are read in the background: notes written

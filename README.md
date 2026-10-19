@@ -252,10 +252,14 @@ InkNote/
 ```
 
 - **Format**: `.ink` is a versioned binary format. It stores a small header
-  (title, dates, preview) followed by the document (pages, strokes, text
-  boxes, paper settings). Files from older versions still open.
-- **Safety**: every save writes a temporary file and then renames it over the
-  note, so a crash cannot leave a half-written note. The previous version is
+  (title, dates, preview), the PDF the note is written on (if any), the
+  document (pages, strokes, text boxes, paper settings) and a journal of the
+  changes made since. Files from older versions still open.
+- **Safety**: an autosave only appends what changed to the journal, so it
+  stays small however large the note or its PDF is. Every journal entry and
+  header carries a checksum, so a crash while saving loses at most that last
+  save. Once the journal has grown large, the whole note is written again:
+  to a temporary file, then renamed over the note, with the previous version
   copied to `<note>.ink.bak` at most every ten minutes.
 - **Deleting** moves items to `.trash/` inside the library folder. To
   recover something, move it back by hand.
