@@ -3,7 +3,8 @@
 
 //! The editor's toolbars, all drawn as notches attached to the canvas edges.
 //!
-//! * the tools (tools, styles, undo / redo) centred on the top or bottom edge
+//! * the tools (tools, styles, undo / redo) centred on the top or bottom edge;
+//!   in reading mode the reading bar (pages, zoom) in their place
 //! * library in a notch in the top-right corner
 //! * pages panel toggle and settings in notches in the top-left and
 //!   bottom-left corners, which become part of the pages panel when it is open
@@ -39,6 +40,14 @@ pub enum ToolbarEvent {
     Redo,
     ZoomIn,
     ZoomOut,
+    /// Into reading mode.
+    Read,
+    /// Out of reading mode.
+    Write,
+    PrevPage,
+    NextPage,
+    /// Go to this page (0-based).
+    GoToPage(u32),
 }
 
 impl Tool {
@@ -96,12 +105,59 @@ pub fn show(
     can_redo: bool,
     bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
+    let position = settings.toolbar_position;
+    edge_bar(ctx, "tool_notch", position, bottom_inset, |ui| contents(ui, tool, settings, can_undo, can_redo))
+}
+
+/// The reading mode's bar, in the tool bar's place: back to writing, the
+/// pages (`page` of `count`, 0-based) and the zoom.
+pub fn show_reader(
+    ctx: &egui::Context,
+    settings: &mut Settings,
+    page: u32,
+    count: u32,
+    bottom_inset: f32,
+) -> Option<ToolbarEvent> {
+    let position = settings.toolbar_position;
+    edge_bar(ctx, "reader_notch", position, bottom_inset, |ui| {
+        let mut event = None;
+        if ui.button(theme::icon(icon::PEN_NIB)).on_hover_text("Back to writing (Ctrl+R)").clicked() {
+            event = Some(ToolbarEvent::Write);
+        }
+        ui.separator();
+        let prev = egui::Button::new(theme::icon(icon::CARET_LEFT));
+        if ui.add_enabled(page > 0, prev).on_hover_text("Previous page (Left, Page Up)").clicked() {
+            event = Some(ToolbarEvent::PrevPage);
+        }
+        let mut shown = page + 1;
+        let field = egui::DragValue::new(&mut shown).range(1..=count.max(1)).speed(0.05);
+        if ui.add(field).on_hover_text("Page: click to type a number, or drag").changed() {
+            event = Some(ToolbarEvent::GoToPage(shown - 1));
+        }
+        ui.label(theme::muted(format!("/ {count}")));
+        let next = egui::Button::new(theme::icon(icon::CARET_RIGHT));
+        if ui.add_enabled(page + 1 < count, next).on_hover_text("Next page (Right, Space, Page Down)").clicked() {
+            event = Some(ToolbarEvent::NextPage);
+        }
+        ui.separator();
+        zoom_controls(ui, settings).or(event)
+    })
+}
+
+/// A bar in a notch centred on the top or bottom edge (see `show`).
+fn edge_bar<R>(
+    ctx: &egui::Context,
+    id: &str,
+    position: ToolbarPosition,
+    bottom_inset: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     let free = ctx.available_rect();
-    let id = egui::Id::new("tool_notch");
+    let id = egui::Id::new(id);
     // Size from the previous frame.
     let width = ctx.memory(|m| m.area_rect(id)).map_or(0.0, |r| r.width());
     let fits = width + 2.0 * CORNER_ZONE <= free.width();
-    let top = match settings.toolbar_position {
+    let top = match position {
         ToolbarPosition::Top => fits,
         ToolbarPosition::Bottom => !fits,
     };
@@ -111,7 +167,6 @@ pub fn show(
         (Edge::Bottom, pos2(free.center().x, free.bottom() - bottom_inset))
     };
 
-    let mut event = None;
     egui::Area::new(id)
         .order(Order::Foreground)
         .pivot(if top { Align2::CENTER_TOP } else { Align2::CENTER_BOTTOM })
@@ -121,17 +176,14 @@ pub fn show(
             let mut margin = notch_margin(top);
             margin.left = space::M;
             margin.right = space::M;
-            let rect = egui::Frame::none()
-                .inner_margin(margin)
-                .show(ui, |ui| {
-                    tool_buttons_style(ui);
-                    ui.horizontal(|ui| event = contents(ui, tool, settings, can_undo, can_redo));
-                })
-                .response
-                .rect;
-            ui.painter().set(background, edge_notch_shape(rect, at, color::CHROME));
-        });
-    event
+            let shown = egui::Frame::none().inner_margin(margin).show(ui, |ui| {
+                tool_buttons_style(ui);
+                ui.horizontal(add_contents).inner
+            });
+            ui.painter().set(background, edge_notch_shape(shown.response.rect, at, color::CHROME));
+            shown.inner
+        })
+        .inner
 }
 
 /// The edge a centred notch is attached to.
@@ -436,8 +488,17 @@ fn contents(
         event = Some(ToolbarEvent::Redo);
     }
     ui.separator();
+    let zoom = zoom_controls(ui, settings);
+    ui.separator();
+    if ui.button(theme::icon(icon::BOOK_OPEN)).on_hover_text("Reading mode (Ctrl+R)").clicked() {
+        event = Some(ToolbarEvent::Read);
+    }
+    zoom.or(event)
+}
 
-    // Zoom: out, the presets, in.
+/// Zoom: out, the presets, in.
+fn zoom_controls(ui: &mut egui::Ui, settings: &mut Settings) -> Option<ToolbarEvent> {
+    let mut event = None;
     if ui.button(theme::icon(icon::MAGNIFYING_GLASS_MINUS)).on_hover_text("Zoom out (Ctrl+Minus)").clicked() {
         event = Some(ToolbarEvent::ZoomOut);
     }

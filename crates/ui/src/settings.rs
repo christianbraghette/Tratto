@@ -32,11 +32,15 @@ impl LeftPanel {
 }
 
 /// Where a note was left: the scroll position (content space, so it does
-/// not depend on the zoom or the window size) and the zoom.
+/// not depend on the zoom or the window size), the zoom and whether it was
+/// being read.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NoteView {
     pub scroll: [f32; 2],
     pub zoom: ZoomMode,
+    /// Reading mode (absent in settings saved before it existed).
+    #[serde(default)]
+    pub reading: bool,
 }
 
 /// The order of the notes in the library's grids.
@@ -249,7 +253,7 @@ mod tests {
     use std::path::Path;
 
     fn view(y: f32) -> NoteView {
-        NoteView { scroll: [0.0, y], zoom: ZoomMode::FitWidth }
+        NoteView { scroll: [0.0, y], zoom: ZoomMode::FitWidth, reading: false }
     }
 
     #[test]

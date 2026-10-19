@@ -54,6 +54,8 @@ pub(super) enum Command {
     ZoomIn,
     ZoomOut,
     Zoom(ZoomMode),
+    /// Reading mode on / off.
+    Reading,
     Fullscreen,
     ToolbarAt(ToolbarPosition),
     /// Global settings window.
@@ -292,7 +294,8 @@ impl InkApp {
             push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
         });
 
-        if editor {
+        // Reading changes nothing: no Edit and Page menus meanwhile.
+        if editor && !self.reading {
             ui.menu_button("Edit", |ui| {
                 open = true;
                 self.edit_entries(ui, &mut |ui, c| push(true, ui, c));
@@ -302,6 +305,8 @@ impl InkApp {
         ui.menu_button("View", |ui| {
             open = true;
             if editor {
+                push(check(ui, self.reading, "Reading mode", &shortcut(&ctx, cmd, Key::R)), ui, Command::Reading);
+                ui.separator();
                 push(entry(ui, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", &shortcut(&ctx, cmd, Key::Plus), true), ui, Command::ZoomIn);
                 push(entry(ui, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", &shortcut(&ctx, cmd, Key::Minus), true), ui, Command::ZoomOut);
                 let zoom = self.settings.zoom;
@@ -317,7 +322,7 @@ impl InkApp {
             push(entry(ui, icon::CORNERS_OUT, "Full screen", &shortcut(&ctx, Modifiers::NONE, Key::F11), true), ui, Command::Fullscreen);
         });
 
-        if editor {
+        if editor && !self.reading {
             ui.menu_button("Page", |ui| {
                 open = true;
                 self.page_entries(ui, self.current_page, &mut |ui, c| push(true, ui, c));
@@ -482,7 +487,10 @@ impl InkApp {
                     out.push(Command::CloseNote);
                 }
                 if !typing {
-                    if i.consume_key(cmd, Key::A) {
+                    if i.consume_key(cmd, Key::R) {
+                        out.push(Command::Reading);
+                    }
+                    if !self.reading && i.consume_key(cmd, Key::A) {
                         out.push(Command::SelectAll(self.current_page));
                     }
                     if i.consume_key(cmd, Key::Plus) || i.consume_key(cmd, Key::Equals) {
@@ -564,7 +572,10 @@ impl InkApp {
                 }
                 self.history.exec(&mut self.doc, Action::RemoveText { id });
             }
-            Command::Tool(t) => self.tool = t,
+            Command::Tool(t) => {
+                self.set_reading(ctx, false);
+                self.tool = t;
+            }
             Command::ZoomIn | Command::ZoomOut => {
                 let now = (self.view_scale * 100.0).round() as u32;
                 let next = if cmd == Command::ZoomIn {
@@ -575,6 +586,7 @@ impl InkApp {
                 self.zoom_request = Some(next as f32 / now.max(1) as f32);
             }
             Command::Zoom(z) => self.settings.zoom = z,
+            Command::Reading if editor => self.set_reading(ctx, !self.reading),
             Command::Fullscreen => {
                 // On Windows, going fullscreen straight from a maximized window
                 // resizes the window without a resize event, so egui keeps
@@ -663,7 +675,9 @@ impl InkApp {
                     (format!("{} / {}", shortcut(ctx, c, Key::Plus), shortcut(ctx, c, Key::Minus)), "Zoom in / out"),
                     (shortcut(ctx, c, Key::Num0), "Actual size"),
                     ("Ctrl + wheel, pinch".to_owned(), "Zoom around the pointer"),
-                    ("Page Up / Page Down".to_owned(), "Scroll by one screen"),
+                    ("Page Up / Page Down".to_owned(), "Scroll by one screen (a page while reading)"),
+                    (shortcut(ctx, c, Key::R), "Reading mode on / off"),
+                    ("Left / Right, Space".to_owned(), "Reading: previous / next page"),
                     ("Home / End".to_owned(), "First / last page"),
                     (shortcut(ctx, none, Key::F11), "Full screen"),
                     ("Right click".to_owned(), "Context menu"),

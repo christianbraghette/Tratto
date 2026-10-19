@@ -188,6 +188,11 @@ pub struct InkApp {
     scroll_to: Option<f32>,
     /// Page in the middle of the view (highlighted in the panel).
     current_page: u32,
+    /// Reading mode: the pages turned and scrolled by pen, finger, mouse or
+    /// keys; nothing is written or selected.
+    reading: bool,
+    /// Pages to turn on the next frame (reading mode; negative = back).
+    page_turn: i32,
     screen: Screen,
     library: Library,
     lib_ui: library_ui::LibraryUi,
@@ -287,6 +292,8 @@ impl InkApp {
             panel_page: None,
             scroll_to: None,
             current_page: 0,
+            reading: false,
+            page_turn: 0,
             screen: Screen::Library,
             library: Library::default(),
             lib_ui: library_ui::LibraryUi::default(),
@@ -416,10 +423,12 @@ impl InkApp {
         self.ensure_pages();
         self.reset_editing_state();
         let key = path.to_string_lossy();
+        self.reading = false;
         if let Some(view) = self.settings.note_view(&key) {
             // The canvas clamps it to the note (e.g. pages deleted elsewhere).
             self.scroll = vec2(view.scroll[0], view.scroll[1]);
             self.settings.zoom = view.zoom;
+            self.reading = view.reading;
         }
         self.settings.last_note = Some(key.into_owned());
         self.last_fp = self.current_fingerprint();
@@ -427,13 +436,13 @@ impl InkApp {
         self.screen = Screen::Editor;
     }
 
-    /// Remembers where the open note is left (scroll and zoom), and that it
-    /// is the open one.
+    /// Remembers where the open note is left (scroll, zoom, reading mode),
+    /// and that it is the open one.
     fn remember_view(&mut self) {
         let Some(path) = self.note_path.as_ref().map(|p| p.to_string_lossy().into_owned()) else { return };
         // The place the view is gliding to, if it is.
         let scroll = self.kinetic.target().unwrap_or(self.scroll);
-        let view = NoteView { scroll: [scroll.x, scroll.y], zoom: self.settings.zoom };
+        let view = NoteView { scroll: [scroll.x, scroll.y], zoom: self.settings.zoom, reading: self.reading };
         self.settings.set_note_view(&path, view);
         self.settings.last_note = Some(path);
     }
@@ -595,7 +604,8 @@ impl InkApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // While typing (a text box or a text field such as the note title),
         // Ctrl+Z / Ctrl+Y belong to the text editor.
-        let typing = self.edit.is_some() || ctx.wants_keyboard_input();
+        // Reading changes nothing, so it has no undo either.
+        let typing = self.edit.is_some() || ctx.wants_keyboard_input() || self.reading;
         // Order matters: the Shift variant must be consumed before plain Ctrl+Z.
         let (redo_shift, redo_y, undo, save, export) = ctx.input_mut(|i| {
             (
@@ -618,7 +628,7 @@ impl InkApp {
             self.open_export_dialog();
         }
         // While the context menu is open, Escape belongs to it.
-        if self.selection.is_some() && self.context_menu.is_none() && !ctx.wants_keyboard_input() {
+        if self.selection.is_some() && self.context_menu.is_none() && !ctx.wants_keyboard_input() && !self.reading {
             let (delete, escape) = ctx.input_mut(|i| {
                 (
                     i.consume_key(Modifiers::NONE, Key::Delete)
@@ -918,6 +928,29 @@ impl InkApp {
         self.selection = None;
         self.lasso = None;
         self.moving = None;
+    }
+
+    /// Enters or leaves reading mode. Entering finishes the text being typed
+    /// and drops the selection; never in the middle of a stroke.
+    fn set_reading(&mut self, ctx: &egui::Context, on: bool) {
+        if on == self.reading || on && self.busy() {
+            return;
+        }
+        if on {
+            if self.edit.is_some() {
+                self.commit_edit(ctx);
+            }
+            self.clear_selection();
+            self.text_press = None;
+            self.context_menu = None;
+            self.apply_pen_eraser(false);
+        }
+        self.reading = on;
+    }
+
+    /// The pages of the open note, stacked.
+    fn layout(&self) -> Layout {
+        Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count.max(1) }
     }
 
     /// Inserts an empty page so that it gets `index` (undoable).
@@ -1402,7 +1435,10 @@ impl InkApp {
         self.hbar_visible = hbar;
         self.view_scale = scale;
 
-        let canvas_resp = ui.allocate_rect(canvas, Sense::drag());
+        // Reading also takes taps (to turn pages); a drag then starts only
+        // past the click threshold, which is why writing senses drags only.
+        let sense = if self.reading { Sense::click_and_drag() } else { Sense::drag() };
+        let canvas_resp = ui.allocate_rect(canvas, sense);
 
         // A press on the canvas (outside the editor, which sits on top) ends text editing.
         if self.edit.is_some() && canvas_resp.drag_started() {
@@ -1419,6 +1455,8 @@ impl InkApp {
         if idle && ui.rect_contains_pointer(full) {
             self.wheel_input(ui, canvas, scale, now);
         }
+        // Content height shown below the top pad.
+        let visible = (canvas.height() - TOP_PAD_PX).max(1.0) / scale;
         if !ui.ctx().wants_keyboard_input() {
             let (pgdn, pgup, home, end) = ui.input(|i| {
                 (
@@ -1431,11 +1469,31 @@ impl InkApp {
             // Repeated presses continue from where the running ease ends.
             let base = self.kinetic.target().unwrap_or(self.scroll);
             let page_len = canvas.height() / scale * 0.9;
-            if pgdn {
-                self.ease_scroll(base + vec2(0.0, page_len));
-            }
-            if pgup {
-                self.ease_scroll(base - vec2(0.0, page_len));
+            if self.reading {
+                let (next, prev, down, up) = ui.input(|i| {
+                    let space = i.key_pressed(Key::Space);
+                    (
+                        i.key_pressed(Key::ArrowRight) || space && !i.modifiers.shift,
+                        i.key_pressed(Key::ArrowLeft) || space && i.modifiers.shift,
+                        i.key_pressed(Key::ArrowDown),
+                        i.key_pressed(Key::ArrowUp),
+                    )
+                });
+                self.page_turn += i32::from(pgdn || next) - i32::from(pgup || prev);
+                let line = visible * 0.1;
+                if down {
+                    self.ease_scroll(base + vec2(0.0, line));
+                }
+                if up {
+                    self.ease_scroll(base - vec2(0.0, line));
+                }
+            } else {
+                if pgdn {
+                    self.ease_scroll(base + vec2(0.0, page_len));
+                }
+                if pgup {
+                    self.ease_scroll(base - vec2(0.0, page_len));
+                }
             }
             if home {
                 self.ease_scroll(vec2(base.x, 0.0));
@@ -1446,6 +1504,27 @@ impl InkApp {
         }
         if let Some(y) = self.scroll_to.take() {
             self.ease_scroll(vec2(self.scroll.x, y));
+        }
+        // Reading: a tap on the left or right quarter of the view turns the page.
+        if self.reading && canvas_resp.clicked() {
+            if let Some(p) = canvas_resp.interact_pointer_pos() {
+                let zone = canvas.width() * 0.25;
+                if p.x < canvas.left() + zone {
+                    self.page_turn -= 1;
+                } else if p.x > canvas.right() - zone {
+                    self.page_turn += 1;
+                }
+            }
+        }
+        let turn = std::mem::take(&mut self.page_turn);
+        if turn != 0 {
+            let base = self.kinetic.target().unwrap_or(self.scroll);
+            let mut y = base.y;
+            for _ in 0..turn.unsigned_abs() {
+                y = if turn > 0 { layout.next_stop(y, visible) } else { layout.prev_stop(y, visible) };
+                y = y.clamp(0.0, max.y);
+            }
+            self.ease_scroll(vec2(base.x, y));
         }
         self.kinetic.step(&mut self.scroll, dt, max, scale);
         self.scroll = vec2(
@@ -1460,9 +1539,9 @@ impl InkApp {
         if idle && !swallowed && canvas_resp.drag_started_by(PointerButton::Primary) {
             let start = press.or(canvas_resp.interact_pointer_pos());
             let v = View::new(canvas, self.scroll, scale, layout);
-            self.panning = start.map_or(false, |p| {
-                v.layout.page_at(v.screen_to_content(p)).is_none()
-            });
+            // Reading: everywhere; writing: only off the paper.
+            self.panning = self.reading
+                || start.map_or(false, |p| v.layout.page_at(v.screen_to_content(p)).is_none());
         }
         if self.panning {
             if canvas_resp.dragged() {
@@ -1545,6 +1624,7 @@ impl InkApp {
         // ---- right click: context menu for what is under the pointer
         let right_click = ui.input(|i| i.pointer.secondary_clicked());
         if right_click
+            && !self.reading
             && !self.busy()
             && self.saved_tool.is_none()
             && ui.rect_contains_pointer(canvas)
@@ -1569,7 +1649,7 @@ impl InkApp {
             }
         }
 
-        if !self.panning && !swallowed {
+        if !self.panning && !swallowed && !self.reading {
             match self.tool {
                 Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
                 Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
@@ -1676,7 +1756,9 @@ impl InkApp {
             .map(|(x, y)| pos2(x / ppp, y / ppp))
             .or(self.wl_pen_hover)
             .filter(|p| canvas.contains(*p) && ctx.layer_id_at(*p) == Some(ui.layer_id()));
-        if self.tool == Tool::Eraser {
+        if self.reading {
+            // No tool, no tool cursor.
+        } else if self.tool == Tool::Eraser {
             if let Some(pos) = canvas_resp
                 .hover_pos()
                 .or(canvas_resp.interact_pointer_pos())
@@ -1774,7 +1856,7 @@ impl InkApp {
         // pages panel, as wide as the page.
         let last = view.page_screen_rect(layout.count - 1);
         let btn = Rect::from_min_size(pos2(last.left(), last.bottom() + 18.0), vec2(last.width(), 40.0));
-        if btn.intersects(canvas) {
+        if btn.intersects(canvas) && !self.reading {
             let mut tile = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
             tile.set_clip_rect(canvas);
             if theme::add_tile(&mut tile, btn, Id::new("add_page"), "Add page").clicked() {
@@ -2187,7 +2269,7 @@ impl InkApp {
         // `eraser_native`, Windows pens through `win_pen`; on X11 it can arrive
         // as the middle mouse button. (The right button opens the context
         // menu.) Never switch in the middle of a stroke.
-        if !self.busy() && self.edit.is_none() {
+        if !self.busy() && self.edit.is_none() && !self.reading {
             let button_held = ctx.input(|i| i.pointer.middle_down());
             let win = self
                 .win_pen
@@ -2229,14 +2311,19 @@ impl InkApp {
             return;
         }
         // After the side panels, so the toolbar is centred over the canvas.
-        let event = toolbar::show(
-            ctx,
-            &mut self.tool,
-            &mut self.settings,
-            self.history.can_undo(),
-            self.history.can_redo(),
-            bottom_inset,
-        );
+        let event = if self.reading {
+            let count = self.doc.page_count.max(1);
+            toolbar::show_reader(ctx, &mut self.settings, self.current_page, count, bottom_inset)
+        } else {
+            toolbar::show(
+                ctx,
+                &mut self.tool,
+                &mut self.settings,
+                self.history.can_undo(),
+                self.history.can_redo(),
+                bottom_inset,
+            )
+        };
         // After the pages panel, so the corner buttons sit next to it.
         toolbar::show_corners(ctx, &mut self.settings, bottom_inset);
         // Before the canvas, which must not see the press that closes it.
@@ -2255,6 +2342,11 @@ impl InkApp {
             Some(ToolbarEvent::Redo) => self.redo(),
             Some(ToolbarEvent::ZoomIn) => self.pending.push(Command::ZoomIn),
             Some(ToolbarEvent::ZoomOut) => self.pending.push(Command::ZoomOut),
+            Some(ToolbarEvent::Read) => self.set_reading(ctx, true),
+            Some(ToolbarEvent::Write) => self.set_reading(ctx, false),
+            Some(ToolbarEvent::PrevPage) => self.page_turn -= 1,
+            Some(ToolbarEvent::NextPage) => self.page_turn += 1,
+            Some(ToolbarEvent::GoToPage(i)) => self.scroll_to = Some(self.layout().page_stop(i)),
             None => {}
         }
 

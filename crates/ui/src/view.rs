@@ -93,7 +93,53 @@ impl Layout {
     pub fn page_index_at_y(&self, y: f32) -> u32 {
         (((y - MARGIN) / self.stride()).floor().max(0.0) as u32).min(self.count.saturating_sub(1))
     }
+
+    /// The scroll offset that shows `page` from its top, margin included.
+    pub fn page_stop(&self, page: u32) -> f32 {
+        self.page_top(page) - MARGIN
+    }
+
+    /// The page whose `page_stop` is at or above the scroll offset `y`.
+    fn page_of_stop(&self, y: f32) -> u32 {
+        ((y / self.stride()).floor().max(0.0) as u32).min(self.count.saturating_sub(1))
+    }
+
+    /// Reading: the scroll offset that shows what follows `top`, given the
+    /// content height the view shows (`visible`). The rest of the current
+    /// page first, its bottom at the bottom of the view; then the next page
+    /// from its top. A page that fits the view is one step.
+    pub fn next_stop(&self, top: f32, visible: f32) -> f32 {
+        let i = self.page_of_stop(top + STOP_SLACK);
+        let page_end = self.page_top(i) + self.page_h + MARGIN;
+        if page_end > top + visible + STOP_SLACK {
+            (top + visible * READ_STEP).min(page_end - visible)
+        } else if i + 1 < self.count {
+            self.page_stop(i + 1)
+        } else {
+            top
+        }
+    }
+
+    /// Reading: the way back from `top`, mirroring `next_stop`.
+    pub fn prev_stop(&self, top: f32, visible: f32) -> f32 {
+        if top <= STOP_SLACK {
+            return 0.0;
+        }
+        let i = self.page_of_stop(top - STOP_SLACK);
+        if top >= self.page_top(i) + self.page_h - STOP_SLACK {
+            // All of page `i` is above: its end, or all of it if it fits.
+            let page_end = self.page_top(i) + self.page_h + MARGIN;
+            (page_end - visible).max(self.page_stop(i))
+        } else {
+            (top - visible * READ_STEP).max(self.page_stop(i))
+        }
+    }
 }
+
+/// Reading: the share of the view one step moves within a tall page.
+const READ_STEP: f32 = 0.9;
+/// Reading: offsets this close to a stop count as being at it.
+const STOP_SLACK: f32 = 0.5;
 
 #[derive(Clone, Copy)]
 pub struct View {
@@ -212,5 +258,47 @@ mod tests {
         let max = View::max_scroll(rect, 0.5, &l);
         let v = View::new(rect, max, 0.5, l);
         assert!(v.page_screen_rect(2).bottom() < rect.bottom());
+    }
+
+    #[test]
+    fn reading_turns_whole_pages_that_fit() {
+        let l = layout();
+        // Fit page: the view shows a page and its margins.
+        let visible = l.page_h + 2.0 * MARGIN;
+        let mut y = 0.0;
+        for page in 1..3 {
+            y = l.next_stop(y, visible);
+            assert_eq!(y, l.page_stop(page));
+        }
+        assert_eq!(l.next_stop(y, visible), y, "the last page stays");
+        for page in (0..2).rev() {
+            y = l.prev_stop(y, visible);
+            assert_eq!(y, l.page_stop(page));
+        }
+        assert_eq!(l.prev_stop(0.0, visible), 0.0);
+    }
+
+    #[test]
+    fn reading_shows_all_of_a_tall_page_before_the_next() {
+        let l = layout();
+        let visible = 500.0;
+        let page_end = l.page_top(0) + l.page_h + MARGIN;
+        // Forward: steps of the view, the last one ending at the page's end.
+        let mut stops = vec![0.0];
+        while *stops.last().unwrap() < l.page_stop(1) {
+            let y = l.next_stop(*stops.last().unwrap(), visible);
+            assert!(y > *stops.last().unwrap());
+            stops.push(y);
+        }
+        assert_eq!(stops, [0.0, 450.0, page_end - visible, l.page_stop(1)]);
+        for w in stops.windows(2) {
+            assert!(w[1] - w[0] <= visible, "nothing is skipped");
+        }
+        // Back: the end of page 0 first, then up to its top.
+        let y = l.prev_stop(l.page_stop(1), visible);
+        assert_eq!(y, page_end - visible);
+        assert_eq!(l.prev_stop(l.prev_stop(y, visible), visible), 0.0);
+        // From the middle of a page, back to its top.
+        assert_eq!(l.prev_stop(l.page_stop(1) + 100.0, visible), l.page_stop(1));
     }
 }
