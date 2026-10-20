@@ -419,7 +419,7 @@ Tratto is **dual-licensed**:
    If you want to use Tratto's code in a project without those obligations,
    for example in a closed-source product, or in a service whose source you
    do not want to publish, you need a commercial license. Write to
-   [christianbraghette@gmail.com](mailto:christianbraghette@gmail.com).
+   [info@tratto.page](mailto:info@tratto.page).
 
 In short: using Tratto to take your own notes, at home or at work, is free.
 Building it into a product or service that you do not release under the AGPL
