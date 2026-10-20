@@ -3,7 +3,7 @@
 
 //! Note files.
 //!
-//! v6 layout:
+//! Layout (format version 6, the only one Tratto reads and writes):
 //!
 //! ```text
 //! "INK1" | version u32 LE (= 6) | slot_size u32 LE
@@ -32,9 +32,8 @@
 //!
 //! Whole-file writes are atomic (temp file + rename) and copy the previous
 //! version to `<note>.ink.bak` at most every ten minutes, so a bug can never
-//! destroy the only good copy. v5 (meta, document and PDF, no journal),
-//! v4 (no document length, no PDF) and v2 / v3 files (document only) still
-//! load; their first save writes v6.
+//! destroy the only good copy. Files of any other version (the pre-release
+//! formats 2 to 5) are refused with `StorageError::UnsupportedVersion`.
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -45,24 +44,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::journal::{self, Delta};
-use crate::model::{Document, PageStyle, Stroke, TextBox};
+use crate::model::{Document, Stroke};
 use crate::pdf_pages::PdfFile;
 
 const MAGIC: &[u8; 4] = b"INK1";
 const FORMAT_VERSION: u32 = 6;
-/// Meta block, document and PDF; no journal.
-const V5: u32 = 5;
-/// Meta block first, document only (no length, no PDF).
-const V4: u32 = 4;
-/// Magic + version.
-const HEADER_LEN: usize = 8;
-/// Magic + version + meta length (v4 / v5), or + slot size (v6).
-const META_PREFIX: usize = 12;
-const MAX_META_LEN: u32 = 16 * 1024 * 1024;
+/// Magic + version + slot size.
+const HEADER_LEN: usize = 12;
 /// seq + len + crc of a meta slot.
 const SLOT_HEAD: usize = 16;
 const MIN_SLOT: usize = 4096;
-const MAX_SLOT: usize = 2 * MAX_META_LEN as usize;
+const MAX_SLOT: usize = 32 * 1024 * 1024;
 /// len + crc of a journal record.
 const RECORD_HEAD: usize = 8;
 /// The journal is never compacted below this size.
@@ -186,7 +178,7 @@ impl fmt::Display for StorageError {
             Self::Codec(e) => write!(f, "corrupt data: {e}"),
             Self::BadMagic => write!(f, "not a Tratto file"),
             Self::Corrupt => write!(f, "damaged note file"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported file version {v}"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported note format (version {v})"),
         }
     }
 }
@@ -245,7 +237,27 @@ fn decode_slot(slot: &[u8]) -> Option<(u64, NoteMeta)> {
     Some((seq, bincode::deserialize(meta).ok()?))
 }
 
-/// The two meta slots of a v6 file.
+/// Checks the header at the start of `bytes` and returns the slot size.
+fn parse_header(bytes: &[u8]) -> Result<usize, StorageError> {
+    if bytes.get(..4) != Some(&MAGIC[..]) {
+        return Err(StorageError::BadMagic);
+    }
+    let word = |at: usize| {
+        let b = bytes.get(at..at + 4).ok_or(StorageError::Corrupt)?;
+        Ok::<_, StorageError>(u32::from_le_bytes(b.try_into().expect("4 bytes")))
+    };
+    let version = word(4)?;
+    if version != FORMAT_VERSION {
+        return Err(StorageError::UnsupportedVersion(version));
+    }
+    let size = word(8)? as usize;
+    if !(SLOT_HEAD..=MAX_SLOT).contains(&size) {
+        return Err(StorageError::Corrupt);
+    }
+    Ok(size)
+}
+
+/// The two meta slots of a note file.
 struct Slots {
     size: usize,
     /// 0: empty or torn.
@@ -254,27 +266,18 @@ struct Slots {
 }
 
 impl Slots {
-    /// Reads the slots of the file `f`; `None` if it is not a v6 file.
-    fn read(f: &mut File) -> Result<Option<Slots>, StorageError> {
-        let mut head = [0u8; META_PREFIX];
+    /// Reads the header and the slots of the file `f`.
+    fn read(f: &mut File) -> Result<Slots, StorageError> {
+        let mut head = [0u8; HEADER_LEN];
         f.seek(SeekFrom::Start(0))?;
         f.read_exact(&mut head)?;
-        if &head[..4] != MAGIC {
-            return Err(StorageError::BadMagic);
-        }
-        if u32::from_le_bytes([head[4], head[5], head[6], head[7]]) != FORMAT_VERSION {
-            return Ok(None);
-        }
-        let size = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
-        if !(SLOT_HEAD..=MAX_SLOT).contains(&size) {
-            return Err(StorageError::Corrupt);
-        }
+        let size = parse_header(&head)?;
         let mut both = vec![0u8; 2 * size];
         f.read_exact(&mut both)?;
         let (a, b) = (decode_slot(&both[..size]), decode_slot(&both[size..]));
         let seqs = [a.as_ref().map_or(0, |s| s.0), b.as_ref().map_or(0, |s| s.0)];
         let newest = if seqs[0] >= seqs[1] { a } else { b };
-        Ok(Some(Slots { size, seqs, newest: newest.map(|s| s.1) }))
+        Ok(Slots { size, seqs, newest: newest.map(|s| s.1) })
     }
 
     fn fits(&self, meta: &[u8]) -> bool {
@@ -286,14 +289,14 @@ impl Slots {
     fn write(&mut self, f: &mut File, meta: &[u8]) -> Result<(), StorageError> {
         let older = usize::from(self.seqs[1] < self.seqs[0]);
         let seq = self.seqs[0].max(self.seqs[1]) + 1;
-        f.seek(SeekFrom::Start((META_PREFIX + older * self.size) as u64))?;
+        f.seek(SeekFrom::Start((HEADER_LEN + older * self.size) as u64))?;
         f.write_all(&encode_slot(seq, meta))?;
         self.seqs[older] = seq;
         Ok(())
     }
 }
 
-/// A v6 file as written: where its parts are, and its document.
+/// A note file as written: where its parts are, and its document.
 struct Written {
     slot_size: usize,
     /// Where the journal starts: the end of the snapshot.
@@ -312,12 +315,12 @@ fn write_full(path: &Path, meta: &NoteMeta, doc: &Document) -> Result<Written, S
     let slot_size = slot_size_for(meta_bytes.len());
     let snapshot = bincode::serialize(doc)?;
     let pdf: &[u8] = doc.pdf.as_ref().and_then(|p| p.file.as_deref()).map_or(&[], |f| &f.bytes);
-    let mut out = Vec::with_capacity(META_PREFIX + 2 * slot_size + 16 + pdf.len() + snapshot.len());
+    let mut out = Vec::with_capacity(HEADER_LEN + 2 * slot_size + 16 + pdf.len() + snapshot.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&(slot_size as u32).to_le_bytes());
     out.extend_from_slice(&encode_slot(1, &meta_bytes));
-    out.resize(META_PREFIX + 2 * slot_size, 0);
+    out.resize(HEADER_LEN + 2 * slot_size, 0);
     out.extend_from_slice(&(pdf.len() as u64).to_le_bytes());
     out.extend_from_slice(pdf);
     out.extend_from_slice(&(snapshot.len() as u64).to_le_bytes());
@@ -354,9 +357,9 @@ impl Written {
         if f.metadata()?.len() != self.end {
             return Ok(false);
         }
-        let Some(mut slots) = Slots::read(&mut f)?.filter(|s| s.size == self.slot_size && s.fits(&meta_bytes)) else {
-            return Ok(false);
-        };
+        // Unreadable slots are rewritten with the rest of the file.
+        let slots = Slots::read(&mut f).ok().filter(|s| s.size == self.slot_size && s.fits(&meta_bytes));
+        let Some(mut slots) = slots else { return Ok(false) };
         if !delta.is_empty() {
             let body = bincode::serialize(&delta)?;
             let Ok(len) = u32::try_from(body.len()) else { return Ok(false) };
@@ -382,7 +385,7 @@ impl Written {
 /// writing the whole file.
 ///
 /// It writes the whole file (and with that empties the journal) when the
-/// note was in an older format, the journal is due for compaction, the meta
+/// note has not been saved by it yet, the journal is due for compaction, the meta
 /// outgrew its slot, a delta cannot express the change, or the file is not
 /// the one it last wrote. One writer per open note: a new one (from
 /// `open_note`, or `default()`) for every note opened.
@@ -453,50 +456,9 @@ pub fn save_note(path: &Path, meta: &mut NoteMeta, doc: &Document) -> Result<(),
 
 // --------------------------------------------------------------- reading
 
-/// Layout of the document of version-3 and version-4 files.
-#[derive(Deserialize)]
-struct DocumentV4 {
-    page_width: f32,
-    page_height: f32,
-    page_count: u32,
-    page: PageStyle,
-    strokes: Vec<Stroke>,
-    texts: Vec<TextBox>,
-    next_id: u64,
-}
-
-impl From<DocumentV4> for Document {
-    fn from(d: DocumentV4) -> Self {
-        Document::migrated_from_v4(d.page_width, d.page_height, d.page_count, d.page, d.strokes, d.texts, d.next_id)
-    }
-}
-
-/// The meta block of a v4 / v5 file and where it ends.
-fn meta_block(bytes: &[u8]) -> Result<(NoteMeta, usize), StorageError> {
-    if bytes.len() < META_PREFIX {
-        return Err(StorageError::Corrupt);
-    }
-    let len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    let end = META_PREFIX + len as usize;
-    if len > MAX_META_LEN || end > bytes.len() {
-        return Err(StorageError::Corrupt);
-    }
-    Ok((bincode::deserialize(&bytes[META_PREFIX..end])?, end))
-}
-
-/// Layout of a version-2 file.
-#[derive(Deserialize)]
-struct DocumentV2 {
-    page_width: f32,
-    page_height: f32,
-    page_count: u32,
-    page: PageStyle,
-    strokes: Vec<Stroke>,
-    next_id: u64,
-}
-
-fn legacy_meta(path: &Path, doc: &Document) -> NoteMeta {
-    let title = path.file_stem().map_or_else(|| "Imported note".to_owned(), |s| s.to_string_lossy().into_owned());
+/// Meta rebuilt from the document, for a file whose slots are both torn.
+fn meta_from_file(path: &Path, doc: &Document) -> NoteMeta {
+    let title = path.file_stem().map_or_else(|| "Recovered note".to_owned(), |s| s.to_string_lossy().into_owned());
     let mtime = fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -546,23 +508,20 @@ fn replay(bytes: &[u8], mut at: usize, doc: &mut Document) -> Result<usize, Stor
     Ok(at)
 }
 
-/// A v6 file; with `writer`, also the layout and document to append to.
-fn read_v6(path: &Path, bytes: &[u8], writer: bool) -> Result<(NoteMeta, Document, Option<Written>), StorageError> {
-    let head = part(bytes, 0, META_PREFIX as u64)?;
-    let slot_size = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
-    if !(SLOT_HEAD..=MAX_SLOT).contains(&slot_size) {
-        return Err(StorageError::Corrupt);
-    }
-    let slots = part(bytes, META_PREFIX, 2 * slot_size as u64)?;
+/// Reads a note; with `writer`, also the layout and document to append to.
+fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Written>), StorageError> {
+    let bytes = fs::read(path)?;
+    let slot_size = parse_header(&bytes)?;
+    let slots = part(&bytes, HEADER_LEN, 2 * slot_size as u64)?;
     let newest = [decode_slot(&slots[..slot_size]), decode_slot(&slots[slot_size..])]
         .into_iter()
         .flatten()
         .max_by_key(|s| s.0)
         .map(|s| s.1);
-    let mut at = META_PREFIX + 2 * slot_size;
-    let pdf = sized_part(bytes, at)?;
+    let mut at = HEADER_LEN + 2 * slot_size;
+    let pdf = sized_part(&bytes, at)?;
     at += 8 + pdf.len();
-    let snapshot = sized_part(bytes, at)?;
+    let snapshot = sized_part(&bytes, at)?;
     at += 8 + snapshot.len();
     let mut doc: Document = bincode::deserialize(snapshot)?;
     if let Some(p) = doc.pdf.as_mut() {
@@ -571,9 +530,9 @@ fn read_v6(path: &Path, bytes: &[u8], writer: bool) -> Result<(NoteMeta, Documen
         }
         p.file = Some(PdfFile::new(pdf.to_vec()));
     }
-    let end = replay(bytes, at, &mut doc)?;
+    let end = replay(&bytes, at, &mut doc)?;
     // Both slots torn: rebuilt from the document, written at the next save.
-    let meta = newest.unwrap_or_else(|| legacy_meta(path, &doc));
+    let meta = newest.unwrap_or_else(|| meta_from_file(path, &doc));
     let written = writer.then(|| Written {
         slot_size,
         journal_start: at as u64,
@@ -594,127 +553,35 @@ pub fn load_note(path: &Path) -> Result<(NoteMeta, Document), StorageError> {
     read_note(path, false).map(|(meta, doc, _)| (meta, doc))
 }
 
-fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Written>), StorageError> {
-    let bytes = fs::read(path)?;
-    if bytes.len() < HEADER_LEN || &bytes[..4] != MAGIC {
-        return Err(StorageError::BadMagic);
-    }
-    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    if version == FORMAT_VERSION {
-        return read_v6(path, &bytes, writer);
-    }
-    read_legacy(path, &bytes, version).map(|(meta, doc)| (meta, doc, None))
-}
-
-fn read_legacy(path: &Path, bytes: &[u8], version: u32) -> Result<(NoteMeta, Document), StorageError> {
-    match version {
-        V5 => {
-            let (meta, end) = meta_block(bytes)?;
-            let rest = &bytes[end..];
-            if rest.len() < 8 {
-                return Err(StorageError::Corrupt);
-            }
-            let doc_len = u64::from_le_bytes(rest[..8].try_into().expect("8 bytes"));
-            let doc_end = usize::try_from(doc_len).ok().and_then(|l| l.checked_add(8)).filter(|&e| e <= rest.len());
-            let doc_end = doc_end.ok_or(StorageError::Corrupt)?;
-            let mut doc: Document = bincode::deserialize(&rest[8..doc_end])?;
-            if let Some(pdf) = doc.pdf.as_mut() {
-                let raw = &rest[doc_end..];
-                if raw.is_empty() {
-                    return Err(StorageError::Corrupt);
-                }
-                pdf.file = Some(PdfFile::new(raw.to_vec()));
-            }
-            Ok((meta, doc))
-        }
-        V4 => {
-            let (meta, end) = meta_block(bytes)?;
-            let doc: DocumentV4 = bincode::deserialize(&bytes[end..])?;
-            Ok((meta, doc.into()))
-        }
-        3 => {
-            let doc: Document = bincode::deserialize::<DocumentV4>(&bytes[HEADER_LEN..])?.into();
-            Ok((legacy_meta(path, &doc), doc))
-        }
-        2 => {
-            let d: DocumentV2 = bincode::deserialize(&bytes[HEADER_LEN..])?;
-            let doc = Document::migrated_from_v2(
-                d.page_width,
-                d.page_height,
-                d.page_count,
-                d.page,
-                d.strokes,
-                d.next_id,
-            );
-            Ok((legacy_meta(path, &doc), doc))
-        }
-        v => Err(StorageError::UnsupportedVersion(v)),
-    }
-}
-
-/// Reads only the meta block (a few KB), not the document.
+/// Reads only the meta (a few KB), not the document.
 pub fn read_meta(path: &Path) -> Result<NoteMeta, StorageError> {
-    let mut f = File::open(path)?;
-    let mut head = [0u8; META_PREFIX];
-    if f.read_exact(&mut head).is_ok() && &head[..4] == MAGIC {
-        let version = u32::from_le_bytes([head[4], head[5], head[6], head[7]]);
-        if version == FORMAT_VERSION {
-            if let Some(meta) = Slots::read(&mut f)?.and_then(|s| s.newest) {
-                return Ok(meta);
-            }
-        } else if version == V5 || version == V4 {
-            let len = u32::from_le_bytes([head[8], head[9], head[10], head[11]]);
-            if len > MAX_META_LEN {
-                return Err(StorageError::Corrupt);
-            }
-            let mut buf = vec![0u8; len as usize];
-            f.read_exact(&mut buf)?;
-            return Ok(bincode::deserialize(&buf)?);
-        }
+    match Slots::read(&mut File::open(path)?)?.newest {
+        Some(meta) => Ok(meta),
+        // Both slots torn: rebuilt from the document.
+        None => load_note(path).map(|(m, _)| m),
     }
-    // Older formats carry no meta block (and a v6 file whose slots are both
-    // torn has none left): load the document once.
-    load_note(path).map(|(m, _)| m)
 }
 
-/// Changes the meta block (e.g. the title) without re-encoding the document.
-/// A v6 file gets it written into a slot in place; v4 and v5 files keep
-/// their version. Older files are converted.
+/// Changes the meta (e.g. the title) without re-encoding the document: it
+/// is written into a slot in place, unless it outgrew the slots or both are
+/// torn.
 pub fn rewrite_meta(path: &Path, change: impl FnOnce(&mut NoteMeta)) -> Result<(), StorageError> {
     let mut f = OpenOptions::new().read(true).write(true).open(path)?;
-    if let Some(mut slots) = Slots::read(&mut f).ok().flatten() {
-        if let Some(mut meta) = slots.newest.take() {
-            change(&mut meta);
-            let bytes = bincode::serialize(&meta)?;
-            if slots.fits(&bytes) {
-                return slots.write(&mut f, &bytes);
-            }
-            // Outgrew the slots: the whole file, with larger ones.
-            drop(f);
-            let (_, doc) = load_note(path)?;
-            return write_full(path, &meta, &doc).map(drop);
+    let mut slots = Slots::read(&mut f)?;
+    if let Some(mut meta) = slots.newest.take() {
+        change(&mut meta);
+        let bytes = bincode::serialize(&meta)?;
+        if slots.fits(&bytes) {
+            return slots.write(&mut f, &bytes);
         }
+        drop(f);
+        let (_, doc) = load_note(path)?;
+        return write_full(path, &meta, &doc).map(drop);
     }
     drop(f);
-    let bytes = fs::read(path)?;
-    let version = (bytes.len() >= META_PREFIX && &bytes[..4] == MAGIC)
-        .then(|| u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]))
-        .filter(|&v| v == V5 || v == V4);
-    let Some(version) = version else {
-        let (mut meta, doc) = load_note(path)?;
-        change(&mut meta);
-        return write_full(path, &meta, &doc).map(drop);
-    };
-    let (mut meta, end) = meta_block(&bytes)?;
+    let (mut meta, doc) = load_note(path)?;
     change(&mut meta);
-    let new_meta = bincode::serialize(&meta)?;
-    let mut out = Vec::with_capacity(META_PREFIX + new_meta.len() + bytes.len() - end);
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&version.to_le_bytes());
-    out.extend_from_slice(&(new_meta.len() as u32).to_le_bytes());
-    out.extend_from_slice(&new_meta);
-    out.extend_from_slice(&bytes[end..]);
-    write_atomic(path, &out)
+    write_full(path, &meta, &doc).map(drop)
 }
 
 #[cfg(test)]
@@ -751,7 +618,7 @@ mod tests {
     #[test]
     fn roundtrip_with_meta_and_preview() {
         let doc = sample_doc();
-        let path = std::env::temp_dir().join("tratto_roundtrip_v4.ink");
+        let path = std::env::temp_dir().join("tratto_roundtrip.ink");
         let mut meta = NoteMeta::new("Untitled note", true);
         save_note(&path, &mut meta, &doc).unwrap();
         assert_eq!(meta.title, "Shopping list"); // auto title from the first text line
@@ -776,55 +643,6 @@ mod tests {
         assert_eq!(d2.texts.len(), 1);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("ink.bak"));
-    }
-
-    /// A document in the v3 / v4 layout.
-    #[derive(Serialize)]
-    struct OldDocument<'a> {
-        page_width: f32,
-        page_height: f32,
-        page_count: u32,
-        page: PageStyle,
-        strokes: &'a [Stroke],
-        texts: &'a [TextBox],
-        next_id: u64,
-    }
-
-    fn old_layout(doc: &Document) -> Vec<u8> {
-        let old = OldDocument {
-            page_width: doc.page_width,
-            page_height: doc.page_height,
-            page_count: doc.page_count,
-            page: doc.page,
-            strokes: &doc.strokes,
-            texts: &doc.texts,
-            next_id: 100,
-        };
-        bincode::serialize(&old).unwrap()
-    }
-
-    #[test]
-    fn v4_files_still_load_and_keep_their_version() {
-        let doc = sample_doc();
-        let path = std::env::temp_dir().join("tratto_legacy_v4.ink");
-        let meta = bincode::serialize(&NoteMeta::new("Old note", false)).unwrap();
-        let mut bytes = MAGIC.to_vec();
-        bytes.extend_from_slice(&V4.to_le_bytes());
-        bytes.extend_from_slice(&(meta.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&meta);
-        bytes.extend_from_slice(&old_layout(&doc));
-        fs::write(&path, bytes).unwrap();
-
-        let (meta, loaded) = load_note(&path).unwrap();
-        assert_eq!(meta.title, "Old note");
-        assert_eq!((loaded.strokes.len(), loaded.texts.len()), (1, 1));
-        assert!(loaded.pdf.is_none());
-        // Renaming rewrites only the meta block: still a valid v4 file.
-        rewrite_meta(&path, |m| m.title = "Renamed".into()).unwrap();
-        assert_eq!(fs::read(&path).unwrap()[4..8], V4.to_le_bytes());
-        let (meta, loaded) = load_note(&path).unwrap();
-        assert_eq!((meta.title.as_str(), loaded.strokes.len()), ("Renamed", 1));
-        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -955,9 +773,9 @@ mod tests {
 
         // A crash in the middle of the last slot write: the older slot wins.
         let mut f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        let slots = Slots::read(&mut f).unwrap().unwrap();
+        let slots = Slots::read(&mut f).unwrap();
         let newest = usize::from(slots.seqs[1] > slots.seqs[0]);
-        f.seek(SeekFrom::Start((META_PREFIX + newest * slots.size + SLOT_HEAD) as u64)).unwrap();
+        f.seek(SeekFrom::Start((HEADER_LEN + newest * slots.size + SLOT_HEAD) as u64)).unwrap();
         f.write_all(b"garbage").unwrap();
         drop(f);
         assert_eq!(read_meta(&path).unwrap().title, "Torn");
@@ -1019,42 +837,20 @@ mod tests {
     }
 
     #[test]
-    fn v5_files_still_load_and_are_converted_on_save() {
-        let doc = sample_doc();
-        let path = std::env::temp_dir().join("tratto_legacy_v5.ink");
-        let meta = bincode::serialize(&NoteMeta::new("Old", false)).unwrap();
-        let body = bincode::serialize(&doc).unwrap();
+    fn other_format_versions_are_refused() {
+        let path = std::env::temp_dir().join("tratto_old_version.ink");
         let mut bytes = MAGIC.to_vec();
-        bytes.extend_from_slice(&V5.to_le_bytes());
-        bytes.extend_from_slice(&(meta.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&meta);
-        bytes.extend_from_slice(&(body.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(&body);
-        fs::write(&path, bytes).unwrap();
+        bytes.extend_from_slice(&5u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 64]);
+        fs::write(&path, &bytes).unwrap();
 
-        assert_eq!(read_meta(&path).unwrap().title, "Old");
-        let (mut meta, mut doc, mut writer) = open_note(&path).unwrap();
-        assert!(writer.0.is_none());
-        doc.page_count = 2;
-        writer.save(&path, &mut meta, &doc).unwrap();
-        assert_eq!(fs::read(&path).unwrap()[4..8], FORMAT_VERSION.to_le_bytes());
-        assert!(same(&load_note(&path).unwrap().1, &doc));
-        remove(&path);
-    }
-
-    #[test]
-    fn v3_files_still_load() {
-        let doc = sample_doc();
-        let path = std::env::temp_dir().join("tratto_legacy_v3.ink");
-        let mut bytes = MAGIC.to_vec();
-        bytes.extend_from_slice(&3u32.to_le_bytes());
-        bytes.extend_from_slice(&old_layout(&doc));
-        fs::write(&path, bytes).unwrap();
-
-        let (meta, loaded) = load_note(&path).unwrap();
-        assert_eq!(loaded.strokes.len(), 1);
-        assert_eq!(meta.title, "tratto_legacy_v3");
-        assert_eq!(read_meta(&path).unwrap().pages, 1);
+        assert!(matches!(load_note(&path), Err(StorageError::UnsupportedVersion(5))));
+        assert!(matches!(read_meta(&path), Err(StorageError::UnsupportedVersion(5))));
+        assert!(matches!(rewrite_meta(&path, |_| {}), Err(StorageError::UnsupportedVersion(5))));
+        // Left as it was.
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, b"not a note").unwrap();
+        assert!(matches!(load_note(&path), Err(StorageError::BadMagic)));
         let _ = fs::remove_file(&path);
     }
 }

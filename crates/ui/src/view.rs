@@ -80,6 +80,7 @@ impl Layout {
     }
 
     /// Pages that may overlap the content-space y range (a superset is fine).
+    #[allow(clippy::reversed_empty_ranges)] // `1..=0`: the empty range
     pub fn pages_overlapping(&self, y0: f32, y1: f32) -> RangeInclusive<u32> {
         if self.count == 0 || y1 < MARGIN {
             return 1..=0; // empty

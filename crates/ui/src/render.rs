@@ -143,7 +143,7 @@ pub fn paint_strokes(
 ) {
     let aa = 1.0 / ppp;
     cache.begin_frame(view.scale, ppp);
-    let is_moved = |id: u64| moved.map_or(false, |m| m.ids.contains(&id));
+    let is_moved = |id: u64| moved.is_some_and(|m| m.ids.contains(&id));
 
     for page in view.visible_pages() {
         let offset = view.page_origin_screen(page).to_vec2();

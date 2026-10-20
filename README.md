@@ -296,7 +296,8 @@ Tratto/
 - **Format**: `.ink` is a versioned binary format. It stores a small header
   (title, dates, preview), the PDF the note is written on (if any), the
   document (pages, strokes, text boxes, paper settings) and a journal of the
-  changes made since. Files from older versions still open.
+  changes made since. Notes made by pre-beta builds of Tratto (format
+  versions before 6) are not supported.
 - **Safety**: an autosave only appends what changed to the journal, so it
   stays small however large the note or its PDF is. Every journal entry and
   header carries a checksum, so a crash while saving loses at most that last

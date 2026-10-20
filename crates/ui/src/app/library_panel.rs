@@ -190,7 +190,7 @@ impl InkApp {
                                     let items: Vec<&TrashItem> = trash
                                         .iter()
                                         .filter(|i| {
-                                            i.origin.as_deref().map_or(true, |o| {
+                                            i.origin.as_deref().is_none_or(|o| {
                                                 o.parent() == Some(root.as_path())
                                             })
                                         })

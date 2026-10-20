@@ -285,31 +285,6 @@ impl Default for Document {
 }
 
 impl Document {
-    /// Builds a document from the fields of the pre-text-box file format (v2).
-    pub fn migrated_from_v2(
-        page_width: f32,
-        page_height: f32,
-        page_count: u32,
-        page: PageStyle,
-        strokes: Vec<Stroke>,
-        next_id: u64,
-    ) -> Self {
-        Self { page_width, page_height, page_count, page, strokes, texts: Vec::new(), next_id, pdf: None }
-    }
-
-    /// Builds a document from the fields of the v3 / v4 file formats (no PDF).
-    pub fn migrated_from_v4(
-        page_width: f32,
-        page_height: f32,
-        page_count: u32,
-        page: PageStyle,
-        strokes: Vec<Stroke>,
-        texts: Vec<TextBox>,
-        next_id: u64,
-    ) -> Self {
-        Self { page_width, page_height, page_count, page, strokes, texts, next_id, pdf: None }
-    }
-
     /// A note written on `file`: one page per PDF page, the note's pages as
     /// large as the first PDF page (others are fitted into them), blank
     /// paper (the PDF has its own lines).

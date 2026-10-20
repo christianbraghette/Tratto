@@ -104,7 +104,7 @@ fn smooth(nodes: &[Node], step: f32) -> Vec<Node> {
 fn dedup(nodes: Vec<Node>, min_dist: f32) -> Vec<Node> {
     let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
     for n in nodes {
-        if out.last().map_or(true, |l| (n.p - l.p).length() >= min_dist) {
+        if out.last().is_none_or(|l| (n.p - l.p).length() >= min_dist) {
             out.push(n);
         }
     }

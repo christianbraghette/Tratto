@@ -60,7 +60,6 @@ const PAGES_WIDTHS: std::ops::RangeInclusive<f32> = 150.0..=360.0;
 const THUMB_MAX_W: f32 = 200.0;
 /// Places kept for Back (the oldest is forgotten).
 const NAV_BACK_MAX: usize = 50;
-/// Autosave this long after the last change.
 /// Key under which eframe stores the window state (not public in eframe).
 const WINDOW_STATE_KEY: &str = "window";
 const SETTINGS_KEY: &str = "tratto_settings";
@@ -1382,7 +1381,7 @@ impl InkApp {
         if resp.drag_started_by(PointerButton::Primary) {
             if let Some(pos) = press.or(resp.interact_pointer_pos()) {
                 let c = view.screen_to_content(pos);
-                let inside = self.selection.as_ref().map_or(false, |s| {
+                let inside = self.selection.as_ref().is_some_and(|s| {
                     s.bounds
                         .translate(view.layout.page_origin(s.page).to_vec2())
                         .contains(c)
@@ -1411,7 +1410,7 @@ impl InkApp {
             } else if let Some(l) = self.lasso.as_mut() {
                 for pos in moves {
                     let p = to_page_point(view, l.page, *pos, 1.0).pos2();
-                    if l.points.last().map_or(true, |q| q.distance(p) > 1.5) {
+                    if l.points.last().is_none_or(|q| q.distance(p) > 1.5) {
                         l.points.push(p);
                     }
                 }
@@ -1838,7 +1837,7 @@ impl InkApp {
             let v = View::new(canvas, self.scroll, scale, layout);
             // The reader: everywhere; a note: only off the paper.
             self.panning = self.navigating()
-                || start.map_or(false, |p| v.layout.page_at(v.screen_to_content(p)).is_none());
+                || start.is_some_and(|p| v.layout.page_at(v.screen_to_content(p)).is_none());
         }
         if self.panning {
             if canvas_resp.dragged() {
@@ -2151,7 +2150,7 @@ impl InkApp {
             } else if !resp.has_focus() {
                 // Focus left the editor. A press on a toolbar button only steals it
                 // temporarily (take it back); another text field or Esc ends editing.
-                let other = ui.ctx().memory(|m| m.focused()).map_or(false, |f| f != id);
+                let other = ui.ctx().memory(|m| m.focused()).is_some_and(|f| f != id);
                 let pressed = ui.input(|i| i.pointer.any_pressed());
                 if other || !pressed {
                     commit_now = true;

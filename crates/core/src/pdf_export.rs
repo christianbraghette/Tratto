@@ -679,6 +679,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::reversed_empty_ranges)] // a reversed range on purpose
     fn page_ranges() {
         let doc = sample_doc();
         let all = PdfOptions::default();

@@ -1068,11 +1068,11 @@ fn place_name(notebook: Option<&NotebookInfo>, section: &Option<PathBuf>) -> Str
 }
 
 /// Notes in the chosen order.
-fn sorted<'a>(mut notes: Vec<&'a NoteInfo>, sort: LibrarySort) -> Vec<&'a NoteInfo> {
+fn sorted(mut notes: Vec<&NoteInfo>, sort: LibrarySort) -> Vec<&NoteInfo> {
     match sort {
         // The folder's own order (dragged in the notebook panel).
         LibrarySort::Manual => {}
-        LibrarySort::Edited => notes.sort_by(|a, b| b.meta.modified.cmp(&a.meta.modified)),
+        LibrarySort::Edited => notes.sort_by_key(|n| std::cmp::Reverse(n.meta.modified)),
         LibrarySort::Title => notes.sort_by_key(|n| n.meta.title.to_lowercase()),
     }
     notes
@@ -1268,11 +1268,10 @@ fn notebook_view(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(space::S, space::S);
         let tint = Color32::from_rgb(nb.color[0], nb.color[1], nb.color[2]);
-        if !nb.loose.is_empty() || nb.sections.is_empty() {
-            if pill(ui, "General", nb.loose.len(), section.is_none(), tint).clicked() {
+        if (!nb.loose.is_empty() || nb.sections.is_empty())
+            && pill(ui, "General", nb.loose.len(), section.is_none(), tint).clicked() {
                 acts.push(Act::SelectSection(None));
             }
-        }
         for s in &nb.sections {
             let resp = pill(
                 ui,

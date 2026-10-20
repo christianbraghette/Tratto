@@ -129,7 +129,7 @@ impl Library {
                 all.extend(s.notes.iter());
             }
         }
-        all.sort_by(|a, b| b.meta.modified.cmp(&a.meta.modified));
+        all.sort_by_key(|n| std::cmp::Reverse(n.meta.modified));
         all
     }
 
@@ -142,7 +142,7 @@ impl Library {
 }
 
 fn is_note(path: &Path) -> bool {
-    path.is_file() && path.extension().map_or(false, |e| e == NOTE_EXT)
+    path.is_file() && path.extension().is_some_and(|e| e == NOTE_EXT)
 }
 
 fn read_note(path: &Path) -> Option<NoteInfo> {

@@ -49,8 +49,10 @@ Guidelines:
   instead of hard-coding them, so the interface stays consistent. Add a token
   there if none fits.
 - Add unit tests for new behaviour in `tratto-core`.
-- Keep the `.ink` format backwards-compatible. If the format has to change,
-  bump the version in `storage.rs` and make sure older files still load.
+- Keep the `.ink` format backwards-compatible. Its parts are bincode, which
+  is positional: any change to `Document`, `NoteMeta` or the journal `Delta`
+  (even an added field) changes the format. Bump `FORMAT_VERSION` in
+  `storage.rs` and keep reading version 6 files.
 - Start every new source file with the license header:
 
   ```rust

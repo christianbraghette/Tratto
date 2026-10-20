@@ -98,7 +98,7 @@ impl StrokeBuilder {
     /// Control points for live rendering: smoothed path + live tip (+ prediction).
     pub fn preview_points(&self, predict: bool) -> Vec<Point> {
         let mut v = self.out.clone();
-        if v.last().map_or(true, |o| o.distance(&self.latest) > 0.05) {
+        if v.last().is_none_or(|o| o.distance(&self.latest) > 0.05) {
             v.push(self.latest);
         }
         if predict {
@@ -111,7 +111,7 @@ impl StrokeBuilder {
 
     /// Final control points to store (ends exactly where the pen lifted).
     pub fn finish(mut self) -> Vec<Point> {
-        if self.out.last().map_or(true, |o| o.distance(&self.latest) > 0.05) {
+        if self.out.last().is_none_or(|o| o.distance(&self.latest) > 0.05) {
             self.out.push(self.latest);
         }
         self.out
