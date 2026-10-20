@@ -141,6 +141,13 @@ pub struct Settings {
     pub smooth_scroll: bool,
     /// Multiplier for wheel and touchpad scrolling.
     pub scroll_speed: f32,
+    /// Acceleration of quick wheel notches, mouse wheel and touchpad
+    /// (`0`: none, `1`: the default; with `smooth_scroll`).
+    pub mouse_accel: f32,
+    pub touchpad_accel: f32,
+    /// Glide after a flick (a finger, or pen or mouse drag that pans):
+    /// `0` none, `1` the default.
+    pub touch_fling: f32,
     /// Line width follows the pen pressure.
     pub pressure: bool,
     /// The pen side button (or the middle mouse button) erases while held.
@@ -245,6 +252,9 @@ impl Default for Settings {
             ui_scale: 1.0,
             smooth_scroll: true,
             scroll_speed: 1.0,
+            mouse_accel: 1.0,
+            touchpad_accel: 1.0,
+            touch_fling: 1.0,
             pressure: true,
             side_button_eraser: true,
             new_page_width: blank.page_width,

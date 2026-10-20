@@ -1557,7 +1557,12 @@ impl InkApp {
                 self.kinetic.stop();
                 self.scroll += content;
             } else {
-                self.kinetic.notch(content, now);
+                let accel = if is_wheel_notch(unit, delta) {
+                    self.settings.mouse_accel
+                } else {
+                    self.settings.touchpad_accel
+                };
+                self.kinetic.notch(content, now, accel);
             }
         }
     }
@@ -1748,7 +1753,7 @@ impl InkApp {
                 // Let go: the view keeps gliding with the release velocity.
                 self.panning = false;
                 if self.settings.smooth_scroll {
-                    self.kinetic.release(now, scale);
+                    self.kinetic.release(now, scale, self.settings.touch_fling);
                 }
             }
         }
@@ -1947,10 +1952,13 @@ impl InkApp {
                 ));
             }
         }
-        // A hovering pen (winit does not report it as a pointer): over a page,
-        // the system pointer gives way to a dot like the stroke it would
-        // draw (OneNote style); the eraser's circle follows it too. Not where
-        // something else (a toolbar, a panel) is on top of the canvas.
+        // The tool cursor, the same for pen and mouse: over a page, pen,
+        // highlighter and eraser replace the system pointer with their tip
+        // (a dot like the stroke they would draw, OneNote style, or the
+        // eraser's circle). Pointer, select and text keep the system pointer.
+        // A hovering pen is not reported by winit as a pointer, so it is read
+        // from the native source. Not where something else (a toolbar, a
+        // panel) is on top of the canvas.
         let ctx = ui.ctx().clone();
         let pen_hover = self
             .win_pen
@@ -1959,21 +1967,21 @@ impl InkApp {
             .map(|(x, y)| pos2(x / ppp, y / ppp))
             .or(self.wl_pen_hover)
             .filter(|p| canvas.contains(*p) && ctx.layer_id_at(*p) == Some(ui.layer_id()));
-        if self.navigating() {
-            // No tool, no tool cursor.
-        } else if self.tool == Tool::Eraser {
-            if let Some(pos) = canvas_resp
-                .hover_pos()
-                .or(canvas_resp.interact_pointer_pos())
-                .or(pen_hover)
-            {
-                render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * scale);
-            }
-        } else if let (Some(pos), Some((kind, rgba, width))) = (pen_hover, self.stroke_params()) {
-            let on_page = view.layout.page_at(view.screen_to_content(pos)).is_some();
-            if on_page && self.active.is_none() {
+        let tip_pos = pen_hover
+            .or(canvas_resp.hover_pos())
+            .or(canvas_resp.interact_pointer_pos())
+            .filter(|p| view.layout.page_at(view.screen_to_content(*p)).is_some());
+        let grabbing = self.panning || self.vbar_grab.is_some() || self.hbar_grab.is_some();
+        if let (Some(pos), false, false) = (tip_pos, self.navigating(), grabbing) {
+            if self.tool == Tool::Eraser {
                 ctx.set_cursor_icon(egui::CursorIcon::None);
-                render::paint_pen_cursor(&painter, pos, kind, rgba, width * scale);
+                render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * scale);
+            } else if let Some((kind, rgba, width)) = self.stroke_params() {
+                ctx.set_cursor_icon(egui::CursorIcon::None);
+                // While drawing, the stroke's own end is the tip.
+                if self.active.is_none() {
+                    render::paint_pen_cursor(&painter, pos, kind, rgba, width * scale);
+                }
             }
         }
 
@@ -2612,6 +2620,15 @@ enum Loaded {
     Note(PathBuf, NoteMeta, Document, NoteWriter),
     /// A PDF for the reader.
     Pdf(PathBuf, Document),
+}
+
+/// A wheel event from a mouse wheel's notches rather than a touchpad. Both
+/// arrive as lines on Windows: a notch is whole lines, a touchpad sends
+/// fractions (so does a high-resolution wheel, which then counts as a
+/// touchpad). Pixel deltas come from touchpads.
+fn is_wheel_notch(unit: MouseWheelUnit, delta: Vec2) -> bool {
+    let whole = |v: f32| (v - v.round()).abs() < 1e-3;
+    unit == MouseWheelUnit::Line && delta != Vec2::ZERO && whole(delta.x) && whole(delta.y)
 }
 
 fn is_pdf(path: &Path) -> bool {

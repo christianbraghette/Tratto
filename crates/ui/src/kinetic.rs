@@ -8,9 +8,10 @@
 //! * **Wheel notches** add an impulse that decays exponentially, so a notch
 //!   glides instead of jumping. Notches in quick succession in the same
 //!   direction are amplified (up to [`MAX_BOOST`]), which makes long
-//!   distances fast while single notches stay precise.
-//! * **Flings**: releasing a pan drag keeps the release velocity and lets it
-//!   decay with lower friction.
+//!   distances fast while single notches stay precise. How much is a
+//!   setting, separate for the mouse wheel and the touchpad.
+//! * **Flings**: releasing a pan drag keeps the release velocity (scaled by
+//!   a setting) and lets it decay with lower friction.
 //! * **Targets** (Page Up / Down, Home / End, jump to page) are approached with
 //!   exponential easing.
 //!
@@ -34,7 +35,7 @@ const FLING_FRICTION: f32 = 3.5;
 const TARGET_RATE: f32 = 15.0;
 /// Notches closer together than this (s) accelerate.
 const ACCEL_WINDOW: f64 = 0.15;
-/// Boost added per accelerated notch, and its upper bound.
+/// Boost added per accelerated notch, and its upper bound, at acceleration 1.
 const BOOST_STEP: f32 = 0.35;
 pub const MAX_BOOST: f32 = 4.0;
 /// Drag samples older than this (s) do not count towards the fling.
@@ -70,11 +71,14 @@ impl Kinetic {
     }
 
     /// One discrete wheel step moving the view by `delta` content units.
-    pub fn notch(&mut self, delta: Vec2, now: f64) {
+    /// `accel` scales the acceleration of quick notches (`0`: none, `1`: the
+    /// default).
+    pub fn notch(&mut self, delta: Vec2, now: f64, accel: f32) {
         let same_dir = |a: Vec2, b: Vec2| a.dot(b) > 0.0;
+        let accel = accel.max(0.0);
         self.boost = match self.last_notch {
             Some((t, prev)) if now - t < ACCEL_WINDOW && same_dir(prev, delta) => {
-                (self.boost + BOOST_STEP).min(MAX_BOOST)
+                (self.boost + BOOST_STEP * accel).min(1.0 + (MAX_BOOST - 1.0) * accel)
             }
             _ => 1.0,
         };
@@ -99,8 +103,9 @@ impl Kinetic {
         }
     }
 
-    /// The drag ended; continues with the release velocity, if any.
-    pub fn release(&mut self, now: f64, scale: f32) {
+    /// The drag ended; continues with the release velocity, if any, times
+    /// `strength` (`0`: no fling, `1`: the default).
+    pub fn release(&mut self, now: f64, scale: f32, strength: f32) {
         let samples: Vec<_> = self.drag.drain(..).filter(|(t, _)| now - t <= FLING_WINDOW).collect();
         let Some(&(last, _)) = samples.last() else {
             return;
@@ -116,10 +121,10 @@ impl Kinetic {
         let total = samples.iter().fold(Vec2::ZERO, |acc, (_, d)| acc + *d);
         let v = total / span.max(1.0 / 240.0) as f32;
         let speed_pt = v.length() * scale;
-        if speed_pt < MIN_SPEED_PT * 4.0 {
+        if speed_pt < MIN_SPEED_PT * 4.0 || strength <= 0.0 {
             return;
         }
-        self.velocity = v * (MAX_FLING_PT / speed_pt).min(1.0);
+        self.velocity = v * (MAX_FLING_PT / speed_pt).min(1.0) * strength;
         self.friction = FLING_FRICTION;
     }
 
@@ -185,7 +190,7 @@ mod tests {
     fn single_notch_travels_its_distance() {
         let mut k = Kinetic::default();
         let mut s = vec2(0.0, 500.0);
-        k.notch(vec2(0.0, 100.0), 0.0);
+        k.notch(vec2(0.0, 100.0), 0.0, 1.0);
         run(&mut k, &mut s);
         assert!(!k.is_active());
         // Stops a little short (minimum speed), never overshoots.
@@ -198,8 +203,8 @@ mod tests {
         let mut slow = Kinetic::default();
         let (mut sf, mut ss) = (Vec2::ZERO, Vec2::ZERO);
         for i in 0..5 {
-            fast.notch(vec2(0.0, 100.0), i as f64 * 0.05);
-            slow.notch(vec2(0.0, 100.0), i as f64 * 0.5);
+            fast.notch(vec2(0.0, 100.0), i as f64 * 0.05, 1.0);
+            slow.notch(vec2(0.0, 100.0), i as f64 * 0.5, 1.0);
         }
         run(&mut fast, &mut sf);
         run(&mut slow, &mut ss);
@@ -208,12 +213,26 @@ mod tests {
     }
 
     #[test]
+    fn acceleration_scales_the_boost() {
+        let boost_after = |accel: f32| {
+            let mut k = Kinetic::default();
+            for i in 0..20 {
+                k.notch(vec2(0.0, 100.0), i as f64 * 0.05, accel);
+            }
+            k.boost
+        };
+        assert_eq!(boost_after(0.0), 1.0, "off: every notch moves the same");
+        assert_eq!(boost_after(1.0), MAX_BOOST);
+        assert_eq!(boost_after(2.0), 1.0 + (MAX_BOOST - 1.0) * 2.0);
+    }
+
+    #[test]
     fn reversing_cancels_the_glide() {
         let mut k = Kinetic::default();
         let mut s = vec2(0.0, 1000.0);
-        k.notch(vec2(0.0, 100.0), 0.0);
+        k.notch(vec2(0.0, 100.0), 0.0, 1.0);
         k.step(&mut s, 0.01, MAX, 1.0);
-        k.notch(vec2(0.0, -100.0), 0.02);
+        k.notch(vec2(0.0, -100.0), 0.02, 1.0);
         assert_eq!(k.boost, 1.0);
         assert!(k.velocity.y < 0.0);
     }
@@ -225,7 +244,7 @@ mod tests {
         for i in 0..6 {
             k.drag(vec2(0.0, 20.0), i as f64 / 60.0);
         }
-        k.release(5.0 / 60.0 + 0.005, 1.0);
+        k.release(5.0 / 60.0 + 0.005, 1.0, 1.0);
         assert!(k.is_active());
         let max = vec2(0.0, 300.0);
         for _ in 0..600 {
@@ -236,10 +255,26 @@ mod tests {
     }
 
     #[test]
+    fn fling_strength_scales_the_glide() {
+        let glide = |strength: f32| {
+            let mut k = Kinetic::default();
+            let mut s = Vec2::ZERO;
+            for i in 0..6 {
+                k.drag(vec2(0.0, 20.0), i as f64 / 60.0);
+            }
+            k.release(5.0 / 60.0 + 0.005, 1.0, strength);
+            run(&mut k, &mut s);
+            s.y
+        };
+        assert_eq!(glide(0.0), 0.0, "off: no fling");
+        assert!(glide(2.0) > glide(1.0) * 1.8);
+    }
+
+    #[test]
     fn resting_before_release_does_not_fling() {
         let mut k = Kinetic::default();
         k.drag(vec2(0.0, 20.0), 0.0);
-        k.release(0.2, 1.0);
+        k.release(0.2, 1.0, 1.0);
         assert!(!k.is_active());
     }
 

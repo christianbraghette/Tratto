@@ -222,6 +222,23 @@ impl InkApp {
             row(ui, "Scroll speed", |ui| {
                 ui.add(Slider::new(&mut s.scroll_speed, 0.5..=3.0).step_by(0.1).suffix("×"));
             });
+            let smooth = s.smooth_scroll;
+            let off = "Needs smooth scrolling";
+            row(ui, "Mouse wheel", |ui| {
+                ui.add_enabled(smooth, strength_slider(&mut s.mouse_accel))
+                    .on_hover_text("Acceleration: quick notches scroll further")
+                    .on_disabled_hover_text(off);
+            });
+            row(ui, "Touchpad", |ui| {
+                ui.add_enabled(smooth, strength_slider(&mut s.touchpad_accel))
+                    .on_hover_text("Acceleration: a quick swipe scrolls further")
+                    .on_disabled_hover_text(off);
+            });
+            row(ui, "Touch", |ui| {
+                ui.add_enabled(smooth, strength_slider(&mut s.touch_fling))
+                    .on_hover_text("Momentum: how far the view glides after a flick (finger, or a pen or mouse drag)")
+                    .on_disabled_hover_text(off);
+            });
             row(ui, "At startup", |ui| {
                 ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it")
                     .on_hover_text("Every note opens where it was left; this also reopens the last one when InkNote starts");
@@ -317,6 +334,13 @@ impl InkApp {
             self.settings.library_panel_open = old.library_panel_open;
         }
     }
+}
+
+/// Scroll acceleration or momentum: off, the default (1×), up to double.
+fn strength_slider(value: &mut f32) -> Slider<'_> {
+    Slider::new(value, 0.0..=2.0)
+        .step_by(0.1)
+        .custom_formatter(|v, _| if v == 0.0 { "Off".to_owned() } else { format!("{v:.1}×") })
 }
 
 /// The frame rate limits offered (`0`: none).

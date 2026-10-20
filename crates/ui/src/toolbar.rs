@@ -513,20 +513,21 @@ fn contents(
     ui.separator();
 
     ui.spacing_mut().slider_width = 100.0;
+    // The size bubble goes towards the middle of the window.
+    let above = settings.toolbar_position == ToolbarPosition::Bottom;
     match *tool {
         Tool::Pointer => event = page_controls(ui, settings, nav),
-        Tool::Pen => style_controls(ui, &mut settings.pen, &PEN_PALETTE, 0.5..=12.0),
+        Tool::Pen => style_controls(ui, &mut settings.pen, &PEN_PALETTE, 0.5..=12.0, 0.5, above),
         Tool::Highlighter => {
-            style_controls(ui, &mut settings.highlighter, &HIGHLIGHTER_PALETTE, 4.0..=40.0)
+            style_controls(ui, &mut settings.highlighter, &HIGHLIGHTER_PALETTE, 4.0..=40.0, 2.0, above)
         }
         Tool::Eraser => {
-            ui.add(Slider::new(&mut settings.eraser_radius, 4.0..=60.0).show_value(false))
-                .on_hover_text("Eraser size");
+            size_slider(ui, &mut settings.eraser_radius, 4.0..=60.0, 2.0, above);
         }
         Tool::Select => {
             ui.label(theme::muted("Lasso, then drag"));
         }
-        Tool::Text => style_controls(ui, &mut settings.text, &PEN_PALETTE, 8.0..=96.0),
+        Tool::Text => style_controls(ui, &mut settings.text, &PEN_PALETTE, 8.0..=96.0, 2.0, above),
     }
     ui.separator();
 
@@ -569,6 +570,8 @@ fn style_controls(
     style: &mut ToolStyle,
     palette: &[[u8; 3]],
     range: RangeInclusive<f32>,
+    step: f32,
+    above: bool,
 ) {
     for c in palette {
         if swatch(ui, *c, style.color == *c).clicked() {
@@ -576,8 +579,41 @@ fn style_controls(
         }
     }
     egui::color_picker::color_edit_button_srgb(ui, &mut style.color);
-    ui.add(Slider::new(&mut style.width, range).show_value(false))
-        .on_hover_text("Thickness");
+    size_slider(ui, &mut style.width, range, step, above);
+}
+
+/// A tool size slider that snaps to `step`. While hovered or dragged, a
+/// bubble over the handle (`above` it, or below) shows the size.
+fn size_slider(ui: &mut egui::Ui, value: &mut f32, range: RangeInclusive<f32>, step: f32, above: bool) -> egui::Response {
+    let (min, max) = (*range.start(), *range.end());
+    let resp = ui.add(Slider::new(value, range).step_by(step.into()).show_value(false));
+    if resp.hovered() || resp.dragged() {
+        // Where egui puts the handle: the rail inset by the handle's radius.
+        let r = resp.rect;
+        let inset = r.height() / 2.5;
+        let t = ((*value - min) / (max - min)).clamp(0.0, 1.0);
+        let x = egui::lerp(r.left() + inset..=r.right() - inset, t);
+        let (anchor, pivot) = if above {
+            (pos2(x, r.top() - space::XS), Align2::CENTER_BOTTOM)
+        } else {
+            (pos2(x, r.bottom() + space::XS), Align2::CENTER_TOP)
+        };
+        egui::Area::new(resp.id.with("size_bubble"))
+            .order(Order::Tooltip)
+            .fixed_pos(anchor)
+            .pivot(pivot)
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                // Never wrap: the area has no width of its own to wrap to.
+                egui::Frame::popup(ui.style()).show(ui, |ui| ui.add(egui::Label::new(size_label(*value)).extend()));
+            });
+    }
+    resp
+}
+
+/// "2.5 px", "12 px".
+fn size_label(v: f32) -> String {
+    if v.fract().abs() < 0.05 { format!("{v:.0} px") } else { format!("{v:.1} px") }
 }
 
 fn swatch(ui: &mut egui::Ui, rgb: [u8; 3], selected: bool) -> egui::Response {
