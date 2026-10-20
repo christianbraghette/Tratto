@@ -97,8 +97,8 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 ### Build and run
 
 ```sh
-git clone https://github.com/christianbraghette/inklav.git
-cd inklav
+git clone https://github.com/christianbraghette/Tratto.git
+cd Tratto
 cargo run --release
 ```
 

@@ -647,7 +647,7 @@ impl InkApp {
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::ACCENT));
                     ui.label(theme::title("Tratto"));
-                    ui.label(theme::muted(format!("Version {}", env!("CARGO_PKG_VERSION"))));
+                    ui.label(theme::muted(format!("Version {}", crate::update::CURRENT)));
                     ui.add_space(6.0);
                     ui.label(env!("CARGO_PKG_DESCRIPTION"));
                     ui.add_space(10.0);

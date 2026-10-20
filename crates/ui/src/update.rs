@@ -29,8 +29,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 /// `owner/name` of the GitHub repository the releases come from.
-const REPO: &str = "christianbraghette/inklav";
-pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
+const REPO: &str = "christianbraghette/Tratto";
+/// This version, with the pre-release suffix of the tag it was built from
+/// (set by build.rs).
+pub const CURRENT: &str = env!("TRATTO_VERSION");
 /// The Rust target triple this executable was built for (set by build.rs).
 const TARGET: &str = env!("TRATTO_TARGET");
 /// Archives larger than this are refused.
@@ -203,16 +205,23 @@ fn archive_name() -> String {
     format!("tratto-{TARGET}.zip")
 }
 
-/// `a` is a later version than `b` ("1.10.0" > "1.9.2"; pre-release and
-/// build suffixes are ignored, unparsable versions are never newer).
+/// `a` is a later version than `b` ("1.10.0" > "1.9.2"). Pre-releases come
+/// before their release and are ordered by name, then number ("1.0.0-alpha2"
+/// < "1.0.0-alpha10" < "1.0.0-beta0" < "1.0.0"); build suffixes are ignored,
+/// unparsable versions are never newer.
 fn is_newer(a: &str, b: &str) -> bool {
-    fn parse(v: &str) -> Option<(u64, u64, u64)> {
-        let core = v.split(['-', '+']).next()?;
+    /// (major, minor, patch, is release, pre-release name, pre-release number)
+    fn parse(v: &str) -> Option<(u64, u64, u64, bool, String, u64)> {
+        let v = v.split('+').next()?;
+        let (core, pre) = v.split_once('-').unwrap_or((v, ""));
         let mut parts = core.split('.').map(|p| p.parse::<u64>());
         let major = parts.next()?.ok()?;
         let minor = parts.next().unwrap_or(Ok(0)).ok()?;
         let patch = parts.next().unwrap_or(Ok(0)).ok()?;
-        Some((major, minor, patch))
+        let name = pre.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+        let number = pre[name.len()..].trim_start_matches('.');
+        let number = if number.is_empty() { 0 } else { number.parse().ok()? };
+        Some((major, minor, patch, pre.is_empty(), name.to_owned(), number))
     }
     matches!((parse(a), parse(b)), (Some(a), Some(b)) if a > b)
 }
@@ -383,6 +392,13 @@ mod tests {
         assert!(is_newer("1.0", "0.9.9"));
         assert!(!is_newer("0.1.0", "0.1.0"));
         assert!(!is_newer("0.1.0-beta", "0.1.0"));
+        assert!(is_newer("0.1.0", "0.1.0-beta3"));
+        assert!(is_newer("0.1.0-alpha1", "0.1.0-alpha0"));
+        assert!(is_newer("0.1.0-alpha10", "0.1.0-alpha2"));
+        assert!(is_newer("0.1.0-beta0", "0.1.0-alpha9"));
+        assert!(is_newer("0.1.0-beta.2", "0.1.0-beta.1"));
+        assert!(!is_newer("0.1.0-alpha0", "0.1.0-alpha0"));
+        assert!(is_newer("0.2.0-alpha0", "0.1.0"));
         assert!(!is_newer("0.0.9", "0.1.0"));
         assert!(!is_newer("nightly", "0.1.0"));
     }

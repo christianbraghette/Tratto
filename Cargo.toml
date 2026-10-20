@@ -11,7 +11,7 @@ rust-version = "1.85"
 authors = ["Christian Braghette <christianbraghette@gmail.com>"]
 # Also available under a commercial license, see README.md.
 license = "GPL-3.0-or-later"
-repository = "https://github.com/christianbraghette/inklav"
+repository = "https://github.com/christianbraghette/Tratto"
 
 [workspace.dependencies]
 tratto-core = { path = "crates/core" }

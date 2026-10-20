@@ -1,4 +1,5 @@
-# Builds Tratto for each platform when a version tag (v1.2.3) is pushed and
+# Builds Tratto for each platform when a version tag (v1.2.3, or a
+# pre-release such as v1.2.3-beta1) is pushed and
 # attaches one archive per platform, `tratto-<target>.zip`, to a draft
 # release. Publishing the draft makes it the latest release: the app's
 # updater (crates/ui/src/update.rs) finds it by that name.
@@ -42,14 +43,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A pre-release tag (v1.2.3-alpha0, v1.2.3-beta1) builds the version
+      # 1.2.3 of Cargo.toml; the app is told the full one, for its updater.
       - name: Check the tag matches the version
         if: github.ref_type == 'tag'
         run: |
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+          tag_version=${GITHUB_REF_NAME#v}
+          if [ "${tag_version%%-*}" != "$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($version)"
             exit 1
           fi
+          echo "TRATTO_VERSION=$tag_version" >> "$GITHUB_ENV"
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'

@@ -9,6 +9,9 @@
 //!   and runs, only PDFs cannot be shown.
 //! * Passes the target triple to the updater (`TRATTO_TARGET`): it picks
 //!   the release archive built for it.
+//! * Passes the version shown and compared by the updater (`TRATTO_VERSION`):
+//!   the one in the environment when set (the release workflow sets it from
+//!   the tag, e.g. `0.1.0-alpha0`), else the crate version.
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +28,12 @@ fn main() {
     }
     copy_pdfium();
     println!("cargo:rustc-env=TRATTO_TARGET={}", std::env::var("TARGET").expect("cargo sets TARGET"));
+    println!("cargo:rerun-if-env-changed=TRATTO_VERSION");
+    let version = std::env::var("TRATTO_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").expect("cargo sets CARGO_PKG_VERSION"));
+    println!("cargo:rustc-env=TRATTO_VERSION={version}");
 }
 
 /// The PDFium library of the target platform, as laid out by the
