@@ -24,6 +24,7 @@ use inknote_core::pdf_pages::{self, LinkAction, PdfFile, Target};
 use inknote_core::storage::{self, NoteMeta, NoteWriter};
 use inknote_core::stroke_builder::StrokeBuilder;
 
+use crate::frame_limit::FrameLimiter;
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
 use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
@@ -59,6 +60,15 @@ const NAV_BACK_MAX: usize = 50;
 /// Key under which eframe stores the window state (not public in eframe).
 const WINDOW_STATE_KEY: &str = "window";
 const SETTINGS_KEY: &str = "inknote_settings";
+
+/// The settings saved by the last run, read before the window exists:
+/// `main` needs some of them to create it. Mirrors eframe's file storage
+/// (not public): a RON map of keys to RON strings.
+pub fn saved_settings() -> Option<Settings> {
+    let file = eframe::storage_dir(crate::APP_ID)?.join("app.ron");
+    let kv: std::collections::HashMap<String, String> = ron::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    ron::from_str(kv.get(SETTINGS_KEY)?).ok()
+}
 /// Samples closer than this (document units) are treated as jitter.
 const MIN_POINT_DIST: f32 = 0.6;
 /// Smoothing strength at rest (0..1, lower = smoother) ...
@@ -161,6 +171,8 @@ pub struct InkApp {
     /// Windows: pen side button / eraser end (None elsewhere).
     win_pen: Option<WindowsPen>,
     pen_init_done: bool,
+    /// Caps the frame rate without vsync.
+    frame_limit: FrameLimiter,
     pen_down: bool,
     pen_pos: Pos2,
     /// Wayland: where the pen hovers (in range, not touching).
@@ -261,7 +273,8 @@ pub struct InkApp {
 }
 
 impl InkApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// `vsync`: the window presents with vsync.
+    pub fn new(cc: &eframe::CreationContext<'_>, vsync: bool) -> Self {
         // We implement zoom ourselves; keep egui's UI from zooming on Ctrl +/-.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         crate::theme::install(&cc.egui_ctx);
@@ -290,6 +303,7 @@ impl InkApp {
             pen: None,
             win_pen: None,
             pen_init_done: false,
+            frame_limit: FrameLimiter::new(vsync),
             pen_down: false,
             pen_pos: Pos2::ZERO,
             wl_pen_hover: None,
@@ -2713,6 +2727,8 @@ impl eframe::App for InkApp {
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // Wait first, so the frame gets the pen samples that arrive meanwhile.
+        self.frame_limit.wait(self.settings.fps_limit);
         self.inject_pen_events(ctx, raw_input);
     }
 

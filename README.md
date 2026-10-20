@@ -302,11 +302,15 @@ separately by eframe in the platform's application-data folder.
 ## Configuration
 
 By default InkNote presents frames without waiting for vsync, for the lowest
-latency. These environment variables change rendering:
+latency, capped at 120 fps so the GPU does not render frames that are never
+shown. Both are set in **File > Settings > Display**: the frame rate limit
+applies at once, vsync when InkNote restarts. These environment variables
+override the settings:
 
 | Variable | Effect |
 | --- | --- |
-| `INKNOTE_VSYNC=1` | Enable vsync: may save power, but adds latency |
+| `INKNOTE_FPS=144` | Frame rate cap without vsync, instead of the setting (`0` removes the cap) |
+| `INKNOTE_VSYNC=1` | Force vsync on: may save power, but adds latency |
 | `INKNOTE_MSAA=4` | Enable 4× MSAA (default `1`, off). Strokes are already anti-aliased, so this is rarely needed. |
 
 ```sh

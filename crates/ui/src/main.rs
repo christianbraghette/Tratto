@@ -27,6 +27,7 @@
 
 mod app;
 mod chrome;
+mod frame_limit;
 mod input;
 mod highlight_gpu;
 mod kinetic;
@@ -45,6 +46,9 @@ use eframe::egui_wgpu::{self, wgpu};
 
 /// The app icon: the title bar's pen nib (see assets/icon).
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon/icon.png");
+
+/// eframe's app id: names the folder of the saved settings.
+const APP_ID: &str = "InkNote";
 
 /// Started from a terminal (`cargo run`, PowerShell), print there: a GUI
 /// program has no console of its own, so it borrows its parent's.
@@ -67,10 +71,12 @@ fn main() -> eframe::Result<()> {
     attach_console();
 
     // Low-latency presentation by default: no vsync wait and at most one frame
-    // queued. Set INKNOTE_VSYNC=1 to go back to vsync (saves power, adds latency).
+    // queued, frames capped (File > Settings, see `frame_limit`). Vsync (saves
+    // power, adds latency) is a setting too, read here because the present
+    // mode is fixed when the window is created; INKNOTE_VSYNC=1 forces it on.
     // INKNOTE_MSAA=4 additionally enables 4x MSAA (strokes are already
     // anti-aliased analytically, so this is rarely needed).
-    let vsync = std::env::var_os("INKNOTE_VSYNC").is_some();
+    let vsync = std::env::var_os("INKNOTE_VSYNC").is_some() || app::saved_settings().is_some_and(|s| s.vsync);
     let msaa: u16 = std::env::var("INKNOTE_MSAA")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -106,13 +112,13 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "InkNote",
+        APP_ID,
         options,
         Box::new(move |cc| {
             if let Some(render_state) = cc.wgpu_render_state.as_ref() {
                 highlight_gpu::install(render_state, msaa.into());
             }
-            Ok(Box::new(app::InkApp::new(cc)))
+            Ok(Box::new(app::InkApp::new(cc, vsync)))
         }),
     )
 }

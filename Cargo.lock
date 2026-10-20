@@ -1713,6 +1713,7 @@ dependencies = [
  "inknote-core",
  "pollster",
  "raw-window-handle",
+ "ron",
  "serde",
  "wayland-backend",
  "wayland-client",

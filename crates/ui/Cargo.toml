@@ -18,6 +18,8 @@ inknote-core.workspace = true
 # `wgpu` adds the wgpu renderer, `persistence` lets us store UI settings between runs.
 eframe.workspace = true
 serde.workspace = true
+# Reads eframe's settings file before the window exists (same version as eframe).
+ron = "0.8.1"
 raw-window-handle = "0.6"
 # Icon font (MIT OR Apache-2.0); 0.7 is the release built for egui 0.29.
 egui-phosphor = "0.7.3"

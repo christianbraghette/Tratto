@@ -120,6 +120,10 @@ pub struct Settings {
     pub eraser_radius: f32,
     /// Extrapolate the live stroke slightly ahead of the pen (hides latency).
     pub predict_pen: bool,
+    /// Present with vsync (applied at startup): saves power, adds latency.
+    pub vsync: bool,
+    /// Frames per second at most, without vsync (`0`: no limit).
+    pub fps_limit: u32,
     pub zoom: ZoomMode,
     /// Left panel: page previews or settings.
     pub left_panel: LeftPanel,
@@ -230,6 +234,8 @@ impl Default for Settings {
             text: ToolStyle { color: [20, 20, 20], width: 18.0 },
             eraser_radius: 12.0,
             predict_pen: true,
+            vsync: false,
+            fps_limit: crate::frame_limit::DEFAULT_FPS,
             zoom: ZoomMode::Percent(100),
             left_panel: LeftPanel::Closed,
             library_panel_open: false,

@@ -189,6 +189,8 @@ impl InkApp {
     fn global_settings(&mut self, ui: &mut Ui) {
         let mut change_folder = false;
         let mut reset = false;
+        let vsync_now = self.frame_limit.vsync();
+        let fps_overridden = self.frame_limit.overridden();
         let s = &mut self.settings;
 
         section(ui, "Appearance");
@@ -236,6 +238,36 @@ impl InkApp {
                 ui.add(Slider::new(&mut s.eraser_radius, 4.0..=60.0));
             });
         });
+
+        section(ui, "Display");
+        rows(ui, "global_display", |ui| {
+            row(ui, "Vsync", |ui| {
+                ui.checkbox(&mut s.vsync, "Wait for the display")
+                    .on_hover_text("Saves power, but the ink trails the pen a little more");
+            });
+            row(ui, "Frame rate limit", |ui| {
+                ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
+                    egui::ComboBox::from_id_salt("fps_limit")
+                        .selected_text(fps_label(s.fps_limit))
+                        .show_ui(ui, |ui| {
+                            for fps in FPS_LIMITS {
+                                ui.selectable_value(&mut s.fps_limit, fps, fps_label(fps));
+                            }
+                        });
+                })
+                .response
+                .on_disabled_hover_text(if vsync_now {
+                    "With vsync the display sets the frame rate"
+                } else {
+                    "Set by the INKNOTE_FPS environment variable"
+                });
+            });
+        });
+        if s.vsync != vsync_now {
+            hint(ui, "Vsync changes when InkNote restarts.");
+        } else {
+            hint(ui, "A lower limit uses less GPU while you write or scroll.");
+        }
 
         section(ui, "New notes");
         rows(ui, "global_new_notes", |ui| {
@@ -285,6 +317,14 @@ impl InkApp {
             self.settings.library_panel_open = old.library_panel_open;
         }
     }
+}
+
+/// The frame rate limits offered (`0`: none).
+const FPS_LIMITS: [u32; 7] = [60, 90, 120, 144, 165, 240, 0];
+
+/// "165 fps", "No limit".
+fn fps_label(fps: u32) -> String {
+    if fps == 0 { "No limit".to_owned() } else { format!("{fps} fps") }
 }
 
 /// "2", "2.5".
