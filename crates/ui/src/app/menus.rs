@@ -9,9 +9,7 @@
 //! [`InkApp::run_command`], so menus, context menu and shortcuts share one
 //! implementation of each action.
 
-use eframe::egui::{
-    self, Align2, Button, Frame, Id, Key, KeyboardShortcut, Modifiers, Order, Pos2, RichText, Ui,
-};
+use eframe::egui::{self, Align2, Button, Frame, Id, Key, KeyboardShortcut, Modifiers, Order, Pos2, RichText, Ui};
 use egui_phosphor::regular as icon;
 use tratto_core::history::Action;
 use tratto_core::library;
@@ -20,8 +18,8 @@ use tratto_core::model::PageKind;
 use super::library_ui::Dialog;
 use super::{InkApp, Screen};
 use crate::chrome::{self, WindowState};
-use crate::theme::{self, color};
 use crate::settings::{LeftPanel, ToolbarPosition, ZoomMode};
+use crate::theme::{self, color};
 use crate::toolbar::Tool;
 
 /// Minimum width of every menu (title bar, context menus).
@@ -110,33 +108,10 @@ pub(super) fn entry(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabl
     ui.add_enabled(enabled, Button::new(job).shortcut_text(shortcut)).clicked()
 }
 
-/// A menu opened by a button (a "⋯"), drawn exactly like egui's right-click
-/// menus (same frame, style and layout), so both look the same. Open and
-/// close it with `toggle_popup(id)` when `button` is clicked; any other click
-/// closes it.
-pub(super) fn button_menu(ui: &Ui, id: Id, button: &egui::Response, add_contents: impl FnOnce(&mut Ui)) {
-    if !ui.memory(|m| m.is_popup_open(id)) {
-        return;
-    }
-    egui::Area::new(id)
-        .kind(egui::UiKind::Menu)
-        .order(Order::Foreground)
-        .fixed_pos(button.rect.left_bottom() + egui::vec2(0.0, 2.0))
-        .show(ui.ctx(), |ui| {
-            // What egui's menus set (`menu::set_menu_style`, private).
-            let s = ui.style_mut();
-            s.spacing.button_padding = egui::vec2(2.0, 0.0);
-            s.visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-            s.visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-            s.visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-            s.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-            Frame::menu(ui.style()).show(ui, |ui| {
-                ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), add_contents);
-            });
-        });
-    if !button.clicked() && ui.input(|i| i.pointer.any_click()) {
-        ui.memory_mut(|m| m.close_popup());
-    }
+/// A menu opened by a button (a "⋯"), drawn exactly like egui's own menus:
+/// a click on `button` opens or closes it, any other click closes it.
+pub(super) fn button_menu(id: Id, button: &egui::Response, add_contents: impl FnOnce(&mut Ui)) {
+    egui::Popup::menu(button).id(id).show(add_contents);
 }
 
 /// A checkable / radio entry (shows a check mark when `on`).
@@ -159,17 +134,17 @@ impl InkApp {
 
     /// Title bar, window frame, OS title and decorations: once per frame,
     /// before the screen's own panels.
-    pub(super) fn window_chrome(&mut self, ctx: &egui::Context) {
+    pub(super) fn window_chrome(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         // eframe restores a window state saved by earlier versions before the
         // first frame. A restored fullscreen is reported by winit but not
         // applied to the window, so the app would draw its fullscreen layout
         // in a normal window and the first F11 would do nothing; a restored
         // size overrides the maximized start. Start windowed and maximized.
-        if !self.window_checked {
-            self.window_checked = true;
-            let (fullscreen, maximized) = ctx.input(|i| {
-                (i.viewport().fullscreen == Some(true), i.viewport().maximized == Some(true))
-            });
+        if !self.chrome.checked {
+            self.chrome.checked = true;
+            let (fullscreen, maximized) =
+                ctx.input(|i| (i.viewport().fullscreen == Some(true), i.viewport().maximized == Some(true)));
             if fullscreen {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             }
@@ -179,14 +154,14 @@ impl InkApp {
         }
         // System decorations off while the custom title bar is used.
         let decorations = !self.settings.custom_title_bar;
-        if self.decorations != Some(decorations) {
-            self.decorations = Some(decorations);
+        if self.chrome.decorations != Some(decorations) {
+            self.chrome.decorations = Some(decorations);
             ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(decorations));
         }
         let title = self.window_title();
-        if self.os_title != title {
+        if self.chrome.os_title != title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            self.os_title = title.clone();
+            self.chrome.os_title = title.clone();
         }
 
         let mut cmds = Vec::new();
@@ -194,8 +169,8 @@ impl InkApp {
         if self.screen == Screen::Editor {
             // The note title is editable in place. While the field has focus
             // it keeps what is typed; otherwise it follows the note.
-            let mut buf = std::mem::take(&mut self.title_buf);
-            if !self.title_focused {
+            let mut buf = std::mem::take(&mut self.chrome.title_buf);
+            if !self.chrome.title_focused {
                 buf = self.note_meta.title.clone();
             }
             // A PDF in the reader keeps its file's name.
@@ -207,24 +182,26 @@ impl InkApp {
             };
             let mut menu_open = false;
             // Fullscreen: keep the bar shown while a menu is open or the title is edited.
-            let pinned = self.menu_open || self.title_focused;
-            let bar = chrome::title_bar(ctx, state, pinned, field, |ui| menu_open = self.menu_bar(ui, &mut cmds));
-            self.menu_open = menu_open;
+            let pinned = self.chrome.menu_open || self.chrome.title_focused;
+            let bar = chrome::title_bar(ui, state, pinned, field, |ui| menu_open = self.menu_bar(ui, &mut cmds));
+            self.chrome.menu_open = menu_open;
             if bar.exit_fullscreen {
                 cmds.push(Command::Fullscreen);
             }
             let resp = bar.title;
-            self.title_focused = resp.as_ref().is_some_and(|r| r.has_focus());
+            self.chrome.title_focused = resp.as_ref().is_some_and(|r| r.has_focus());
             // Enter or a click elsewhere renames; Escape keeps the old title.
             if resp.is_some_and(|r| r.lost_focus()) && !ctx.input(|i| i.key_pressed(Key::Escape)) {
                 self.rename_open_note(&buf);
             }
-            self.title_buf = buf;
+            self.chrome.title_buf = buf;
         } else {
             let mut menu_open = false;
             let title = chrome::Title::Text("Tratto");
-            let bar = chrome::title_bar(ctx, state, self.menu_open, title, |ui| menu_open = self.menu_bar(ui, &mut cmds));
-            self.menu_open = menu_open;
+            let bar = chrome::title_bar(ui, state, self.chrome.menu_open, title, |ui| {
+                menu_open = self.menu_bar(ui, &mut cmds)
+            });
+            self.chrome.menu_open = menu_open;
             if bar.exit_fullscreen {
                 cmds.push(Command::Fullscreen);
             }
@@ -282,14 +259,18 @@ impl InkApp {
         let mut push = |clicked: bool, ui: &mut Ui, c: Command| {
             if clicked {
                 cmds.push(c);
-                ui.close_menu();
+                ui.close();
             }
         };
 
         ui.menu_button("File", |ui| {
             open = true;
             push(entry(ui, icon::NOTE_PENCIL, "New note", &shortcut(&ctx, cmd, Key::N), true), ui, Command::NewNote);
-            push(entry(ui, icon::LIGHTNING, "Quick note", &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::N), true), ui, Command::QuickNote);
+            push(
+                entry(ui, icon::LIGHTNING, "Quick note", &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::N), true),
+                ui,
+                Command::QuickNote,
+            );
             push(entry(ui, icon::NOTEBOOK, "New notebook...", "", true), ui, Command::NewNotebook);
             push(entry(ui, icon::DOWNLOAD_SIMPLE, "Import note file...", "", true), ui, Command::Import);
             push(entry(ui, icon::BOOK_OPEN, "Open PDF...", &shortcut(&ctx, cmd, Key::O), true), ui, Command::OpenPdf);
@@ -298,12 +279,20 @@ impl InkApp {
             // A PDF in the reader is not a note: nothing to save or export.
             let note = editor && !self.reading();
             push(entry(ui, icon::FLOPPY_DISK, "Save", &shortcut(&ctx, cmd, Key::S), note), ui, Command::Save);
-            push(entry(ui, icon::FILE_PDF, "Export as PDF...", &shortcut(&ctx, cmd, Key::E), note), ui, Command::ExportPdf);
+            push(
+                entry(ui, icon::FILE_PDF, "Export as PDF...", &shortcut(&ctx, cmd, Key::E), note),
+                ui,
+                Command::ExportPdf,
+            );
             let close = if self.reading() { "Close PDF" } else { "Close note" };
             push(entry(ui, icon::BOOKS, close, &shortcut(&ctx, cmd, Key::W), editor), ui, Command::CloseNote);
             ui.separator();
             push(entry(ui, icon::FOLDER_OPEN, "Library folder...", "", true), ui, Command::LibraryFolder);
-            push(entry(ui, icon::GEAR_SIX, "Settings...", &shortcut(&ctx, cmd, Key::Comma), true), ui, Command::Settings);
+            push(
+                entry(ui, icon::GEAR_SIX, "Settings...", &shortcut(&ctx, cmd, Key::Comma), true),
+                ui,
+                Command::Settings,
+            );
             ui.separator();
             push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
         });
@@ -319,19 +308,43 @@ impl InkApp {
         ui.menu_button("View", |ui| {
             open = true;
             if editor {
-                push(entry(ui, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", &shortcut(&ctx, cmd, Key::Plus), true), ui, Command::ZoomIn);
-                push(entry(ui, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", &shortcut(&ctx, cmd, Key::Minus), true), ui, Command::ZoomOut);
+                push(
+                    entry(ui, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", &shortcut(&ctx, cmd, Key::Plus), true),
+                    ui,
+                    Command::ZoomIn,
+                );
+                push(
+                    entry(ui, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", &shortcut(&ctx, cmd, Key::Minus), true),
+                    ui,
+                    Command::ZoomOut,
+                );
                 let zoom = self.settings.zoom;
-                push(check(ui, zoom == ZoomMode::Percent(100), "Actual size", &shortcut(&ctx, cmd, Key::Num0)), ui, Command::Zoom(ZoomMode::Percent(100)));
+                push(
+                    check(ui, zoom == ZoomMode::Percent(100), "Actual size", &shortcut(&ctx, cmd, Key::Num0)),
+                    ui,
+                    Command::Zoom(ZoomMode::Percent(100)),
+                );
                 push(check(ui, zoom == ZoomMode::FitWidth, "Fit width", ""), ui, Command::Zoom(ZoomMode::FitWidth));
                 push(check(ui, zoom == ZoomMode::FitPage, "Fit page", ""), ui, Command::Zoom(ZoomMode::FitPage));
                 ui.separator();
                 let pos = self.settings.toolbar_position;
-                push(check(ui, pos == ToolbarPosition::Top, "Toolbar at top", ""), ui, Command::ToolbarAt(ToolbarPosition::Top));
-                push(check(ui, pos == ToolbarPosition::Bottom, "Toolbar at bottom", ""), ui, Command::ToolbarAt(ToolbarPosition::Bottom));
+                push(
+                    check(ui, pos == ToolbarPosition::Top, "Toolbar at top", ""),
+                    ui,
+                    Command::ToolbarAt(ToolbarPosition::Top),
+                );
+                push(
+                    check(ui, pos == ToolbarPosition::Bottom, "Toolbar at bottom", ""),
+                    ui,
+                    Command::ToolbarAt(ToolbarPosition::Bottom),
+                );
                 ui.separator();
             }
-            push(entry(ui, icon::CORNERS_OUT, "Full screen", &shortcut(&ctx, Modifiers::NONE, Key::F11), true), ui, Command::Fullscreen);
+            push(
+                entry(ui, icon::CORNERS_OUT, "Full screen", &shortcut(&ctx, Modifiers::NONE, Key::F11), true),
+                ui,
+                Command::Fullscreen,
+            );
         });
 
         if editor && !self.reading() {
@@ -340,7 +353,9 @@ impl InkApp {
                 self.page_entries(ui, self.current_page, &mut |ui, c| push(true, ui, c));
                 ui.separator();
                 let kind = self.doc.page.kind;
-                for (k, label) in [(PageKind::Blank, "Blank paper"), (PageKind::Ruled, "Ruled paper"), (PageKind::Grid, "Grid paper")] {
+                for (k, label) in
+                    [(PageKind::Blank, "Blank paper"), (PageKind::Ruled, "Ruled paper"), (PageKind::Grid, "Grid paper")]
+                {
                     push(check(ui, kind == k, label, ""), ui, Command::PaperStyle(k));
                 }
                 ui.separator();
@@ -403,12 +418,11 @@ impl InkApp {
         let mut cmds = Vec::new();
         let mut push = |ui: &mut Ui, c: Command| {
             cmds.push(c);
-            ui.close_menu();
+            ui.close();
         };
-        let area = egui::Area::new(Id::new("canvas_context_menu"))
-            .order(Order::Foreground)
-            .fixed_pos(menu.pos)
-            .show(ctx, |ui| {
+        let area = egui::Area::new(Id::new("canvas_context_menu")).order(Order::Foreground).fixed_pos(menu.pos).show(
+            ctx,
+            |ui| {
                 Frame::menu(ui.style()).show(ui, |ui| {
                     ui.set_min_width(220.0);
                     // Flat rows, like egui's own menus.
@@ -425,10 +439,22 @@ impl InkApp {
                     }
                     if menu.on_selection {
                         let ctx = ui.ctx().clone();
-                        if entry(ui, icon::TRASH, "Delete selection", &shortcut(&ctx, Modifiers::NONE, Key::Delete), true) {
+                        if entry(
+                            ui,
+                            icon::TRASH,
+                            "Delete selection",
+                            &shortcut(&ctx, Modifiers::NONE, Key::Delete),
+                            true,
+                        ) {
                             push(ui, Command::DeleteSelection);
                         }
-                        if entry(ui, icon::SELECTION_SLASH, "Deselect", &shortcut(&ctx, Modifiers::NONE, Key::Escape), true) {
+                        if entry(
+                            ui,
+                            icon::SELECTION_SLASH,
+                            "Deselect",
+                            &shortcut(&ctx, Modifiers::NONE, Key::Escape),
+                            true,
+                        ) {
                             push(ui, Command::Deselect);
                         }
                         ui.separator();
@@ -454,7 +480,8 @@ impl InkApp {
                         self.page_entries(ui, page, &mut push);
                     }
                 });
-            });
+            },
+        );
 
         let rect = area.response.rect;
         let (pressed_outside, escape) = ctx.input(|i| {
@@ -475,7 +502,7 @@ impl InkApp {
     /// Shortcuts of menu commands that are not handled by the editor itself.
     pub(super) fn menu_shortcuts(&mut self, ctx: &egui::Context) {
         let editor = self.screen == Screen::Editor;
-        let typing = self.edit.is_some() || ctx.wants_keyboard_input();
+        let typing = self.edit.is_some() || ctx.egui_wants_keyboard_input();
         let cmd = Modifiers::COMMAND;
         let found: Vec<Command> = ctx.input_mut(|i| {
             let mut out = Vec::new();
@@ -602,16 +629,15 @@ impl InkApp {
                 // resizes the window without a resize event, so egui keeps
                 // drawing at the maximized size. Un-maximize first and
                 // maximize again after leaving fullscreen.
-                let (fs, maximized) = ctx.input(|i| {
-                    (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false))
-                });
+                let (fs, maximized) =
+                    ctx.input(|i| (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false)));
                 if fs {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                    if std::mem::take(&mut self.maximize_after_fullscreen) {
+                    if std::mem::take(&mut self.chrome.maximize_after_fullscreen) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                     }
                 } else {
-                    self.maximize_after_fullscreen = maximized;
+                    self.chrome.maximize_after_fullscreen = maximized;
                     if maximized {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
                     }
@@ -657,7 +683,9 @@ impl InkApp {
                     ui.add_space(6.0);
                     ui.hyperlink_to("Source code and license", env!("CARGO_PKG_REPOSITORY"));
                     ui.add_space(6.0);
-                    ui.label(RichText::new("Font: Inter (OFL) · Icons: Phosphor (MIT)").small().color(color::TEXT_FAINT));
+                    ui.label(
+                        RichText::new("Font: Inter (OFL) · Icons: Phosphor (MIT)").small().color(color::TEXT_FAINT),
+                    );
                 });
             });
         self.help.about = open;

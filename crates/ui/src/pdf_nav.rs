@@ -9,8 +9,8 @@
 //! note is open; `clear` forgets them when another note is opened.
 
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui;
 use tratto_core::pdf_pages::{self, Outline, OutlineEntry, PageLink, PageLinks, PdfFile};

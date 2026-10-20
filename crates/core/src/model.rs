@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use emath::{pos2, vec2, Pos2, Rect};
+use emath::{Pos2, Rect, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::point_segment_distance;
@@ -105,14 +105,7 @@ pub struct Stroke {
 }
 
 impl Stroke {
-    pub fn new(
-        id: u64,
-        page: u32,
-        kind: StrokeKind,
-        color: [u8; 4],
-        width: f32,
-        points: Vec<Point>,
-    ) -> Self {
+    pub fn new(id: u64, page: u32, kind: StrokeKind, color: [u8; 4], width: f32, points: Vec<Point>) -> Self {
         let bounds = compute_bounds(&points);
         Self { id, page, kind, color, width, points, bounds, rev: 0 }
     }
@@ -135,19 +128,14 @@ impl Stroke {
     pub fn hit_test(&self, center: Pos2, radius: f32) -> bool {
         let reach = radius + self.width * 0.5;
         let [min_x, min_y, max_x, max_y] = self.bounds;
-        if center.x < min_x - reach
-            || center.x > max_x + reach
-            || center.y < min_y - reach
-            || center.y > max_y + reach
+        if center.x < min_x - reach || center.x > max_x + reach || center.y < min_y - reach || center.y > max_y + reach
         {
             return false; // cheap bounding-box rejection
         }
         match self.points.as_slice() {
             [] => false,
             [p] => p.pos2().distance(center) <= reach,
-            pts => pts
-                .windows(2)
-                .any(|w| point_segment_distance(center, w[0].pos2(), w[1].pos2()) <= reach),
+            pts => pts.windows(2).any(|w| point_segment_distance(center, w[0].pos2(), w[1].pos2()) <= reach),
         }
     }
 }
@@ -160,11 +148,7 @@ fn compute_bounds(points: &[Point]) -> [f32; 4] {
         b[2] = b[2].max(p.x);
         b[3] = b[3].max(p.y);
     }
-    if points.is_empty() {
-        [0.0; 4]
-    } else {
-        b
-    }
+    if points.is_empty() { [0.0; 4] } else { b }
 }
 
 /// A keyboard-typed text box. `x`/`y` is its top-left corner in page space.

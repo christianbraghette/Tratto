@@ -19,7 +19,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use eframe::egui::{epaint::Mesh, pos2, vec2, Color32, Pos2, Vec2};
+use eframe::egui::{Color32, Pos2, Vec2, epaint::Mesh, pos2, vec2};
 use tratto_core::model::{Point, StrokeKind};
 use tratto_core::stroke_path;
 
@@ -30,15 +30,7 @@ const SAMPLE_STEP_PX: f32 = 2.5;
 ///
 /// * `scale` – document units -> points
 /// * `aa`    – feather width in points (`1.0 / pixels_per_point`)
-pub fn tessellate(
-    mesh: &mut Mesh,
-    kind: StrokeKind,
-    rgba: [u8; 4],
-    width: f32,
-    pts: &[Point],
-    scale: f32,
-    aa: f32,
-) {
+pub fn tessellate(mesh: &mut Mesh, kind: StrokeKind, rgba: [u8; 4], width: f32, pts: &[Point], scale: f32, aa: f32) {
     if pts.is_empty() {
         return;
     }
@@ -52,7 +44,17 @@ pub fn tessellate(
 
     if n == 1 {
         let r = dense[0].r;
-        add_arc(mesh, at(0), vec2(1.0, 0.0), vec2(0.0, 1.0), r - half_aa, r + half_aa, solid, TAU, arc_segments(r, aa) * 2);
+        add_arc(
+            mesh,
+            at(0),
+            vec2(1.0, 0.0),
+            vec2(0.0, 1.0),
+            r - half_aa,
+            r + half_aa,
+            solid,
+            TAU,
+            arc_segments(r, aa) * 2,
+        );
         return;
     }
 
@@ -97,16 +99,22 @@ pub fn tessellate(
     // ---- round caps
     let (r0, r1) = (dense[0].r, dense[n - 1].r);
     add_arc(mesh, at(0), perp(dirs[0]), -dirs[0], r0 - half_aa, r0 + half_aa, solid, PI, arc_segments(r0, aa));
-    add_arc(mesh, at(n - 1), perp(dirs[n - 2]), dirs[n - 2], r1 - half_aa, r1 + half_aa, solid, PI, arc_segments(r1, aa));
+    add_arc(
+        mesh,
+        at(n - 1),
+        perp(dirs[n - 2]),
+        dirs[n - 2],
+        r1 - half_aa,
+        r1 + half_aa,
+        solid,
+        PI,
+        arc_segments(r1, aa),
+    );
 }
 
 fn unit(v: Vec2) -> Vec2 {
     let l = v.length();
-    if l > 1e-6 {
-        v / l
-    } else {
-        Vec2::ZERO
-    }
+    if l > 1e-6 { v / l } else { Vec2::ZERO }
 }
 
 fn perp(d: Vec2) -> Vec2 {
@@ -157,9 +165,8 @@ mod tests {
 
     #[test]
     fn meshes_are_valid() {
-        let pts: Vec<Point> = (0..20)
-            .map(|i| Point::new(i as f32 * 5.0, (i as f32 * 0.7).sin() * 10.0, 0.3 + 0.03 * i as f32))
-            .collect();
+        let pts: Vec<Point> =
+            (0..20).map(|i| Point::new(i as f32 * 5.0, (i as f32 * 0.7).sin() * 10.0, 0.3 + 0.03 * i as f32)).collect();
         for kind in [StrokeKind::Pen, StrokeKind::Highlighter] {
             let mut m = Mesh::default();
             tessellate(&mut m, kind, [0, 0, 0, 255], 3.0, &pts, 1.0, 1.0);

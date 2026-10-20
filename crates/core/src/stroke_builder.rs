@@ -88,11 +88,7 @@ impl StrokeBuilder {
             return None;
         }
         let k = (PREDICT_SAMPLES * speed).min(PREDICT_MAX) / speed;
-        Some(Point::new(
-            self.latest.x + vx * k,
-            self.latest.y + vy * k,
-            self.latest.pressure,
-        ))
+        Some(Point::new(self.latest.x + vx * k, self.latest.y + vy * k, self.latest.pressure))
     }
 
     /// Control points for live rendering: smoothed path + live tip (+ prediction).
@@ -101,10 +97,8 @@ impl StrokeBuilder {
         if v.last().is_none_or(|o| o.distance(&self.latest) > 0.05) {
             v.push(self.latest);
         }
-        if predict {
-            if let Some(t) = self.predicted_tip() {
-                v.push(t);
-            }
+        if predict && let Some(t) = self.predicted_tip() {
+            v.push(t);
         }
         v
     }

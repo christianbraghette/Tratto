@@ -9,7 +9,7 @@
 //! there and follow the pen. Interaction (`update`) and painting (`paint`) are
 //! separate so the scroll offset is already final when the page is drawn.
 
-use eframe::egui::{pos2, vec2, Id, Painter, Rect, Sense, Ui};
+use eframe::egui::{Id, Painter, Rect, Sense, Ui, pos2, vec2};
 
 use crate::theme::{self, color, radius, space};
 
@@ -36,11 +36,7 @@ pub fn update(
     content_len: f32,
     grab: &mut Option<f32>,
 ) -> BarState {
-    let (track_start, track_len) = if vertical {
-        (track.top(), track.height())
-    } else {
-        (track.left(), track.width())
-    };
+    let (track_start, track_len) = if vertical { (track.top(), track.height()) } else { (track.left(), track.width()) };
     let usable = (track_len - 2.0 * INSET).max(1.0);
     let thumb_len = (usable * view_len / content_len.max(1.0)).clamp(MIN_THUMB.min(usable), usable);
     let travel = (usable - thumb_len).max(0.0);
@@ -53,22 +49,23 @@ pub fn update(
     };
 
     let mut active = false;
-    if enabled && resp.dragged() {
-        if let Some(ptr) = resp.interact_pointer_pos() {
-            let along = if vertical { ptr.y } else { ptr.x };
-            if resp.drag_started() || grab.is_none() {
-                let ts = thumb_start(*scroll);
-                *grab = Some(if along >= ts && along <= ts + thumb_len {
-                    along - ts // grabbed the thumb: keep the offset
-                } else {
-                    thumb_len * 0.5 // pressed the track: centre the thumb on the pen
-                });
-            }
-            let g = grab.unwrap_or(thumb_len * 0.5);
-            let start = (along - g - track_start - INSET).clamp(0.0, travel);
-            *scroll = start / travel * max_scroll;
-            active = true;
+    if enabled
+        && resp.dragged()
+        && let Some(ptr) = resp.interact_pointer_pos()
+    {
+        let along = if vertical { ptr.y } else { ptr.x };
+        if resp.drag_started() || grab.is_none() {
+            let ts = thumb_start(*scroll);
+            *grab = Some(if along >= ts && along <= ts + thumb_len {
+                along - ts // grabbed the thumb: keep the offset
+            } else {
+                thumb_len * 0.5 // pressed the track: centre the thumb on the pen
+            });
         }
+        let g = grab.unwrap_or(thumb_len * 0.5);
+        let start = (along - g - track_start - INSET).clamp(0.0, travel);
+        *scroll = start / travel * max_scroll;
+        active = true;
     }
     if !resp.dragged() {
         *grab = None;

@@ -8,8 +8,8 @@
 use eframe::egui::{self, Align2, Ui};
 use egui_phosphor::regular as icon;
 
-use super::settings_ui::{hint, row, rows, section};
 use super::InkApp;
+use super::settings_ui::{hint, row, rows, section};
 use crate::settings::UpdateMode;
 use crate::theme;
 use crate::update::{self, State as UpdateState};

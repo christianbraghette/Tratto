@@ -72,11 +72,11 @@ mod imp {
     use eframe::egui;
     use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
     use wayland_client::{
+        Connection, Dispatch, Proxy, QueueHandle, WEnum,
         backend::{Backend, ObjectId},
         delegate_noop, event_created_child,
-        globals::{registry_queue_init, GlobalListContents},
+        globals::{GlobalListContents, registry_queue_init},
         protocol::{wl_callback::WlCallback, wl_registry::WlRegistry, wl_seat::WlSeat},
-        Connection, Dispatch, Proxy, QueueHandle, WEnum,
     };
     use wayland_protocols::wp::tablet::zv2::client::{
         zwp_tablet_manager_v2::ZwpTabletManagerV2,
@@ -245,9 +245,7 @@ mod imp {
                 E::Type { tool_type } => {
                     t.kind = match tool_type {
                         WEnum::Value(Type::Eraser) => ToolKind::Eraser,
-                        WEnum::Value(
-                            Type::Pen | Type::Pencil | Type::Brush | Type::Airbrush,
-                        ) => ToolKind::Pen,
+                        WEnum::Value(Type::Pen | Type::Pencil | Type::Brush | Type::Airbrush) => ToolKind::Pen,
                         _ => ToolKind::Ignore,
                     };
                 }
@@ -279,10 +277,7 @@ mod imp {
                     t.dirty = true;
                 }
                 E::Button { button, state: btn_state, .. } => {
-                    let pressed = matches!(
-                        btn_state,
-                        WEnum::Value(zwp_tablet_tool_v2::ButtonState::Pressed)
-                    );
+                    let pressed = matches!(btn_state, WEnum::Value(zwp_tablet_tool_v2::ButtonState::Pressed));
                     if debug() {
                         eprintln!("pen: button {button:#x} pressed={pressed}");
                     }

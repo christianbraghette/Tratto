@@ -57,12 +57,17 @@ fn copy_pdfium() {
     let src = Path::new("pdfium").join(lib);
     println!("cargo:rerun-if-changed={}", src.display());
     if !src.exists() {
-        println!("cargo:warning=PDFium not found at crates/ui/{}: writing on PDFs will not work (see crates/ui/pdfium/README.md)", src.display());
+        println!(
+            "cargo:warning=PDFium not found at crates/ui/{}: writing on PDFs will not work (see crates/ui/pdfium/README.md)",
+            src.display()
+        );
         return;
     }
     // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out; the executable
     // goes to <target>/<profile>.
-    let Some(profile_dir) = std::env::var_os("OUT_DIR").map(PathBuf::from).and_then(|p| p.ancestors().nth(3).map(Path::to_path_buf)) else {
+    let Some(profile_dir) =
+        std::env::var_os("OUT_DIR").map(PathBuf::from).and_then(|p| p.ancestors().nth(3).map(Path::to_path_buf))
+    else {
         return;
     };
     let name = src.file_name().expect("a file name");

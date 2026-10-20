@@ -174,23 +174,26 @@ fn download_and_install(release: Release, send: &dyn Fn(State)) {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
-        .user_agent(&format!("Tratto/{CURRENT}"))
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        // A whole archive: generous, but a stalled download still ends.
+        .timeout_recv_body(Some(Duration::from_secs(600)))
+        .user_agent(format!("Tratto/{CURRENT}"))
         .build()
+        .into()
 }
 
 /// The latest release if it is newer than this version (`None`: up to date,
 /// or no release published yet).
 fn latest_release() -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let response = match agent().get(&url).set("Accept", "application/vnd.github+json").call() {
+    let mut response = match agent().get(&url).header("Accept", "application/vnd.github+json").call() {
         Ok(r) => r,
-        Err(ureq::Error::Status(404, _)) => return Ok(None),
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(e) => return Err(format!("Cannot check for updates: {e}")),
     };
-    let gh: GhRelease = response.into_json().map_err(|e| format!("Unexpected reply from GitHub: {e}"))?;
+    let gh: GhRelease = response.body_mut().read_json().map_err(|e| format!("Unexpected reply from GitHub: {e}"))?;
     let version = gh.tag_name.trim_start_matches('v').to_owned();
     if !is_newer(&version, CURRENT) {
         return Ok(None);
@@ -233,14 +236,14 @@ fn download(asset: &Asset) -> Result<Vec<u8>, String> {
     let fail = |e: &dyn std::fmt::Display| format!("Cannot download the update: {e}");
     let response = agent().get(&asset.browser_download_url).call().map_err(|e| fail(&e))?;
     let mut bytes = Vec::with_capacity(asset.size as usize);
-    response.into_reader().take(MAX_DOWNLOAD + 1).read_to_end(&mut bytes).map_err(|e| fail(&e))?;
+    response.into_body().into_reader().take(MAX_DOWNLOAD + 1).read_to_end(&mut bytes).map_err(|e| fail(&e))?;
     if bytes.len() as u64 != asset.size {
         return Err(fail(&"incomplete download"));
     }
-    if let Some(expected) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
-        if !hex(&Sha256::digest(&bytes)).eq_ignore_ascii_case(expected) {
-            return Err("The downloaded update is damaged (checksum mismatch)".to_owned());
-        }
+    if let Some(expected) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:"))
+        && !hex(&Sha256::digest(&bytes)).eq_ignore_ascii_case(expected)
+    {
+        return Err("The downloaded update is damaged (checksum mismatch)".to_owned());
     }
     Ok(bytes)
 }
@@ -285,7 +288,9 @@ fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
                 continue;
             }
             // Refuses absolute paths and `..`.
-            let rel = entry.enclosed_name().ok_or_else(|| fail(&format!("unsafe path {}", entry.name())))?;
+            let rel = entry
+                .enclosed_name()
+                .ok_or_else(|| fail(&format!("unsafe path {}", entry.name().unwrap_or_default())))?;
             let dest = dir.join(rel);
             let new = with_suffix(&dest, NEW);
             if let Some(parent) = new.parent() {
@@ -305,7 +310,9 @@ fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
                 }
             }
         }
-        let has_exe = exe_name.as_ref().is_some_and(|n| files.iter().any(|f| f.parent() == Some(dir) && f.file_name() == Some(n)));
+        let has_exe = exe_name
+            .as_ref()
+            .is_some_and(|n| files.iter().any(|f| f.parent() == Some(dir) && f.file_name() == Some(n)));
         if has_exe { Ok(()) } else { Err(fail(&"the archive has no Tratto executable")) }
     })();
     if let Err(e) = unpacked {

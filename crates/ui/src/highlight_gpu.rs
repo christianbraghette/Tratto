@@ -16,11 +16,11 @@
 //! paint order like any other shape. Antialiased edges fade to white, which
 //! `min` leaves unchanged.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use eframe::egui::{epaint::Mesh, PaintCallbackInfo, Painter, Shape};
-use eframe::egui_wgpu::{self, wgpu, CallbackResources, CallbackTrait, ScreenDescriptor};
+use eframe::egui::{PaintCallbackInfo, Painter, Shape, epaint::Mesh};
+use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
 use wgpu::util::DeviceExt;
 
 /// The pipeline is installed (wgpu renderer): highlighters can darken.
@@ -109,8 +109,8 @@ pub fn install(render_state: &egui_wgpu::RenderState, msaa: u32) {
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("highlighter"),
-        bind_group_layouts: &[&layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
     });
     // egui's vertex: pos (2 x f32), uv (2 x f32), colour (4 x u8, premultiplied).
     let vertex_layout = wgpu::VertexBufferLayout {
@@ -132,14 +132,14 @@ pub fn install(render_state: &egui_wgpu::RenderState, msaa: u32) {
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: "vs",
+            entry_point: Some("vs"),
             compilation_options: Default::default(),
-            buffers: &[vertex_layout],
+            buffers: &[Some(vertex_layout)],
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             // An sRGB target expects linear output (egui does the same).
-            entry_point: if format.is_srgb() { "fs_linear" } else { "fs_gamma" },
+            entry_point: Some(if format.is_srgb() { "fs_linear" } else { "fs_gamma" }),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -150,7 +150,7 @@ pub fn install(render_state: &egui_wgpu::RenderState, msaa: u32) {
         primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
         depth_stencil: None,
         multisample: wgpu::MultisampleState { count: msaa.max(1), ..Default::default() },
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
     render_state.renderer.write().callback_resources.insert(Resources { pipeline, screen, bind_group });
@@ -215,7 +215,7 @@ pub fn paint(painter: &Painter, mesh: Mesh) {
     }
     // The whole screen: the vertex shader maps screen points; the painter's
     // clip rect becomes the scissor.
-    let rect = painter.ctx().screen_rect();
+    let rect = painter.ctx().viewport_rect();
     let callback = Highlight { mesh, buffers: Mutex::new(None) };
     painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
 }
@@ -224,7 +224,7 @@ pub fn paint(painter: &Painter, mesh: Mesh) {
 mod tests {
     use super::*;
     use eframe::egui::epaint::Vertex;
-    use eframe::egui::{pos2, Color32};
+    use eframe::egui::{Color32, pos2};
     use std::sync::Arc;
 
     /// Two overlapping highlighter quads over white, black, white and grey
@@ -232,22 +232,23 @@ mod tests {
     #[test]
     fn darkens_without_stacking() {
         let instance = wgpu::Instance::default();
-        let Some(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default(), None)).unwrap();
-        let (device, queue) = (Arc::new(device), Arc::new(queue));
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let errors = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+        let renderer = egui_wgpu::Renderer::new(&device, format, Default::default());
         let state = egui_wgpu::RenderState {
-            adapter: Arc::new(adapter),
-            available_adapters: Arc::new([]),
+            adapter,
+            available_adapters: Vec::new(),
+            instance,
             device: device.clone(),
             queue: queue.clone(),
             target_format: format,
             renderer: Arc::new(eframe::egui::mutex::RwLock::new(renderer)),
+            surface_config: egui_wgpu::SurfaceConfig::LOW_LATENCY,
         };
         install(&state, 1);
 
@@ -259,14 +260,16 @@ mod tests {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let start: [u8; 16] = [255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 128, 128, 128, 255];
         queue.write_texture(
             target.as_image_copy(),
             &start,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: None },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: None },
             wgpu::Extent3d { width: 4, height: 1, depth_or_array_layers: 1 },
         );
 
@@ -294,12 +297,14 @@ mod tests {
                     label: None,
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 })
                 .forget_lifetime();
             let renderer = state.renderer.read();
@@ -320,17 +325,17 @@ mod tests {
         });
         encoder.copy_texture_to_buffer(
             target.as_image_copy(),
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &readback,
-                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None },
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None },
             },
             wgpu::Extent3d { width: 4, height: 1, depth_or_array_layers: 1 },
         );
         queue.submit([encoder.finish()]);
         readback.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        device.poll(wgpu::Maintain::Wait);
-        let px: Vec<u8> = readback.slice(..16).get_mapped_range().to_vec();
-        assert!(pollster::block_on(device.pop_error_scope()).is_none(), "wgpu validation error");
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let px: Vec<u8> = readback.slice(..16).get_mapped_range().unwrap().to_vec();
+        assert!(pollster::block_on(errors.pop()).is_none(), "wgpu validation error");
 
         let at = |i: usize| [px[i * 4], px[i * 4 + 1], px[i * 4 + 2]];
         // White paper takes the highlighter's colour, once (no stacking).

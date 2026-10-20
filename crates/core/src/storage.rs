@@ -97,14 +97,7 @@ pub struct NoteMeta {
 impl NoteMeta {
     pub fn new(title: &str, auto_title: bool) -> Self {
         let now = now_secs();
-        Self {
-            title: title.to_owned(),
-            auto_title,
-            created: now,
-            modified: now,
-            pages: 1,
-            preview: Preview::default(),
-        }
+        Self { title: title.to_owned(), auto_title, created: now, modified: now, pages: 1, preview: Preview::default() }
     }
 }
 
@@ -440,10 +433,10 @@ fn refresh_meta(meta: &mut NoteMeta, doc: &Document) {
     meta.modified = now_secs();
     meta.pages = doc.page_count;
     meta.preview = make_preview(doc);
-    if meta.auto_title {
-        if let Some(t) = auto_title(doc) {
-            meta.title = t;
-        }
+    if meta.auto_title
+        && let Some(t) = auto_title(doc)
+    {
+        meta.title = t;
     }
 }
 

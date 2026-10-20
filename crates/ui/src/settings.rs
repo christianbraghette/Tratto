@@ -3,9 +3,9 @@
 
 //! Persisted UI settings (stored through eframe's storage, not in the note file).
 
+use serde::{Deserialize, Serialize};
 use tratto_core::model::{Document, PageKind};
 use tratto_core::pdf_export::InkColors;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolbarPosition {

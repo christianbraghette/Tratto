@@ -31,8 +31,8 @@ mod chrome;
 mod desktop;
 mod file_picker;
 mod frame_limit;
-mod input;
 mod highlight_gpu;
+mod input;
 mod kinetic;
 mod pdf_nav;
 mod pdf_view;
@@ -82,10 +82,7 @@ fn main() -> eframe::Result<()> {
     // TRATTO_MSAA=4 additionally enables 4x MSAA (strokes are already
     // anti-aliased analytically, so this is rarely needed).
     let vsync = std::env::var_os("TRATTO_VSYNC").is_some() || app::saved_settings().is_some_and(|s| s.vsync);
-    let msaa: u16 = std::env::var("TRATTO_MSAA")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
+    let msaa: u16 = std::env::var("TRATTO_MSAA").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -93,18 +90,12 @@ fn main() -> eframe::Result<()> {
         // (eframe still *loads* a saved one, see `InkApp::window_chrome`.)
         // App settings are persisted separately.
         persist_window: false,
-        vsync,
         multisampling: msaa,
-        wgpu_options: egui_wgpu::WgpuConfiguration {
-            present_mode: if vsync {
-                wgpu::PresentMode::AutoVsync
-            } else {
-                wgpu::PresentMode::AutoNoVsync
-            },
+        // The default setup already asks for the high-performance GPU.
+        wgpu_options: egui_wgpu::WgpuConfiguration::default().with_surface_config(egui_wgpu::SurfaceConfig {
+            present_mode: if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync },
             desired_maximum_frame_latency: Some(1),
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        },
+        }),
         viewport: egui::ViewportBuilder::default()
             .with_title("Tratto")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("the bundled icon is a valid PNG"))
@@ -129,6 +120,16 @@ fn main() -> eframe::Result<()> {
     // "Restart now" after an update: the window is closed and saved.
     update::restart_if_requested();
     result
+}
+
+/// One egui frame for tests: runs `ui` and returns the textures it frees
+/// (egui asserts that the texture changes of every frame are handled).
+#[cfg(test)]
+fn test_frame(ctx: &egui::Context, input: egui::RawInput, ui: impl FnMut(&mut egui::Ui)) -> Vec<egui::TextureId> {
+    let mut out = ctx.run_ui(input, ui);
+    let freed = out.textures_delta.free.iter().copied().collect();
+    out.textures_delta.clear();
+    freed
 }
 
 #[cfg(test)]

@@ -165,10 +165,10 @@ mod imp {
         let moved = at.is_some_and(|(x, y)| {
             (HOVER_X.swap(x, Ordering::Relaxed) != x) | (HOVER_Y.swap(y, Ordering::Relaxed) != y)
         });
-        if was != at.is_some() || moved {
-            if let Some(ctx) = CTX.get() {
-                ctx.request_repaint();
-            }
+        if (was != at.is_some() || moved)
+            && let Some(ctx) = CTX.get()
+        {
+            ctx.request_repaint();
         }
     }
 
@@ -233,16 +233,12 @@ mod imp {
             let hwnd = h.hwnd.get();
             let _ = CTX.set(ctx.clone());
             // SAFETY: valid HWND of our own window, called on its owner thread.
-            let ok =
-                unsafe { SetWindowSubclass(hwnd as HWND, Some(subclass_proc), SUBCLASS_ID, 0) };
+            let ok = unsafe { SetWindowSubclass(hwnd as HWND, Some(subclass_proc), SUBCLASS_ID, 0) };
             (ok != 0).then_some(Self { hwnd })
         }
 
         pub fn buttons(&self) -> PenButtons {
-            PenButtons {
-                barrel: BARREL.load(Ordering::Relaxed),
-                eraser_end: ERASER_END.load(Ordering::Relaxed),
-            }
+            PenButtons { barrel: BARREL.load(Ordering::Relaxed), eraser_end: ERASER_END.load(Ordering::Relaxed) }
         }
 
         /// Where the pen hovers (in range, not touching), in physical pixels

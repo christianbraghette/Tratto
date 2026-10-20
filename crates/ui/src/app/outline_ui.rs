@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 
-use eframe::egui::{self, pos2, vec2, Align2, Rect, Sense, Ui};
+use eframe::egui::{self, Align2, Rect, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as icon;
 use tratto_core::pdf_pages::OutlineEntry;
 
@@ -32,7 +32,7 @@ enum Clicked {
 }
 
 impl InkApp {
-    pub(super) fn outline_view(&mut self, ctx: &egui::Context) {
+    pub(super) fn outline_view(&mut self, ui: &mut egui::Ui) {
         let Some(pdf) = self.doc.pdf.as_ref() else { return };
         let file = pdf.file.clone();
         // The note page written on each PDF page (the first, if several are).
@@ -48,13 +48,13 @@ impl InkApp {
         let mut clicked = None;
         let mut target = None;
 
-        egui::SidePanel::left("left_panel_outline")
+        egui::Panel::left("left_panel_outline")
             .resizable(true)
-            .default_width(OUTLINE_WIDTH)
-            .width_range(OUTLINE_WIDTHS)
+            .default_size(OUTLINE_WIDTH)
+            .size_range(OUTLINE_WIDTHS)
             .show_separator_line(false)
             .frame(Self::view_frame())
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 Self::view_divider(ui);
                 let Some(file) = file else { return };
                 let entries = match nav.outline(&file) {
@@ -70,7 +70,9 @@ impl InkApp {
                         return;
                     }
                     Read::Ready(entries) if entries.is_empty() => {
-                        ui.label(theme::muted("This PDF has no table of contents. The pages panel shows all of its pages."));
+                        ui.label(theme::muted(
+                            "This PDF has no table of contents. The pages panel shows all of its pages.",
+                        ));
                         return;
                     }
                     Read::Ready(entries) => entries,
@@ -143,7 +145,14 @@ fn shown_entries(entries: &[OutlineEntry], open: &std::collections::HashSet<usiz
 /// it is open) when it has entries under it, its title and the note page it
 /// leads to (`None`: nowhere, shown faint and not clickable). `marked`: the
 /// part being read.
-fn outline_row(ui: &mut Ui, index: usize, e: &OutlineEntry, caret: Option<bool>, marked: bool, page: Option<u32>) -> Option<Clicked> {
+fn outline_row(
+    ui: &mut Ui,
+    index: usize,
+    e: &OutlineEntry,
+    caret: Option<bool>,
+    marked: bool,
+    page: Option<u32>,
+) -> Option<Clicked> {
     let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), theme::ROW_HEIGHT), Sense::click());
     if !ui.is_rect_visible(rect) {
         return None;
@@ -185,7 +194,7 @@ fn outline_row(ui: &mut Ui, index: usize, e: &OutlineEntry, caret: Option<bool>,
     let text_left = caret_rect.right() + 2.0;
     let mut job = egui::text::LayoutJob::simple_singleline(e.title.clone(), theme::font(size::BODY), text_color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((right - number_w - text_left).max(0.0));
-    let galley = ui.fonts(|f| f.layout_job(job));
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
     let cut_short = galley.elided;
     ui.painter().galley(pos2(text_left, y - galley.size().y * 0.5), galley, text_color);
 

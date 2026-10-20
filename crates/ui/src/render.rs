@@ -12,8 +12,8 @@
 use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{
-    epaint::Mesh, pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Shape,
-    Stroke as UiStroke, Vec2,
+    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke as UiStroke, StrokeKind as UiStrokeKind, Vec2,
+    epaint::Mesh, pos2, vec2,
 };
 
 use tratto_core::model::{self, PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
@@ -95,7 +95,7 @@ impl StrokeCache {
             self.ppp_bits = p;
         }
         self.frame += 1;
-        if self.frame % 256 == 0 {
+        if self.frame.is_multiple_of(256) {
             let f = self.frame;
             self.map.retain(|_, e| f - e.last_used < CACHE_TTL_FRAMES);
         }
@@ -221,10 +221,10 @@ pub fn paint_texts(
         let origin = view.page_origin_screen(page);
         for t in texts.iter().filter(|t| t.page == page && Some(t.id) != skip) {
             let mut pos = origin + vec2(t.x, t.y) * view.scale;
-            if let Some((id, d)) = moved {
-                if id == t.id {
-                    pos += d * view.scale;
-                }
+            if let Some((id, d)) = moved
+                && id == t.id
+            {
+                pos += d * view.scale;
             }
             let line_h = t.line_h * view.scale;
             let rect = Rect::from_min_size(pos, vec2(t.width, t.height()) * view.scale);
@@ -239,13 +239,7 @@ pub fn paint_texts(
                     if line.is_empty() || y > view.rect.bottom() || y + line_h < view.rect.top() {
                         continue;
                     }
-                    painter.text(
-                        pos2(pos.x, y),
-                        Align2::LEFT_TOP,
-                        line,
-                        FontId::proportional(size_px),
-                        color,
-                    );
+                    painter.text(pos2(pos.x, y), Align2::LEFT_TOP, line, FontId::proportional(size_px), color);
                 }
             }
             if outline {
@@ -253,6 +247,7 @@ pub fn paint_texts(
                     rect.expand(2.0),
                     2.0,
                     UiStroke::new(1.0, color::accent_alpha(110)),
+                    UiStrokeKind::Middle,
                 );
             }
         }
@@ -362,7 +357,7 @@ pub fn paint_rules(painter: &Painter, view: &View, style: &PageStyle) {
                 x += spacing;
             }
         }
-        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::PAGE_EDGE));
+        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::PAGE_EDGE), UiStrokeKind::Middle);
     }
 }
 

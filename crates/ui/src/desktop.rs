@@ -99,12 +99,11 @@ fn ini_value<'a>(text: &'a str, section: &str, key: &str) -> Option<&'a str> {
     for line in text.lines().map(str::trim) {
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             in_section = name == section;
-        } else if in_section {
-            if let Some((k, v)) = line.split_once('=') {
-                if k.trim() == key {
-                    return Some(v.trim());
-                }
-            }
+        } else if in_section
+            && let Some((k, v)) = line.split_once('=')
+            && k.trim() == key
+        {
+            return Some(v.trim());
         }
     }
     None
@@ -117,7 +116,7 @@ mod linux {
 
     use eframe::egui;
 
-    use super::{ini_value, parse_gnome_layout, parse_kwin_buttons, Button, Style, WindowButtons};
+    use super::{Button, Style, WindowButtons, ini_value, parse_gnome_layout, parse_kwin_buttons};
 
     /// The layout read from the desktop's settings.
     static READ: OnceLock<WindowButtons> = OnceLock::new();
@@ -139,8 +138,7 @@ mod linux {
 
     /// `XDG_CURRENT_DESKTOP` names the desktop, e.g. "KDE" or "ubuntu:GNOME".
     fn desktop_is(name: &str) -> bool {
-        std::env::var("XDG_CURRENT_DESKTOP")
-            .is_ok_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case(name)))
+        std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case(name)))
     }
 
     /// What each desktop shows out of the box.
@@ -220,7 +218,8 @@ mod linux {
 
         #[test]
         fn kwin_buttons_come_from_kwinrc_or_its_defaults() {
-            let rc = "[Compositing]\nButtonsOnLeft=X\n\n[org.kde.kdecoration2]\nButtonsOnLeft=XIA\nlibrary=org.kde.breeze\n";
+            let rc =
+                "[Compositing]\nButtonsOnLeft=X\n\n[org.kde.kdecoration2]\nButtonsOnLeft=XIA\nlibrary=org.kde.breeze\n";
             let b = kwin_layout(Some(rc));
             assert_eq!((b.left, b.right), (vec![Close, Minimize, Maximize], vec![Minimize, Maximize, Close]));
             let b = kwin_layout(None);
@@ -237,10 +236,7 @@ mod tests {
     #[test]
     fn gnome_layouts_parse() {
         assert_eq!(parse_gnome_layout("appmenu:close"), (vec![], vec![Close]));
-        assert_eq!(
-            parse_gnome_layout("close,minimize,maximize:appmenu"),
-            (vec![Close, Minimize, Maximize], vec![])
-        );
+        assert_eq!(parse_gnome_layout("close,minimize,maximize:appmenu"), (vec![Close, Minimize, Maximize], vec![]));
         assert_eq!(
             parse_gnome_layout("icon:minimize,spacer,maximize,close"),
             (vec![], vec![Minimize, Maximize, Close])

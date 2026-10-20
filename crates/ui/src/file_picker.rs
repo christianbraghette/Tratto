@@ -100,7 +100,10 @@ impl<F> FilePicker<F> {
 }
 
 /// Awaits the dialog on a background thread and wakes the UI when it closes.
-fn wait(ctx: &egui::Context, task: impl Future<Output = Option<rfd::FileHandle>> + Send + 'static) -> Receiver<Option<PathBuf>> {
+fn wait(
+    ctx: &egui::Context,
+    task: impl Future<Output = Option<rfd::FileHandle>> + Send + 'static,
+) -> Receiver<Option<PathBuf>> {
     let (tx, rx) = mpsc::channel();
     let ctx = ctx.clone();
     thread::spawn(move || {

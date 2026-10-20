@@ -26,21 +26,48 @@ use crate::model::{Document, Stroke, TextBox};
 const MAX_DEPTH: usize = 1000;
 
 pub enum Action {
-    AddStroke { index: usize, stroke: Stroke },
-    RemoveStroke { id: u64 },
-    AddText { index: usize, text: TextBox },
-    RemoveText { id: u64 },
+    AddStroke {
+        index: usize,
+        stroke: Stroke,
+    },
+    RemoveStroke {
+        id: u64,
+    },
+    AddText {
+        index: usize,
+        text: TextBox,
+    },
+    RemoveText {
+        id: u64,
+    },
     /// Replace the text box that has the same id.
-    ReplaceText { text: TextBox },
+    ReplaceText {
+        text: TextBox,
+    },
     /// `pdf_page`: the PDF page under the new page (notes on a PDF).
-    InsertPage { index: u32, pdf_page: Option<u32> },
-    RemovePage { index: u32 },
+    InsertPage {
+        index: u32,
+        pdf_page: Option<u32>,
+    },
+    RemovePage {
+        index: u32,
+    },
     /// Translate the strokes by (dx, dy) in page space and put them on `to_page`.
-    MoveStrokes { ids: Vec<u64>, to_page: u32, dx: f32, dy: f32 },
+    MoveStrokes {
+        ids: Vec<u64>,
+        to_page: u32,
+        dx: f32,
+        dy: f32,
+    },
     /// Move page `from` so that it ends up at index `to`.
-    MovePage { from: u32, to: u32 },
+    MovePage {
+        from: u32,
+        to: u32,
+    },
     /// Delete a page and its content (the only page is just emptied).
-    DeletePage { index: u32 },
+    DeletePage {
+        index: u32,
+    },
     /// Inverse of `DeletePage`: content with the original positions in the
     /// document lists; `insert_page` tells whether the page itself was removed.
     RestorePage {
@@ -143,9 +170,8 @@ impl Action {
                         p
                     }
                 });
-                let pdf_page = pdf_pages(doc).and_then(|pages| {
-                    ((index as usize) < pages.len()).then(|| pages.remove(index as usize)).flatten()
-                });
+                let pdf_page = pdf_pages(doc)
+                    .and_then(|pages| ((index as usize) < pages.len()).then(|| pages.remove(index as usize)).flatten());
                 doc.page_count -= 1;
                 Action::InsertPage { index, pdf_page }
             }
@@ -179,11 +205,12 @@ impl Action {
                         p
                     }
                 });
-                if let Some(pages) = pdf_pages(doc) {
-                    if (from as usize) < pages.len() && (to as usize) < pages.len() {
-                        let moved = pages.remove(from as usize);
-                        pages.insert(to as usize, moved);
-                    }
+                if let Some(pages) = pdf_pages(doc)
+                    && (from as usize) < pages.len()
+                    && (to as usize) < pages.len()
+                {
+                    let moved = pages.remove(from as usize);
+                    pages.insert(to as usize, moved);
                 }
                 Action::MovePage { from: to, to: from }
             }
@@ -199,10 +226,10 @@ impl Action {
                 let mut pdf_page = None;
                 if remove_page {
                     remap_pages(doc, |p| if p > index { p - 1 } else { p });
-                    if let Some(pages) = pdf_pages(doc) {
-                        if (index as usize) < pages.len() {
-                            pdf_page = pages.remove(index as usize);
-                        }
+                    if let Some(pages) = pdf_pages(doc)
+                        && (index as usize) < pages.len()
+                    {
+                        pdf_page = pages.remove(index as usize);
                     }
                     doc.page_count -= 1;
                 }
@@ -231,8 +258,7 @@ impl Action {
                 Action::DeletePage { index }
             }
             Action::Batch(actions) => {
-                let mut inverses: Vec<Action> =
-                    actions.into_iter().map(|a| a.apply(doc)).collect();
+                let mut inverses: Vec<Action> = actions.into_iter().map(|a| a.apply(doc)).collect();
                 inverses.reverse(); // undo in the opposite order
                 Action::Batch(inverses)
             }
@@ -414,7 +440,8 @@ mod tests {
         use crate::model::PdfBackground;
         let mut doc = Document::default();
         doc.page_count = 3;
-        doc.pdf = Some(PdfBackground { sizes: vec![[600.0, 800.0]; 3], pages: vec![Some(0), Some(1), Some(2)], file: None });
+        doc.pdf =
+            Some(PdfBackground { sizes: vec![[600.0, 800.0]; 3], pages: vec![Some(0), Some(1), Some(2)], file: None });
         let pages = |d: &Document| d.pdf.as_ref().unwrap().pages.clone();
         let mut h = History::default();
 
@@ -522,10 +549,7 @@ mod tests {
             h.exec(&mut doc, Action::AddStroke { index: i as usize, stroke: stroke(i + 1) });
         }
         // Erase strokes 1 and 3 as one batch (as the eraser does in a drag).
-        let inv = vec![
-            Action::RemoveStroke { id: 1 }.apply(&mut doc),
-            Action::RemoveStroke { id: 3 }.apply(&mut doc),
-        ];
+        let inv = vec![Action::RemoveStroke { id: 1 }.apply(&mut doc), Action::RemoveStroke { id: 3 }.apply(&mut doc)];
         h.push_undo(Action::Batch(inv.into_iter().rev().collect()));
         assert_eq!(doc.strokes.iter().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
         h.undo(&mut doc);

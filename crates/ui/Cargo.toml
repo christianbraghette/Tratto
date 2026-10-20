@@ -19,24 +19,23 @@ tratto-core.workspace = true
 eframe.workspace = true
 serde.workspace = true
 # Reads eframe's settings file before the window exists (same version as eframe).
-ron = "0.8.1"
+ron = "0.12.2"
 raw-window-handle = "0.6"
-# Icon font (MIT OR Apache-2.0); 0.7 is the release built for egui 0.29.
-egui-phosphor = "0.7.3"
+# Icon font (MIT OR Apache-2.0); 0.14 is the release built for egui 0.36.
+egui-phosphor = "0.14.0"
 windows-sys = "0.61.2"
-# Uploads egui's vertices to the highlighter pipeline and hands rendered
-# PDF pages to egui without copying (already used by egui).
-bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
+# Uploads egui's vertices to the highlighter pipeline (already used by egui).
+bytemuck = "1.25.2"
 # Updates from the GitHub releases (see update.rs): HTTPS with rustls, the
 # release archive (reading deflate only) and its checksum.
-ureq = { version = "2.12.1", features = ["json"] }
-zip = { version = "7.3.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+ureq = { version = "3.4.2", features = ["json"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 sha2 = "0.11.0"
 # The system's file dialogs (see file_picker.rs); on Linux through the desktop
 # portal, without GTK. pollster awaits them on a background thread (and
 # wgpu's async device setup in the highlighter pipeline test).
 rfd = "0.17.2"
-pollster = "0.4.0"
+pollster = "1.0.1"
 
 # Native Wayland tablet (pen) and drag and drop support. Versions match what
 # winit 0.30 uses so there is a single wayland-client in the dependency tree.
@@ -48,7 +47,7 @@ wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 rustix = { version = "1", features = ["pipe"] }
 # Reads the desktop's window button layout from the portal (see desktop.rs);
 # already used by egui's accessibility support.
-zbus = { version = "4", default-features = false, features = ["async-io", "blocking"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 # Embeds the app icon (assets/icon/icon.ico) in the .exe, see build.rs.
 [target.'cfg(windows)'.build-dependencies]

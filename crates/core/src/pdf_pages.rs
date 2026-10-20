@@ -228,7 +228,10 @@ pub fn page_sizes(file: &Arc<PdfFile>) -> Result<Vec<[f32; 2]>, PdfError> {
 const OPEN_PAGES: usize = 8;
 
 enum Job {
-    Sizes { file: Arc<PdfFile>, reply: Sender<Result<Vec<[f32; 2]>, PdfError>> },
+    Sizes {
+        file: Arc<PdfFile>,
+        reply: Sender<Result<Vec<[f32; 2]>, PdfError>>,
+    },
     Render {
         file: Arc<PdfFile>,
         page: u32,
@@ -237,9 +240,22 @@ enum Job {
         reply: Sender<RenderedPage>,
         wake: Arc<dyn Fn() + Send + Sync>,
     },
-    Underlay { pdf: Vec<u8>, pages: Vec<Underlay>, reply: Sender<Result<Vec<u8>, PdfError>> },
-    Outline { file: Arc<PdfFile>, reply: Sender<Outline>, wake: Arc<dyn Fn() + Send + Sync> },
-    Links { file: Arc<PdfFile>, page: u32, reply: Sender<PageLinks>, wake: Arc<dyn Fn() + Send + Sync> },
+    Underlay {
+        pdf: Vec<u8>,
+        pages: Vec<Underlay>,
+        reply: Sender<Result<Vec<u8>, PdfError>>,
+    },
+    Outline {
+        file: Arc<PdfFile>,
+        reply: Sender<Outline>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    },
+    Links {
+        file: Arc<PdfFile>,
+        page: u32,
+        reply: Sender<PageLinks>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    },
 }
 
 impl Job {
@@ -312,7 +328,8 @@ impl<'a> Open<'a> {
             let entry = self.pages.remove(i);
             self.pages.push(entry);
         } else {
-            let pdf_index = PdfPageIndex::try_from(index).map_err(|_| PdfError::Unreadable(format!("no page {}", index + 1)))?;
+            let pdf_index =
+                PdfPageIndex::try_from(index).map_err(|_| PdfError::Unreadable(format!("no page {}", index + 1)))?;
             let page = self.document(file)?.pages().get(pdf_index).map_err(|e| PdfError::Unreadable(e.to_string()))?;
             if self.pages.len() >= OPEN_PAGES {
                 self.pages.remove(0);
@@ -463,7 +480,9 @@ fn read_links(page: &PdfPage) -> Vec<PageLink> {
         let action = match link.destination() {
             Some(d) => target(&d).map(LinkAction::GoTo),
             None => match link.action() {
-                Some(PdfAction::LocalDestination(a)) => a.destination().ok().and_then(|d| target(&d)).map(LinkAction::GoTo),
+                Some(PdfAction::LocalDestination(a)) => {
+                    a.destination().ok().and_then(|d| target(&d)).map(LinkAction::GoTo)
+                }
                 Some(PdfAction::Uri(a)) => a.uri().ok().filter(|u| !u.trim().is_empty()).map(LinkAction::Uri),
                 _ => None,
             },
@@ -815,7 +834,8 @@ mod tests {
         let line = (0..=50).map(|i| Point::new(100.0 + i as f32 * 10.0, 500.0, 1.0)).collect();
         source.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 40.0, line));
         let path = std::env::temp_dir().join("tratto_underlay_source.pdf");
-        pdf_export::export_notes(&[PdfNote { doc: &source, title: "s".into() }], &path, &PdfOptions::default()).unwrap();
+        pdf_export::export_notes(&[PdfNote { doc: &source, title: "s".into() }], &path, &PdfOptions::default())
+            .unwrap();
         let file = PdfFile::new(std::fs::read(&path).unwrap());
         let sizes = page_sizes(&file).unwrap();
 
@@ -918,7 +938,11 @@ mod tests {
             start.elapsed().as_secs_f64() * 1000.0
         };
         let width = 4096;
-        println!("page 1 whole at {width}px: {:.0} ms (cold), {:.0} ms (again)", time(0, width, None), time(0, width, None));
+        println!(
+            "page 1 whole at {width}px: {:.0} ms (cold), {:.0} ms (again)",
+            time(0, width, None),
+            time(0, width, None)
+        );
         let h = page_height_px(sizes[1], width);
         println!("page 2 at {width}x{h}px, 512px tiles:");
         let first = time(1, width, Some([1024, 1024, 512, 512]));

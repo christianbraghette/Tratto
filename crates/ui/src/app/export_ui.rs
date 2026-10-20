@@ -22,10 +22,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-use eframe::egui::{self, epaint::Mesh, pos2, vec2, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui};
+use eframe::egui::{
+    self, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui, epaint::Mesh, pos2,
+    vec2,
+};
 use egui_phosphor::regular as icon;
 use tratto_core::library::NoteInfo;
-use tratto_core::model::{Document, PageKind, StrokeKind, PAPERS};
+use tratto_core::model::{Document, PAPERS, PageKind, StrokeKind};
 use tratto_core::pdf_export::{self, InkColors, PdfNote, PdfOptions};
 use tratto_core::{storage, stroke_path};
 
@@ -129,10 +132,8 @@ fn grid(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
 
 /// `title` as a file name: characters that file systems reject become "_".
 fn file_name(title: &str) -> String {
-    let name: String = title
-        .chars()
-        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
-        .collect();
+    let name: String =
+        title.chars().map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
     let name = name.trim().trim_end_matches('.').trim();
     if name.is_empty() { "Note".to_owned() } else { name.to_owned() }
 }
@@ -171,7 +172,10 @@ impl InkApp {
                 }
                 (nb.name.clone(), groups)
             }
-            None => ("Quick notes".to_owned(), vec![Group { name: "Quick notes".to_owned(), notes: self.library.quick.clone() }]),
+            None => (
+                "Quick notes".to_owned(),
+                vec![Group { name: "Quick notes".to_owned(), notes: self.library.quick.clone() }],
+            ),
         }
     }
 
@@ -303,7 +307,7 @@ impl InkApp {
         let mut cancel = false;
         let mut export = std::mem::take(&mut dialog.export_now);
         let picking = self.file_picker.is_open();
-        let max_h = (ctx.screen_rect().height() * 0.75).max(300.0);
+        let max_h = (ctx.viewport_rect().height() * 0.75).max(300.0);
         egui::Window::new("Export PDF")
             .open(&mut open)
             .collapsible(false)
@@ -335,10 +339,12 @@ impl InkApp {
                     let running = self.export_job.is_some();
                     let has_path = file_picker::DIRECT || !dialog.path.trim().is_empty();
                     let ready = has_path && !list.is_empty() && !running && !picking;
-                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.ctx().wants_keyboard_input();
-                    let resp = ui
-                        .add_enabled(ready, theme::primary_button(label))
-                        .on_disabled_hover_text(if running { "Another export is still running" } else { "Nothing to export" });
+                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.ctx().egui_wants_keyboard_input();
+                    let resp = ui.add_enabled(ready, theme::primary_button(label)).on_disabled_hover_text(if running {
+                        "Another export is still running"
+                    } else {
+                        "Nothing to export"
+                    });
                     if (resp.clicked() || enter) && ready {
                         if file_picker::DIRECT {
                             self.pick_request = Some(Request {
@@ -448,15 +454,18 @@ impl InkApp {
                 let mut mm = px_to_mm(s.pdf_margin).round();
                 let fixed = s.pdf_page_size.is_some();
                 let slider = Slider::new(&mut mm, 0.0..=40.0).step_by(1.0).suffix(" mm");
-                let resp = ui
-                    .add_enabled(fixed, slider)
-                    .on_disabled_hover_text("Only with a page size other than the note's");
+                let resp =
+                    ui.add_enabled(fixed, slider).on_disabled_hover_text("Only with a page size other than the note's");
                 if resp.changed() {
                     s.pdf_margin = mm_to_px(mm);
                 }
             });
         });
-        ui.label(RichText::new("With another page size, each page is scaled to fit and centred.").small().color(color::TEXT_FAINT));
+        ui.label(
+            RichText::new("With another page size, each page is scaled to fit and centred.")
+                .small()
+                .color(color::TEXT_FAINT),
+        );
 
         section(ui, "Document");
         grid(ui, "export_document", |ui| {
@@ -509,44 +518,41 @@ impl InkApp {
                 d.selected.clear();
             }
         });
-        egui::Frame::none()
-            .fill(color::INPUT)
-            .rounding(radius::SMALL)
-            .inner_margin(space::S)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt("export_checklist").max_height(200.0).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    for g in &groups {
-                        // The group's tick selects or clears all its notes.
-                        let paths: Vec<&PathBuf> = g.notes.iter().map(|n| &n.path).collect();
-                        let ticked = paths.iter().filter(|p| d.selected.contains(**p)).count();
-                        let mut all_on = !paths.is_empty() && ticked == paths.len();
-                        let label = RichText::new(format!("{}  {}", icon::FOLDER_SIMPLE, g.name)).strong();
-                        let resp = ui.add(egui::Checkbox::new(&mut all_on, label).indeterminate(ticked > 0 && ticked < paths.len()));
-                        if resp.changed() {
-                            for p in &paths {
-                                if all_on {
-                                    d.selected.insert((*p).clone());
+        egui::Frame::NONE.fill(color::INPUT).corner_radius(radius::SMALL).inner_margin(space::S).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("export_checklist").max_height(200.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                for g in &groups {
+                    // The group's tick selects or clears all its notes.
+                    let paths: Vec<&PathBuf> = g.notes.iter().map(|n| &n.path).collect();
+                    let ticked = paths.iter().filter(|p| d.selected.contains(**p)).count();
+                    let mut all_on = !paths.is_empty() && ticked == paths.len();
+                    let label = RichText::new(format!("{}  {}", icon::FOLDER_SIMPLE, g.name)).strong();
+                    let resp = ui
+                        .add(egui::Checkbox::new(&mut all_on, label).indeterminate(ticked > 0 && ticked < paths.len()));
+                    if resp.changed() {
+                        for p in &paths {
+                            if all_on {
+                                d.selected.insert((*p).clone());
+                            } else {
+                                d.selected.remove(*p);
+                            }
+                        }
+                    }
+                    ui.indent(("export_group", &g.name), |ui| {
+                        for n in &g.notes {
+                            let mut on = d.selected.contains(&n.path);
+                            if ui.checkbox(&mut on, &n.meta.title).changed() {
+                                if on {
+                                    d.selected.insert(n.path.clone());
                                 } else {
-                                    d.selected.remove(*p);
+                                    d.selected.remove(&n.path);
                                 }
                             }
                         }
-                        ui.indent(("export_group", &g.name), |ui| {
-                            for n in &g.notes {
-                                let mut on = d.selected.contains(&n.path);
-                                if ui.checkbox(&mut on, &n.meta.title).changed() {
-                                    if on {
-                                        d.selected.insert(n.path.clone());
-                                    } else {
-                                        d.selected.remove(&n.path);
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
+                    });
+                }
             });
+        });
     }
 
     // ----------------------------------------------------------- preview
@@ -561,17 +567,21 @@ impl InkApp {
     fn preview_pages(&self, ui: &mut Ui, d: &mut ExportDialog, list: &[(PathBuf, String)], textures: &mut PdfTextures) {
         theme::caption(ui, "Preview");
         ui.add_space(space::XS);
-        let docs: Vec<(&Document, &str)> = list
-            .iter()
-            .filter_map(|(p, t)| self.export_doc(&d.loaded, p).map(|doc| (doc, t.as_str())))
-            .collect();
+        let docs: Vec<(&Document, &str)> =
+            list.iter().filter_map(|(p, t)| self.export_doc(&d.loaded, p).map(|doc| (doc, t.as_str()))).collect();
         let notes: Vec<PdfNote> = docs.iter().map(|(doc, t)| PdfNote { doc, title: (*t).to_owned() }).collect();
         let opts = self.pdf_options(d, &d.title);
         let pages = pdf_export::export_pages(&notes, &opts);
 
         let (area, _) = ui.allocate_exact_size(vec2(PREVIEW_W, PREVIEW_H), Sense::hover());
         if pages.is_empty() {
-            ui.painter().text(area.center(), Align2::CENTER_CENTER, "Nothing to export", theme::font(theme::size::BODY), color::TEXT_FAINT);
+            ui.painter().text(
+                area.center(),
+                Align2::CENTER_CENTER,
+                "Nothing to export",
+                theme::font(theme::size::BODY),
+                color::TEXT_FAINT,
+            );
             return;
         }
         d.preview = d.preview.min(pages.len() - 1);
@@ -595,7 +605,11 @@ impl InkApp {
         }
         let missing = list.len() - docs.len();
         if missing > 0 {
-            ui.label(RichText::new(format!("{missing} note(s) cannot be read and will be skipped.")).small().color(color::DANGER));
+            ui.label(
+                RichText::new(format!("{missing} note(s) cannot be read and will be skipped."))
+                    .small()
+                    .color(color::DANGER),
+            );
         }
     }
 
@@ -647,10 +661,10 @@ impl InkApp {
                     msg.push_str(&format!(" ({skipped} unreadable note(s) skipped)"));
                 }
                 self.toast(msg);
-                if self.settings.pdf_open_after {
-                    if let Err(e) = open_with_system(&path) {
-                        self.toast(format!("Exported, but cannot open it: {e}"));
-                    }
+                if self.settings.pdf_open_after
+                    && let Err(e) = open_with_system(&path)
+                {
+                    self.toast(format!("Exported, but cannot open it: {e}"));
                 }
             }
             Err(e) => self.toast(format!("PDF export failed: {e}")),

@@ -11,10 +11,10 @@
 use eframe::egui::{self, Align2, DragValue, RichText, Slider, Ui};
 use egui_phosphor::regular as icon;
 use tratto_core::history::Action;
-use tratto_core::model::{paper_label, PageKind, PAPERS};
+use tratto_core::model::{PAPERS, PageKind, paper_label};
 
-use super::library_ui::{location, when, Dialog};
 use super::InkApp;
+use super::library_ui::{Dialog, location, when};
 use crate::settings::ToolbarPosition;
 use crate::theme::{self, color, space};
 
@@ -83,14 +83,14 @@ impl InkApp {
     // ----------------------------------------------------- note settings
 
     /// The note settings view of the left panel.
-    pub(super) fn note_settings_view(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("left_panel_settings")
+    pub(super) fn note_settings_view(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::left("left_panel_settings")
             .resizable(true)
-            .default_width(NOTE_WIDTH)
-            .width_range(NOTE_WIDTHS)
+            .default_size(NOTE_WIDTH)
+            .size_range(NOTE_WIDTHS)
             .show_separator_line(false)
             .frame(Self::view_frame())
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 Self::view_divider(ui);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.note_settings(ui));
             });
@@ -157,10 +157,13 @@ impl InkApp {
                 self.open_export_dialog();
             }
         });
-        hint(ui, &format!(
-            "Notes save automatically {} s after each change (File > Settings).",
-            fmt_secs(self.settings.autosave_secs)
-        ));
+        hint(
+            ui,
+            &format!(
+                "Notes save automatically {} s after each change (File > Settings).",
+                fmt_secs(self.settings.autosave_secs)
+            ),
+        );
     }
 
     // --------------------------------------------------- global settings
@@ -171,7 +174,7 @@ impl InkApp {
             return;
         }
         let mut open = true;
-        let max_h = ctx.screen_rect().height() * 0.75;
+        let max_h = ctx.viewport_rect().height() * 0.75;
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
@@ -240,8 +243,9 @@ impl InkApp {
                     .on_disabled_hover_text(off);
             });
             row(ui, "At startup", |ui| {
-                ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it")
-                    .on_hover_text("Every note opens where it was left; this also reopens the last one when Tratto starts");
+                ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it").on_hover_text(
+                    "Every note opens where it was left; this also reopens the last one when Tratto starts",
+                );
             });
         });
 
@@ -264,13 +268,11 @@ impl InkApp {
             });
             row(ui, "Frame rate limit", |ui| {
                 ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
-                    egui::ComboBox::from_id_salt("fps_limit")
-                        .selected_text(fps_label(s.fps_limit))
-                        .show_ui(ui, |ui| {
-                            for fps in FPS_LIMITS {
-                                ui.selectable_value(&mut s.fps_limit, fps, fps_label(fps));
-                            }
-                        });
+                    egui::ComboBox::from_id_salt("fps_limit").selected_text(fps_label(s.fps_limit)).show_ui(ui, |ui| {
+                        for fps in FPS_LIMITS {
+                            ui.selectable_value(&mut s.fps_limit, fps, fps_label(fps));
+                        }
+                    });
                 })
                 .response
                 .on_disabled_hover_text(if vsync_now {
@@ -288,7 +290,14 @@ impl InkApp {
 
         section(ui, "New notes");
         rows(ui, "global_new_notes", |ui| {
-            paper_rows(ui, "new", &mut s.new_page_width, &mut s.new_page_height, &mut s.new_page_kind, &mut s.new_page_spacing);
+            paper_rows(
+                ui,
+                "new",
+                &mut s.new_page_width,
+                &mut s.new_page_height,
+                &mut s.new_page_kind,
+                &mut s.new_page_spacing,
+            );
         });
         hint(ui, "Used for notes created from now on. Each note keeps its own paper (Note settings).");
 

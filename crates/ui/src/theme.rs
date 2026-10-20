@@ -16,10 +16,11 @@
 //!
 //! One accent colour marks the selected / active / primary element.
 
+use std::sync::Arc;
+
 use eframe::egui::{
-    self, pos2, vec2, Button, Color32, FontData, FontDefinitions, FontFamily, FontId, Margin,
-    Painter, Pos2, Rect, RichText, Rounding, Shadow, Stroke, TextStyle, Theme, ThemePreference, Ui,
-    WidgetText,
+    self, Button, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Painter, Pos2, Rect,
+    RichText, Shadow, Stroke, StrokeKind, TextStyle, Theme, ThemePreference, Ui, WidgetText, pos2, vec2,
 };
 
 pub mod color {
@@ -117,13 +118,12 @@ pub fn font_strong(size: f32) -> FontId {
 /// widgets always match the custom-painted surfaces.
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "inter".into(),
-        FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf")),
-    );
+    fonts
+        .font_data
+        .insert("inter".into(), Arc::new(FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf"))));
     fonts.font_data.insert(
         "inter-semibold".into(),
-        FontData::from_static(include_bytes!("../assets/fonts/Inter-SemiBold.ttf")),
+        Arc::new(FontData::from_static(include_bytes!("../assets/fonts/Inter-SemiBold.ttf"))),
     );
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     // Inter first; then the icons (Unicode private use area, which the
@@ -134,9 +134,8 @@ pub fn install(ctx: &egui::Context) {
         .filter(|f| !matches!(f.as_str(), "inter" | "phosphor"))
         .cloned()
         .collect();
-    let family = |main: &str| {
-        [main.to_owned(), "phosphor".to_owned()].into_iter().chain(fallbacks.iter().cloned()).collect()
-    };
+    let family =
+        |main: &str| [main.to_owned(), "phosphor".to_owned()].into_iter().chain(fallbacks.iter().cloned()).collect();
     fonts.families.insert(FontFamily::Proportional, family("inter"));
     fonts.families.insert(strong_family(), family("inter-semibold"));
     ctx.set_fonts(fonts);
@@ -160,8 +159,8 @@ fn apply_style(style: &mut egui::Style) {
     let s = &mut style.spacing;
     s.item_spacing = vec2(space::S, 6.0);
     s.button_padding = vec2(10.0, 5.0);
-    s.menu_margin = Margin::same(6.0);
-    s.window_margin = Margin::same(space::L);
+    s.menu_margin = Margin::same(6);
+    s.window_margin = Margin::from(space::L);
     s.interact_size = vec2(36.0, 28.0);
     s.slider_width = 120.0;
     s.icon_width = 16.0;
@@ -175,10 +174,10 @@ fn apply_style(style: &mut egui::Style) {
     v.panel_fill = CHROME;
     v.window_fill = SURFACE;
     v.window_stroke = Stroke::new(1.0, BORDER);
-    v.window_rounding = Rounding::same(radius::MEDIUM);
-    v.menu_rounding = Rounding::same(radius::MEDIUM);
-    v.window_shadow = Shadow { offset: vec2(0.0, 10.0), blur: 28.0, spread: 0.0, color: Color32::from_black_alpha(120) };
-    v.popup_shadow = Shadow { offset: vec2(0.0, 6.0), blur: 16.0, spread: 0.0, color: Color32::from_black_alpha(100) };
+    v.window_corner_radius = CornerRadius::from(radius::MEDIUM);
+    v.menu_corner_radius = CornerRadius::from(radius::MEDIUM);
+    v.window_shadow = Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(120) };
+    v.popup_shadow = Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(100) };
     v.window_highlight_topmost = false;
     v.extreme_bg_color = INPUT;
     v.faint_bg_color = Color32::from_white_alpha(6);
@@ -194,13 +193,13 @@ fn apply_style(style: &mut egui::Style) {
     v.slider_trailing_fill = true;
     v.indent_has_left_vline = false;
 
-    let rounding = Rounding::same(radius::SMALL);
+    let rounding = CornerRadius::from(radius::SMALL);
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = SURFACE;
     w.noninteractive.weak_bg_fill = SURFACE;
     w.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
     w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
-    w.noninteractive.rounding = rounding;
+    w.noninteractive.corner_radius = rounding;
     for (wv, fill, text) in [
         (&mut w.inactive, RAISED, TEXT),
         (&mut w.hovered, HOVER, TEXT_STRONG),
@@ -211,7 +210,7 @@ fn apply_style(style: &mut egui::Style) {
         wv.weak_bg_fill = fill;
         wv.bg_stroke = Stroke::NONE;
         wv.fg_stroke = Stroke::new(1.5, text);
-        wv.rounding = rounding;
+        wv.corner_radius = rounding;
         wv.expansion = 0.0;
     }
 }
@@ -259,7 +258,7 @@ pub fn ghost_buttons(ui: &mut Ui) {
 
 /// Shadow under cards (notes, notebooks) on the desk.
 pub fn card_shadow() -> Shadow {
-    Shadow { offset: vec2(0.0, 4.0), blur: 12.0, spread: 0.0, color: Color32::from_black_alpha(90) }
+    Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(90) }
 }
 
 /// A borderless text field for renaming in place (note title, notebook
@@ -288,11 +287,11 @@ pub fn inline_edit(
             .hint_text(hint)
             .horizontal_align(align)
             .vertical_align(egui::Align::Center)
-            .margin(vec2(space::S, 2.0))
-            .frame(false)
+            // A custom frame: no background of its own (painted below).
+            .frame(egui::Frame::NONE.inner_margin(Margin::symmetric(space::S as i8, 2)))
             .char_limit(120),
     );
-    let rounding = Rounding::same(radius::SMALL);
+    let rounding = CornerRadius::from(radius::SMALL);
     let fill = if resp.has_focus() {
         Some(color::INPUT)
     } else if resp.hovered() {
@@ -304,7 +303,7 @@ pub fn inline_edit(
         ui.painter().set(background, egui::Shape::rect_filled(rect, rounding, fill));
     }
     if resp.has_focus() {
-        ui.painter().rect_stroke(rect, rounding, Stroke::new(1.0, color::ACCENT));
+        ui.painter().rect_stroke(rect, rounding, Stroke::new(1.0, color::ACCENT), StrokeKind::Middle);
     }
     resp
 }
@@ -345,14 +344,22 @@ pub fn list_row(ui: &mut Ui, glyph: &str, label: &str, selected: bool, actions: 
     let right = rect.right() - space::S - if hovered { actions } else { 0.0 };
     let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font(size::BODY), text_color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((right - text_left).max(0.0));
-    let galley = ui.fonts(|f| f.layout_job(job));
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
     ui.painter().galley(pos2(text_left, y - galley.size().y * 0.5), galley, text_color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A small icon button at the right end of a row: `slot` 0 is the last one,
 /// 1 the one before it, and so on. `danger` turns it red on hover.
-pub fn row_button(ui: &mut Ui, row: Rect, slot: usize, id: egui::Id, glyph: &str, tip: &str, danger: bool) -> egui::Response {
+pub fn row_button(
+    ui: &mut Ui,
+    row: Rect,
+    slot: usize,
+    id: egui::Id,
+    glyph: &str,
+    tip: &str,
+    danger: bool,
+) -> egui::Response {
     let center = pos2(row.right() - space::XS - ROW_BUTTON * (slot as f32 + 0.5), row.center().y);
     let rect = Rect::from_center_size(center, vec2(ROW_BUTTON - 2.0, ROW_BUTTON - 2.0));
     let resp = ui.interact(rect, id, egui::Sense::click());
@@ -391,9 +398,11 @@ pub fn add_tile(ui: &mut Ui, rect: Rect, id: egui::Id, label: &str) -> egui::Res
 pub fn paint_toast(painter: &Painter, center: Pos2, text: &str) -> Rect {
     let galley = painter.layout_no_wrap(text.to_owned(), font(size::BODY), color::TEXT_STRONG);
     let rect = Rect::from_center_size(center, galley.size() + vec2(2.0 * space::L, 2.0 * space::S + 2.0));
-    painter.add(Shadow { offset: vec2(0.0, 6.0), blur: 16.0, spread: 0.0, color: Color32::from_black_alpha(110) }
-        .as_shape(rect, Rounding::same(radius::MEDIUM)));
-    painter.rect(rect, radius::MEDIUM, color::SURFACE, Stroke::new(1.0, color::BORDER));
+    painter.add(
+        Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(110) }
+            .as_shape(rect, CornerRadius::from(radius::MEDIUM)),
+    );
+    painter.rect(rect, radius::MEDIUM, color::SURFACE, Stroke::new(1.0, color::BORDER), StrokeKind::Middle);
     painter.galley(rect.center() - galley.size() * 0.5, galley, color::TEXT_STRONG);
     rect
 }

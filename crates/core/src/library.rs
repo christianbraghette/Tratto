@@ -35,14 +35,8 @@ const NOTEBOOK_FILE: &str = ".notebook";
 const ORDER_FILE: &str = ".order";
 const TRASH_DIR: &str = ".trash";
 
-const NOTEBOOK_COLORS: [[u8; 3]; 6] = [
-    [66, 133, 244],
-    [219, 68, 55],
-    [15, 157, 88],
-    [244, 160, 0],
-    [171, 71, 188],
-    [0, 172, 193],
-];
+const NOTEBOOK_COLORS: [[u8; 3]; 6] =
+    [[66, 133, 244], [219, 68, 55], [15, 157, 88], [244, 160, 0], [171, 71, 188], [0, 172, 193]];
 
 #[derive(Clone)]
 pub struct NoteInfo {
@@ -78,9 +72,7 @@ pub struct Library {
 }
 
 pub fn default_root() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from);
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
     match home {
         Some(h) => {
             let docs = h.join("Documents");
@@ -108,10 +100,10 @@ impl Library {
             }
             if path.is_dir() {
                 lib.notebooks.push(scan_notebook(&path, name));
-            } else if is_note(&path) {
-                if let Some(n) = read_note(&path) {
-                    lib.quick.push(n);
-                }
+            } else if is_note(&path)
+                && let Some(n) = read_note(&path)
+            {
+                lib.quick.push(n);
             }
         }
         lib.notebooks.sort_by_key(|n| n.name.to_lowercase());
@@ -159,10 +151,7 @@ fn sort_notes(dir: &Path, notes: &mut [NoteInfo]) {
         order.iter().position(|o| *o == name).unwrap_or(usize::MAX)
     };
     notes.sort_by(|a, b| {
-        rank(a)
-            .cmp(&rank(b))
-            .then(a.meta.created.cmp(&b.meta.created))
-            .then_with(|| a.path.cmp(&b.path))
+        rank(a).cmp(&rank(b)).then(a.meta.created.cmp(&b.meta.created)).then_with(|| a.path.cmp(&b.path))
     });
 }
 
@@ -174,10 +163,8 @@ fn read_order(dir: &Path) -> Vec<String> {
 
 /// Saves the manual order of the notes in `dir` (the notes' paths, in order).
 pub fn set_note_order(dir: &Path, notes: &[PathBuf]) -> Result<()> {
-    let names: Vec<String> = notes
-        .iter()
-        .filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
-        .collect();
+    let names: Vec<String> =
+        notes.iter().filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned())).collect();
     fs::write(dir.join(ORDER_FILE), names.join("\n") + "\n")?;
     Ok(())
 }
@@ -199,14 +186,16 @@ fn scan_notebook(path: &Path, name: String) -> NotebookInfo {
             }
             if p.is_dir() {
                 let mut notes: Vec<NoteInfo> = fs::read_dir(&p)
-                    .map(|rd| rd.flatten().map(|e| e.path()).filter(|q| is_note(q)).filter_map(|q| read_note(&q)).collect())
+                    .map(|rd| {
+                        rd.flatten().map(|e| e.path()).filter(|q| is_note(q)).filter_map(|q| read_note(&q)).collect()
+                    })
                     .unwrap_or_default();
                 sort_notes(&p, &mut notes);
                 nb.sections.push(SectionInfo { name, path: p, notes });
-            } else if is_note(&p) {
-                if let Some(n) = read_note(&p) {
-                    nb.loose.push(n);
-                }
+            } else if is_note(&p)
+                && let Some(n) = read_note(&p)
+            {
+                nb.loose.push(n);
             }
         }
     }
@@ -232,17 +221,10 @@ fn read_color(dir: &Path) -> [u8; 3] {
 
 /// A name that is safe as a file or folder name on Windows and Linux.
 pub fn sanitize(name: &str) -> String {
-    let cleaned: String = name
-        .trim()
-        .chars()
-        .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c })
-        .collect();
+    let cleaned: String =
+        name.trim().chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
     let cleaned: String = cleaned.trim_matches(|c| c == '.' || c == ' ').chars().take(60).collect();
-    if cleaned.is_empty() {
-        "Untitled".to_owned()
-    } else {
-        cleaned
-    }
+    if cleaned.is_empty() { "Untitled".to_owned() } else { cleaned }
 }
 
 /// `dir/stem.ext`, or `dir/stem (2).ext`, ... if that exists already.
@@ -272,9 +254,7 @@ pub fn create_note(dir: &Path, title: &str) -> Result<PathBuf> {
 
 /// New notebook with a first section, like OneNote.
 pub fn create_notebook(root: &Path, name: &str) -> Result<PathBuf> {
-    let existing = fs::read_dir(root)
-        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count())
-        .unwrap_or(0);
+    let existing = fs::read_dir(root).map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count()).unwrap_or(0);
     let color = NOTEBOOK_COLORS[existing % NOTEBOOK_COLORS.len()];
     let path = unique_path(root, &sanitize(name), None);
     fs::create_dir_all(path.join("Section 1"))?;
@@ -348,8 +328,7 @@ pub fn rename_note_file(path: &Path, title: &str) -> Result<PathBuf> {
         let (old, new) = (name(path), name(&target));
         let order = read_order(dir);
         if order.contains(&old) {
-            let order: Vec<PathBuf> =
-                order.into_iter().map(|o| dir.join(if o == old { &new } else { &o })).collect();
+            let order: Vec<PathBuf> = order.into_iter().map(|o| dir.join(if o == old { &new } else { &o })).collect();
             set_note_order(dir, &order)?;
         }
     }
@@ -444,10 +423,8 @@ fn read_trash_index(root: &Path) -> Vec<TrashEntry> {
 }
 
 fn write_trash_index(root: &Path, index: &[TrashEntry]) -> Result<()> {
-    let text: String = index
-        .iter()
-        .map(|e| format!("{}\t{}\t{}\n", e.name, e.deleted, e.origin.to_string_lossy()))
-        .collect();
+    let text: String =
+        index.iter().map(|e| format!("{}\t{}\t{}\n", e.name, e.deleted, e.origin.to_string_lossy())).collect();
     fs::write(root.join(TRASH_DIR).join(TRASH_INDEX), text)?;
     Ok(())
 }

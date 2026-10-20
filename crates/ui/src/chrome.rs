@@ -20,8 +20,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{
-    self, pos2, vec2, Align, Align2, Color32, CursorIcon, Id, LayerId, Layout, Order,
-    PointerButton, Rect, ResizeDirection, RichText, Sense, Stroke, Ui, ViewportCommand,
+    self, Align, Align2, Color32, CursorIcon, Id, LayerId, Layout, Order, PointerButton, Rect, ResizeDirection,
+    RichText, Sense, Stroke, StrokeKind, Ui, ViewportCommand, pos2, vec2,
 };
 use egui_phosphor::regular as icon;
 
@@ -71,7 +71,10 @@ impl WindowState {
 pub enum Title<'a> {
     Text(&'a str),
     /// An editable title (the open note): plain text until hovered or clicked.
-    Editable { text: &'a mut String, hint: &'a str },
+    Editable {
+        text: &'a mut String,
+        hint: &'a str,
+    },
 }
 
 /// Fullscreen: how far the bar is shown (0 hidden, 1 fully in). It slides in
@@ -80,7 +83,7 @@ pub enum Title<'a> {
 fn fullscreen_reveal(ctx: &egui::Context, pinned: bool) -> f32 {
     let id = Id::new("title_bar_reveal");
     let shown = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
-    let top = ctx.screen_rect().top();
+    let top = ctx.viewport_rect().top();
     let pointer_y = ctx.input(|i| i.pointer.hover_pos()).map(|p| p.y);
     let near = pointer_y.is_some_and(|y| {
         let reach = if shown { TITLE_BAR_HEIGHT + KEEP_BELOW } else { REVEAL_EDGE };
@@ -101,18 +104,20 @@ pub struct TitleBarResponse {
     pub exit_fullscreen: bool,
 }
 
-/// Shows the top bar. Call it before any other panel so it spans the whole
-/// window. `menus` adds the menu buttons (inside an `egui::menu::bar`).
+/// Shows the top bar in the root `ui`. Call it before any other panel so it
+/// spans the whole window. `menus` adds the menu buttons (inside an
+/// `egui::MenuBar`).
 /// In fullscreen the bar hides until the pointer reaches the top edge;
 /// `pinned` keeps it shown, and an "exit full screen" button takes the
 /// place of the window buttons.
 pub fn title_bar(
-    ctx: &egui::Context,
+    ui: &mut Ui,
     state: WindowState,
     pinned: bool,
     title: Title<'_>,
     menus: impl FnOnce(&mut Ui),
 ) -> TitleBarResponse {
+    let ctx = &ui.ctx().clone();
     let controls = state.frame_controls();
     // Same height with or without the window buttons: the menu buttons need
     // it, and a lower bar would leave a gap below its painted background.
@@ -125,11 +130,11 @@ pub fn title_bar(
     let mut response = TitleBarResponse::default();
     let buttons = desktop::window_buttons(ctx);
     let (_, edge) = button_size(buttons.style);
-    egui::TopBottomPanel::top("title_bar")
-        .exact_height(height * shown)
+    egui::Panel::top("title_bar")
+        .exact_size(height * shown)
         .show_separator_line(false)
-        .frame(egui::Frame::none().fill(color::CHROME))
-        .show(ctx, |ui| {
+        .frame(egui::Frame::NONE.fill(color::CHROME))
+        .show(ui, |ui| {
             let panel = ui.max_rect();
             let bar = Rect::from_min_size(panel.min - vec2(0.0, height * (1.0 - shown)), vec2(panel.width(), height));
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(bar));
@@ -159,7 +164,7 @@ pub fn title_bar(
                 ui.add_space(space::M);
                 ui.label(RichText::new(icon::PEN_NIB).size(size::ICON).color(color::ACCENT));
                 ui.add_space(space::XS);
-                egui::menu::bar(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
                     // Menu titles: flat, muted until hovered or open.
                     theme::ghost_buttons(ui);
                     ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_MUTED;
@@ -175,7 +180,7 @@ pub fn title_bar(
             // (8 px) past the right edge, partly outside the window.
             if (controls && !buttons.right.is_empty()) || state.fullscreen {
                 let layout = Layout::right_to_left(Align::Center);
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.add_space(edge);
                     if state.fullscreen {
@@ -191,9 +196,7 @@ pub fn title_bar(
 
             // Centred title, moved aside (or dropped) when the window is too narrow.
             let (min_x, max_x) = (menus_right + 16.0, buttons_left - 16.0);
-            let place = |w: f32| {
-                (max_x - min_x >= w).then(|| (bar.center().x - w * 0.5).clamp(min_x, max_x - w))
-            };
+            let place = |w: f32| (max_x - min_x >= w).then(|| (bar.center().x - w * 0.5).clamp(min_x, max_x - w));
             match title {
                 Title::Text(text) => {
                     let color = color::TEXT_MUTED;
@@ -232,16 +235,8 @@ fn editable_title(
     };
     let rect = Rect::from_min_size(pos2(x, bar.center().y - 12.0), vec2(w, 24.0));
 
-    let resp = theme::inline_edit(
-        ui,
-        rect,
-        Id::new("note_title_edit"),
-        text,
-        hint,
-        font,
-        Align::Center,
-        color::TEXT_MUTED,
-    );
+    let resp =
+        theme::inline_edit(ui, rect, Id::new("note_title_edit"), text, hint, font, Align::Center, color::TEXT_MUTED);
     Some(resp.on_hover_text("Rename the note"))
 }
 
@@ -276,8 +271,20 @@ fn glyph(style: Style, button: Button, maximized: bool) -> &'static str {
         (Button::Close, _) => icon::X,
         (Button::Minimize, Style::Breeze) => icon::CARET_DOWN,
         (Button::Minimize, _) => icon::MINUS,
-        (Button::Maximize, Style::Breeze) => if maximized { icon::DIAMOND } else { icon::CARET_UP },
-        (Button::Maximize, _) => if maximized { icon::COPY } else { icon::SQUARE },
+        (Button::Maximize, Style::Breeze) => {
+            if maximized {
+                icon::DIAMOND
+            } else {
+                icon::CARET_UP
+            }
+        }
+        (Button::Maximize, _) => {
+            if maximized {
+                icon::COPY
+            } else {
+                icon::SQUARE
+            }
+        }
     }
 }
 
@@ -334,17 +341,45 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
     if !state.frame_controls() || state.maximized {
         return;
     }
-    let r = ctx.screen_rect();
+    let r = ctx.viewport_rect();
     let (b, c) = (RESIZE_BORDER, RESIZE_BORDER * 2.0);
     let zones = [
         (ResizeDirection::NorthWest, Rect::from_min_size(r.left_top(), vec2(c, c)), CursorIcon::ResizeNorthWest),
-        (ResizeDirection::NorthEast, Rect::from_min_size(pos2(r.right() - c, r.top()), vec2(c, c)), CursorIcon::ResizeNorthEast),
-        (ResizeDirection::SouthWest, Rect::from_min_size(pos2(r.left(), r.bottom() - c), vec2(c, c)), CursorIcon::ResizeSouthWest),
-        (ResizeDirection::SouthEast, Rect::from_min_size(r.right_bottom() - vec2(c, c), vec2(c, c)), CursorIcon::ResizeSouthEast),
-        (ResizeDirection::North, Rect::from_min_max(pos2(r.left() + c, r.top()), pos2(r.right() - c, r.top() + b)), CursorIcon::ResizeNorth),
-        (ResizeDirection::South, Rect::from_min_max(pos2(r.left() + c, r.bottom() - b), pos2(r.right() - c, r.bottom())), CursorIcon::ResizeSouth),
-        (ResizeDirection::West, Rect::from_min_max(pos2(r.left(), r.top() + c), pos2(r.left() + b, r.bottom() - c)), CursorIcon::ResizeWest),
-        (ResizeDirection::East, Rect::from_min_max(pos2(r.right() - b, r.top() + c), pos2(r.right(), r.bottom() - c)), CursorIcon::ResizeEast),
+        (
+            ResizeDirection::NorthEast,
+            Rect::from_min_size(pos2(r.right() - c, r.top()), vec2(c, c)),
+            CursorIcon::ResizeNorthEast,
+        ),
+        (
+            ResizeDirection::SouthWest,
+            Rect::from_min_size(pos2(r.left(), r.bottom() - c), vec2(c, c)),
+            CursorIcon::ResizeSouthWest,
+        ),
+        (
+            ResizeDirection::SouthEast,
+            Rect::from_min_size(r.right_bottom() - vec2(c, c), vec2(c, c)),
+            CursorIcon::ResizeSouthEast,
+        ),
+        (
+            ResizeDirection::North,
+            Rect::from_min_max(pos2(r.left() + c, r.top()), pos2(r.right() - c, r.top() + b)),
+            CursorIcon::ResizeNorth,
+        ),
+        (
+            ResizeDirection::South,
+            Rect::from_min_max(pos2(r.left() + c, r.bottom() - b), pos2(r.right() - c, r.bottom())),
+            CursorIcon::ResizeSouth,
+        ),
+        (
+            ResizeDirection::West,
+            Rect::from_min_max(pos2(r.left(), r.top() + c), pos2(r.left() + b, r.bottom() - c)),
+            CursorIcon::ResizeWest,
+        ),
+        (
+            ResizeDirection::East,
+            Rect::from_min_max(pos2(r.right() - b, r.top() + c), pos2(r.right(), r.bottom() - c)),
+            CursorIcon::ResizeEast,
+        ),
     ];
     for (i, (dir, rect, cursor)) in zones.into_iter().enumerate() {
         egui::Area::new(Id::new("resize_border").with(i))
@@ -364,7 +399,7 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
     // DWM draws the (rounded) border itself when it can.
     if !DWM_FRAME.load(Ordering::Relaxed) {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("window_outline")));
-        painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, color::BORDER_STRONG));
+        painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, color::BORDER_STRONG), StrokeKind::Middle);
     }
 }
 
@@ -422,17 +457,17 @@ mod tests {
         let info = ViewportInfo { fullscreen: Some(true), ..Default::default() };
         input.viewports.insert(egui::ViewportId::ROOT, info);
         let pinned = *menu_open;
-        let _ = ctx.run(input, |ctx| {
-            let state = WindowState::of(ctx, true);
+        crate::test_frame(ctx, input, |ui| {
+            let state = WindowState::of(ui.ctx(), true);
             let mut open = false;
-            title_bar(ctx, state, pinned, Title::Text("t"), |ui| {
+            title_bar(ui, state, pinned, Title::Text("t"), |ui| {
                 // As the app does: the contents run only while the menu is shown.
                 ui.menu_button("File", |ui| {
                     open = true;
                     ui.label("entry");
                 });
             });
-            egui::CentralPanel::default().show(ctx, |_| {});
+            egui::CentralPanel::default().show(ui, |_| {});
             *menu_open = open;
         });
     }
@@ -458,10 +493,10 @@ mod tests {
             };
             let info = ViewportInfo { fullscreen: Some(true), ..Default::default() };
             input.viewports.insert(egui::ViewportId::ROOT, info);
-            let _ = ctx.run(input, |ctx| {
-                let state = WindowState::of(ctx, true);
-                exit |= title_bar(ctx, state, false, Title::Text("t"), |_| {}).exit_fullscreen;
-                egui::CentralPanel::default().show(ctx, |_| {});
+            crate::test_frame(&ctx, input, |ui| {
+                let state = WindowState::of(ui.ctx(), true);
+                exit |= title_bar(ui, state, false, Title::Text("t"), |_| {}).exit_fullscreen;
+                egui::CentralPanel::default().show(ui, |_| {});
             });
         };
         // Where the close button usually is: the right end of the bar.
@@ -502,5 +537,3 @@ mod tests {
         assert!(open, "the menu stays open without a pointer");
     }
 }
-
-

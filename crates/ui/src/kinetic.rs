@@ -25,7 +25,7 @@
 
 use std::collections::VecDeque;
 
-use eframe::egui::{vec2, Vec2};
+use eframe::egui::{Vec2, vec2};
 
 /// Friction of wheel glides (1/s): ~90 % of the distance in 0.25 s.
 const WHEEL_FRICTION: f32 = 9.0;

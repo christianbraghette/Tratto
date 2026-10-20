@@ -14,15 +14,12 @@
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, Margin, Order, Pos2, Rect, Sense, Shape, Slider, Stroke,
-};
+use eframe::egui::{self, Align2, Color32, Margin, Order, Pos2, Rect, Sense, Shape, Slider, Stroke, pos2, vec2};
 use egui_phosphor::regular as icon;
 
 use crate::scrollbar;
 use crate::settings::{LeftPanel, Settings, ToolStyle, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color, radius, space};
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -79,31 +76,20 @@ impl Tool {
     }
 }
 
-const PEN_PALETTE: [[u8; 3]; 6] = [
-    [20, 20, 20],
-    [30, 80, 220],
-    [210, 40, 40],
-    [30, 150, 70],
-    [240, 140, 20],
-    [130, 50, 170],
-];
-const HIGHLIGHTER_PALETTE: [[u8; 3]; 5] = [
-    [255, 235, 0],
-    [120, 230, 90],
-    [255, 140, 200],
-    [100, 210, 255],
-    [255, 170, 60],
-];
+const PEN_PALETTE: [[u8; 3]; 6] =
+    [[20, 20, 20], [30, 80, 220], [210, 40, 40], [30, 150, 70], [240, 140, 20], [130, 50, 170]];
+const HIGHLIGHTER_PALETTE: [[u8; 3]; 5] =
+    [[255, 235, 0], [120, 230, 90], [255, 140, 200], [100, 210, 255], [255, 170, 60]];
 
 /// Shows the tool bar as a notch centred on the top edge (below the title
 /// bar) or on the bottom edge of the canvas; returns a clicked action.
 ///
-/// Call after the title bar and the side panels, so it is centred over the
-/// canvas. When the window is too narrow for it to fit between the corner
+/// Call with the root `ui` after the title bar and the side panels, so it is
+/// centred over the canvas (what is left of `ui`). When the window is too narrow for it to fit between the corner
 /// notches at the chosen edge, it moves to the other edge.
 /// `bottom_inset` keeps it clear of the horizontal scrollbar when that is visible.
 pub fn show(
-    ctx: &egui::Context,
+    ui: &egui::Ui,
     tool: &mut Tool,
     settings: &mut Settings,
     can_undo: bool,
@@ -112,7 +98,7 @@ pub fn show(
     bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
     let position = settings.toolbar_position;
-    edge_bar(ctx, "tool_notch", position, bottom_inset, |ui| contents(ui, tool, settings, can_undo, can_redo, nav))
+    edge_bar(ui, "tool_notch", position, bottom_inset, |ui| contents(ui, tool, settings, can_undo, can_redo, nav))
 }
 
 /// Where the view is, for the page controls of the reader's bar and of the
@@ -129,9 +115,14 @@ pub struct Navigation {
 
 /// The reader's bar, in the tool bar's place: import (to write on the PDF),
 /// the table of contents, back after a link, the pages and the zoom.
-pub fn show_reader(ctx: &egui::Context, settings: &mut Settings, nav: &Navigation, bottom_inset: f32) -> Option<ToolbarEvent> {
+pub fn show_reader(
+    ui: &egui::Ui,
+    settings: &mut Settings,
+    nav: &Navigation,
+    bottom_inset: f32,
+) -> Option<ToolbarEvent> {
     let position = settings.toolbar_position;
-    edge_bar(ctx, "reader_notch", position, bottom_inset, |ui| {
+    edge_bar(ui, "reader_notch", position, bottom_inset, |ui| {
         let mut event = None;
         let import = egui::Button::new(format!("{}  Import", icon::FILE_ARROW_DOWN));
         let tip = "Make it a note to write on, in the notebook or section open in the library";
@@ -176,15 +167,17 @@ fn page_controls(ui: &mut egui::Ui, settings: &mut Settings, nav: &Navigation) -
     event
 }
 
-/// A bar in a notch centred on the top or bottom edge (see `show`).
+/// A bar in a notch centred on the top or bottom edge of what is left of the
+/// root `ui` (see `show`).
 fn edge_bar<R>(
-    ctx: &egui::Context,
+    ui: &egui::Ui,
     id: &str,
     position: ToolbarPosition,
     bottom_inset: f32,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let free = ctx.available_rect();
+    let ctx = ui.ctx();
+    let free = ui.available_rect_before_wrap();
     let id = egui::Id::new(id);
     // Size from the previous frame.
     let width = ctx.memory(|m| m.area_rect(id)).map_or(0.0, |r| r.width());
@@ -206,9 +199,9 @@ fn edge_bar<R>(
         .show(ctx, |ui| {
             let background = ui.painter().add(Shape::Noop);
             let mut margin = notch_margin(top);
-            margin.left = space::M;
-            margin.right = space::M;
-            let shown = egui::Frame::none().inner_margin(margin).show(ui, |ui| {
+            margin.left = space::M as i8;
+            margin.right = space::M as i8;
+            let shown = egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
                 tool_buttons_style(ui);
                 ui.horizontal(add_contents).inner
             });
@@ -258,12 +251,14 @@ fn edge_notch_shape(rect: Rect, at: Edge, fill: Color32) -> Shape {
 /// positions, and the panel gets the same concave joins as the notches, so it
 /// reads as the two notches grown into a sidebar.
 ///
-/// Call after the side panels: `available_rect` is the canvas area then.
+/// Call with the root `ui` after the side panels: what is left of it is the
+/// canvas area then.
 /// `note_settings`: the settings notch is shown (not for a PDF in the
 /// reader). `bottom_inset` keeps the bottom notch above the horizontal
 /// scrollbar.
-pub fn show_corners(ctx: &egui::Context, settings: &mut Settings, note_settings: bool, bottom_inset: f32) {
-    let free = ctx.available_rect();
+pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool, bottom_inset: f32) {
+    let ctx = ui.ctx();
+    let free = ui.available_rect_before_wrap();
 
     // Panel joins: above the canvas, but below menus and popups (which are
     // foreground areas).
@@ -316,26 +311,20 @@ pub fn library_button(ui: &mut egui::Ui, open: &mut bool) {
 /// Returns true when clicked; `shown` highlights it.
 pub fn pages_button(ui: &mut egui::Ui, shown: bool) -> bool {
     let tip = if shown { "Hide pages" } else { "Pages: jump, reorder, delete" };
-    ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::SIDEBAR_SIMPLE)))
-        .on_hover_text(tip)
-        .clicked()
+    ui.add(egui::Button::selectable(shown, theme::icon(icon::SIDEBAR_SIMPLE))).on_hover_text(tip).clicked()
 }
 
 /// Toggles the outline (table of contents) of a note written on a PDF.
 /// Returns true when clicked; `shown` highlights it.
 pub fn outline_button(ui: &mut egui::Ui, shown: bool) -> bool {
     let tip = if shown { "Hide the contents" } else { "Contents: the PDF's outline" };
-    ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::LIST_BULLETS)))
-        .on_hover_text(tip)
-        .clicked()
+    ui.add(egui::Button::selectable(shown, theme::icon(icon::LIST_BULLETS))).on_hover_text(tip).clicked()
 }
 
 /// Returns true when clicked; `shown` highlights it.
 pub fn settings_button(ui: &mut egui::Ui, shown: bool) -> bool {
     let tip = if shown { "Hide note settings" } else { "Note settings: paper, pages, export" };
-    ui.add(egui::SelectableLabel::new(shown, theme::icon(icon::GEAR_SIX)))
-        .on_hover_text(tip)
-        .clicked()
+    ui.add(egui::Button::selectable(shown, theme::icon(icon::GEAR_SIX))).on_hover_text(tip).clicked()
 }
 
 /// Margins around the buttons of a notch attached to the top edge (`top`) or
@@ -344,10 +333,10 @@ pub fn settings_button(ui: &mut egui::Ui, shown: bool) -> bool {
 pub fn notch_margin(top: bool) -> Margin {
     // A little more room on the attached side keeps the buttons clear of the
     // title bar (and its window buttons) and of the bottom edge.
-    let (attached, free) = (space::S, 6.0);
+    let (attached, free) = (space::S as i8, 6);
     Margin {
-        left: space::S,
-        right: space::S,
+        left: space::S as i8,
+        right: space::S as i8,
         top: if top { attached } else { free },
         bottom: if top { free } else { attached },
     }
@@ -387,36 +376,26 @@ const NOTCH_FILLET: f32 = 10.0;
 
 /// A tab attached to the top or bottom edge, flush with the side edge, with
 /// its outer corner at `corner`.
-fn notch(
-    ctx: &egui::Context,
-    id: &str,
-    at: Corner,
-    corner: Pos2,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
+fn notch(ctx: &egui::Context, id: &str, at: Corner, corner: Pos2, add_contents: impl FnOnce(&mut egui::Ui)) {
     let pivot = match at {
         Corner::TopLeft => Align2::LEFT_TOP,
         Corner::TopRight => Align2::RIGHT_TOP,
         Corner::BottomLeft => Align2::LEFT_BOTTOM,
     };
-    egui::Area::new(egui::Id::new(id))
-        .order(Order::Foreground)
-        .pivot(pivot)
-        .fixed_pos(corner)
-        .show(ctx, |ui| {
-            // Reserve the background slot first so it is painted below the buttons.
-            let background = ui.painter().add(Shape::Noop);
-            let rect = egui::Frame::none()
-                .inner_margin(notch_margin(at != Corner::BottomLeft))
-                .show(ui, |ui| {
-                    tool_buttons_style(ui);
-                    ui.horizontal(add_contents);
-                })
-                .response
-                .rect;
-            // Same surface as the title bar it hangs from.
-            ui.painter().set(background, notch_shape(rect, at, color::CHROME));
-        });
+    egui::Area::new(egui::Id::new(id)).order(Order::Foreground).pivot(pivot).fixed_pos(corner).show(ctx, |ui| {
+        // Reserve the background slot first so it is painted below the buttons.
+        let background = ui.painter().add(Shape::Noop);
+        let rect = egui::Frame::NONE
+            .inner_margin(notch_margin(at != Corner::BottomLeft))
+            .show(ui, |ui| {
+                tool_buttons_style(ui);
+                ui.horizontal(add_contents);
+            })
+            .response
+            .rect;
+        // Same surface as the title bar it hangs from.
+        ui.painter().set(background, notch_shape(rect, at, color::CHROME));
+    });
 }
 
 /// The notch outline as one polygon: the body with its free corner rounded,
@@ -584,7 +563,13 @@ fn style_controls(
 
 /// A tool size slider that snaps to `step`. While hovered or dragged, a
 /// bubble over the handle (`above` it, or below) shows the size.
-fn size_slider(ui: &mut egui::Ui, value: &mut f32, range: RangeInclusive<f32>, step: f32, above: bool) -> egui::Response {
+fn size_slider(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    step: f32,
+    above: bool,
+) -> egui::Response {
     let (min, max) = (*range.start(), *range.end());
     let resp = ui.add(Slider::new(value, range).step_by(step.into()).show_value(false));
     if resp.hovered() || resp.dragged() {

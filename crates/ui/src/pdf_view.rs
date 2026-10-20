@@ -25,10 +25,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::ops::RangeInclusive;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
-use eframe::egui::{self, pos2, vec2, Color32, ColorImage, Painter, Rect, TextureHandle, TextureOptions};
+use eframe::egui::{self, Color32, ColorImage, Painter, Rect, TextureHandle, TextureOptions, pos2, vec2};
 use tratto_core::model::Document;
 use tratto_core::pdf_pages::{self, PdfError, PdfFile, RenderedPage};
 
@@ -166,7 +166,7 @@ impl PdfTextures {
             match r.image {
                 Ok((w, h, rgba)) => {
                     // Opaque RGBA is exactly egui's (premultiplied) pixels.
-                    let image = ColorImage { size: [w as usize, h as usize], pixels: bytemuck::cast_vec(rgba) };
+                    let image = ColorImage::from_rgba_premultiplied([w as usize, h as usize], &rgba);
                     let name = format!("pdf-{:x}-{}-{part:?}", r.key, r.page);
                     let new = ctx.load_texture(name, image, TextureOptions::LINEAR);
                     if let Some(old) = e.texture.replace(new) {
@@ -357,10 +357,8 @@ impl PdfTextures {
             self.paint_tiles(painter, file, pdf_page, size, rect, visible, prev, false);
         }
         let complete = self.paint_tiles(painter, file, pdf_page, size, rect, visible, current, settled);
-        if complete {
-            if let Some(st) = self.levels.get_mut(&(file.key, pdf_page)) {
-                st.previous = None;
-            }
+        if complete && let Some(st) = self.levels.get_mut(&(file.key, pdf_page)) {
+            st.previous = None;
         }
     }
 }
@@ -398,7 +396,7 @@ mod tests {
         let at = |t: f64| RawInput { time: Some(t), ..RawInput::default() };
         let mut level = |t: f64, target: u32| {
             let mut out = (0, None, false);
-            let _ = ctx.run(at(t), |ctx| out = tex.level(ctx, 1, 0, target));
+            crate::test_frame(&ctx, at(t), |ui| out = tex.level(ui.ctx(), 1, 0, target));
             out
         };
         assert_eq!(level(0.0, 1024), (1024, None, true));
@@ -417,8 +415,8 @@ mod tests {
     }
 
     /// Runs one frame and returns the textures it frees.
-    fn frame(ctx: &egui::Context, run: impl FnMut(&egui::Context)) -> Vec<TextureId> {
-        ctx.run(RawInput::default(), run).textures_delta.free
+    fn frame(ctx: &egui::Context, mut run: impl FnMut(&egui::Context)) -> Vec<TextureId> {
+        crate::test_frame(ctx, RawInput::default(), |ui| run(ui.ctx()))
     }
 
     #[test]
@@ -477,9 +475,9 @@ mod tests {
             tex.reply.send(RenderedPage { key: 3, page: 0, requested_width: 1024, region, image }).unwrap();
         }
         let shown = |tex: &PdfTextures| tex.entries.values().filter(|e| e.texture.is_some()).count();
-        let _ = ctx.run(RawInput::default(), |ctx| tex.begin_frame(ctx));
+        crate::test_frame(&ctx, RawInput::default(), |ui| tex.begin_frame(ui.ctx()));
         assert_eq!(shown(&tex), UPLOADS_PER_FRAME);
-        let _ = ctx.run(RawInput::default(), |ctx| tex.begin_frame(ctx));
+        crate::test_frame(&ctx, RawInput::default(), |ui| tex.begin_frame(ui.ctx()));
         assert_eq!(shown(&tex), 10);
     }
 }

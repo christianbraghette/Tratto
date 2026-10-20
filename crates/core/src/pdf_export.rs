@@ -26,7 +26,7 @@ use std::io::{self, Write};
 use std::ops::RangeInclusive;
 use std::path::Path;
 
-use flate2::{write::ZlibEncoder, Compression};
+use flate2::{Compression, write::ZlibEncoder};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{self, Document, PageKind, Stroke, StrokeKind, TextBox};
@@ -210,11 +210,7 @@ pub fn export_pages(notes: &[PdfNote], opts: &PdfOptions) -> Vec<(usize, u32)> {
     if let [one] = notes {
         return opts.page_list(one.doc).into_iter().map(|p| (0, p)).collect();
     }
-    notes
-        .iter()
-        .enumerate()
-        .flat_map(|(i, n)| (0..n.doc.page_count.max(1)).map(move |p| (i, p)))
-        .collect()
+    notes.iter().enumerate().flat_map(|(i, n)| (0..n.doc.page_count.max(1)).map(move |p| (i, p))).collect()
 }
 
 // ------------------------------------------------------------ file layout
@@ -255,10 +251,7 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     pdf.obj(gs_obj, "<< /Type /ExtGState /BM /Darken >>");
 
     // Text boxes use the standard Helvetica (no font embedding needed).
-    pdf.obj(
-        font_obj,
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-    );
+    pdf.obj(font_obj, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
 
     for (p, &(note, page)) in page_list.iter().enumerate() {
         let doc = notes[note].doc;
@@ -346,8 +339,7 @@ impl Pdf {
 
     fn stream_obj(&mut self, num: usize, dict_extra: &str, data: &[u8]) {
         self.begin(num);
-        self.buf
-            .extend_from_slice(format!("<< /Length {} {dict_extra} >>\nstream\n", data.len()).as_bytes());
+        self.buf.extend_from_slice(format!("<< /Length {} {dict_extra} >>\nstream\n", data.len()).as_bytes());
         self.buf.extend_from_slice(data);
         self.buf.extend_from_slice(b"\nendstream\nendobj\n");
     }
@@ -444,25 +436,14 @@ fn write_text(c: &mut String, t: &TextBox, opts: &PdfOptions) {
         return;
     }
     let (r, g, b) = opts.ink_rgb(t.color, false);
-    c.push_str(&format!(
-        "q\n{} {} {} rg\nBT\n/F1 {} Tf\n",
-        num(r, 3),
-        num(g, 3),
-        num(b, 3),
-        num(t.size, 2)
-    ));
+    c.push_str(&format!("q\n{} {} {} rg\nBT\n/F1 {} Tf\n", num(r, 3), num(g, 3), num(b, 3), num(t.size, 2)));
     for (i, line) in t.lines.iter().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
         let baseline = t.y + i as f32 * t.line_h + t.line_h * 0.78;
         // The page matrix is y-down; this text matrix flips it back so glyphs are upright.
-        c.push_str(&format!(
-            "1 0 0 -1 {} {} Tm\n({}) Tj\n",
-            num(t.x, 2),
-            num(baseline, 2),
-            pdf_string(line)
-        ));
+        c.push_str(&format!("1 0 0 -1 {} {} Tm\n({}) Tj\n", num(t.x, 2), num(baseline, 2), pdf_string(line)));
     }
     c.push_str("ET\nQ\n");
 }
@@ -508,12 +489,7 @@ fn write_stroke(c: &mut String, s: &Stroke, opts: &PdfOptions) {
         return;
     }
     let (r, g, b) = opts.stroke_rgb(s);
-    c.push_str(&format!(
-        "q\n{r} {g} {b} RG {r} {g} {b} rg\n1 J 1 j\n",
-        r = num(r, 3),
-        g = num(g, 3),
-        b = num(b, 3)
-    ));
+    c.push_str(&format!("q\n{r} {g} {b} RG {r} {g} {b} rg\n1 J 1 j\n", r = num(r, 3), g = num(g, 3), b = num(b, 3)));
     if s.kind == StrokeKind::Highlighter {
         c.push_str("/GSH gs\n");
     }
@@ -574,11 +550,32 @@ fn dot(c: &mut String, p: Sample) {
     let (x, y) = (p.x, p.y);
     c.push_str(&format!(
         "{} {} m\n{} {} {} {} {} {} c\n{} {} {} {} {} {} c\n{} {} {} {} {} {} c\n{} {} {} {} {} {} c\nf\n",
-        num(x + r, 2), num(y, 2),
-        num(x + r, 2), num(y + k, 2), num(x + k, 2), num(y + r, 2), num(x, 2), num(y + r, 2),
-        num(x - k, 2), num(y + r, 2), num(x - r, 2), num(y + k, 2), num(x - r, 2), num(y, 2),
-        num(x - r, 2), num(y - k, 2), num(x - k, 2), num(y - r, 2), num(x, 2), num(y - r, 2),
-        num(x + k, 2), num(y - r, 2), num(x + r, 2), num(y - k, 2), num(x + r, 2), num(y, 2),
+        num(x + r, 2),
+        num(y, 2),
+        num(x + r, 2),
+        num(y + k, 2),
+        num(x + k, 2),
+        num(y + r, 2),
+        num(x, 2),
+        num(y + r, 2),
+        num(x - k, 2),
+        num(y + r, 2),
+        num(x - r, 2),
+        num(y + k, 2),
+        num(x - r, 2),
+        num(y, 2),
+        num(x - r, 2),
+        num(y - k, 2),
+        num(x - k, 2),
+        num(y - r, 2),
+        num(x, 2),
+        num(y - r, 2),
+        num(x + k, 2),
+        num(y - r, 2),
+        num(x + r, 2),
+        num(y - k, 2),
+        num(x + r, 2),
+        num(y, 2),
     ));
 }
 
@@ -586,11 +583,7 @@ fn dot(c: &mut String, p: Sample) {
 fn num(v: f32, decimals: usize) -> String {
     let s = format!("{v:.decimals$}");
     let t = s.trim_end_matches('0').trim_end_matches('.');
-    if t.is_empty() || t == "-" {
-        "0".to_owned()
-    } else {
-        t.to_owned()
-    }
+    if t.is_empty() || t == "-" { "0".to_owned() } else { t.to_owned() }
 }
 
 #[cfg(test)]
@@ -634,15 +627,7 @@ mod tests {
 
         // startxref must point at the "xref" keyword.
         let text = String::from_utf8_lossy(&bytes);
-        let pos: usize = text
-            .rsplit("startxref\n")
-            .next()
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let pos: usize = text.rsplit("startxref\n").next().unwrap().lines().next().unwrap().parse().unwrap();
         assert_eq!(&bytes[pos..pos + 4], b"xref");
 
         // Every xref entry must point at "<n> 0 obj".

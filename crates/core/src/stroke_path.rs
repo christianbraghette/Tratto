@@ -9,7 +9,7 @@
 //! width changes are smooth too. Using one curve everywhere guarantees that
 //! the printed ink matches what is seen.
 
-use emath::{pos2, Pos2};
+use emath::{Pos2, pos2};
 
 use crate::model::{Point, StrokeKind};
 
@@ -57,16 +57,10 @@ pub fn smoothed(
                 StrokeKind::Pen => width * pressure_factor(p.pressure),
                 StrokeKind::Highlighter => width,
             };
-            Node {
-                p: pos2(p.x * scale, p.y * scale),
-                r: (w * scale * 0.5).max(min_radius),
-            }
+            Node { p: pos2(p.x * scale, p.y * scale), r: (w * scale * 0.5).max(min_radius) }
         })
         .collect();
-    dedup(smooth(&nodes, step), min_dist)
-        .into_iter()
-        .map(|n| Sample { x: n.p.x, y: n.p.y, r: n.r })
-        .collect()
+    dedup(smooth(&nodes, step), min_dist).into_iter().map(|n| Sample { x: n.p.x, y: n.p.y, r: n.r }).collect()
 }
 
 /// The curve sampled every `step` page units. Used by the PDF export.
@@ -122,10 +116,7 @@ fn bezier(a: Node, c: Node, b: Node, t: f32) -> Node {
     let u = 1.0 - t;
     let (wa, wc, wb) = (u * u, 2.0 * u * t, t * t);
     Node {
-        p: pos2(
-            a.p.x * wa + c.p.x * wc + b.p.x * wb,
-            a.p.y * wa + c.p.y * wc + b.p.y * wb,
-        ),
+        p: pos2(a.p.x * wa + c.p.x * wc + b.p.x * wb, a.p.y * wa + c.p.y * wc + b.p.y * wb),
         r: a.r * wa + c.r * wc + b.r * wb,
     }
 }

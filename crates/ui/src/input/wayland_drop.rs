@@ -19,7 +19,22 @@
 //! On every other OS, and on X11, `WaylandDrop::start` returns `None`: winit
 //! reports dropped files itself.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// A file dropped onto the window, for egui (which only has a private one).
+#[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct DroppedPath(pub PathBuf);
+
+impl eframe::egui::DroppedFile for DroppedPath {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
 
 /// A drag of files over the window.
 #[derive(Debug)]
@@ -63,12 +78,12 @@ fn percent_decode(s: &str) -> Vec<u8> {
     let mut i = 0;
     while i < bytes.len() {
         let hex = |b: u8| (b as char).to_digit(16);
-        if let [b'%', hi, lo, ..] = bytes[i..] {
-            if let (Some(hi), Some(lo)) = (hex(hi), hex(lo)) {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
-                continue;
-            }
+        if let [b'%', hi, lo, ..] = bytes[i..]
+            && let (Some(hi), Some(lo)) = (hex(hi), hex(lo))
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -100,16 +115,17 @@ mod imp {
     use std::io::Read;
     use std::os::fd::AsFd;
     use std::os::unix::ffi::OsStringExt;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender, TryIter};
-    use std::sync::Arc;
 
     use eframe::egui;
     use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
     use wayland_client::{
+        Connection, Dispatch, Proxy, QueueHandle,
         backend::{Backend, ObjectId},
         delegate_noop, event_created_child,
-        globals::{registry_queue_init, GlobalListContents},
+        globals::{GlobalListContents, registry_queue_init},
         protocol::{
             wl_callback::WlCallback,
             wl_data_device::{self, WlDataDevice},
@@ -118,10 +134,9 @@ mod imp {
             wl_registry::WlRegistry,
             wl_seat::WlSeat,
         },
-        Connection, Dispatch, Proxy, QueueHandle,
     };
 
-    use super::{uri_list_paths, DropEvent};
+    use super::{DropEvent, uri_list_paths};
 
     const URI_LIST: &str = "text/uri-list";
 
@@ -156,13 +171,8 @@ mod imp {
             let (tx, rx) = mpsc::channel();
             let stop = Arc::new(AtomicBool::new(false));
 
-            let mut state = State {
-                tx,
-                ctx: ctx.clone(),
-                conn: conn.clone(),
-                mime_types: HashMap::new(),
-                current: None,
-            };
+            let mut state =
+                State { tx, ctx: ctx.clone(), conn: conn.clone(), mime_types: HashMap::new(), current: None };
             let stop_thread = stop.clone();
             std::thread::Builder::new()
                 .name("wayland-drop".into())
@@ -344,11 +354,7 @@ mod tests {
         let paths = uri_list_paths(list);
         assert_eq!(
             paths,
-            vec![
-                b"/home/me/My Notes/a.pdf".to_vec(),
-                b"/tmp/b.pdf".to_vec(),
-                "/tmp/€%zz.pdf".as_bytes().to_vec(),
-            ]
+            vec![b"/home/me/My Notes/a.pdf".to_vec(), b"/tmp/b.pdf".to_vec(), "/tmp/€%zz.pdf".as_bytes().to_vec(),]
         );
     }
 

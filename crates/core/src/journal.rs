@@ -102,7 +102,11 @@ impl Item for Stroke {
         // Spelled out so that a new field cannot be forgotten here. `bounds`
         // follows from the points, `rev` is not saved.
         let Stroke { id, page: _, kind, color, width, points, bounds: _, rev: _ } = self;
-        *id == other.id && *kind == other.kind && *color == other.color && *width == other.width && *points == other.points
+        *id == other.id
+            && *kind == other.kind
+            && *color == other.color
+            && *width == other.width
+            && *points == other.points
     }
 }
 
@@ -244,7 +248,14 @@ mod tests {
 
     fn stroke(doc: &mut Document, page: u32, x: f32) -> Stroke {
         let id = doc.alloc_id();
-        Stroke::new(id, page, StrokeKind::Pen, [0, 0, 0, 255], 2.0, vec![Point::new(x, 0.0, 1.0), Point::new(x, 9.0, 1.0)])
+        Stroke::new(
+            id,
+            page,
+            StrokeKind::Pen,
+            [0, 0, 0, 255],
+            2.0,
+            vec![Point::new(x, 0.0, 1.0), Point::new(x, 9.0, 1.0)],
+        )
     }
 
     fn text(doc: &mut Document, page: u32, s: &str) -> TextBox {

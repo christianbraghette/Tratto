@@ -19,7 +19,7 @@
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{pos2, vec2, Pos2, Rect, Vec2};
+use eframe::egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 use crate::settings::ZoomMode;
 
@@ -201,10 +201,7 @@ impl View {
     }
 
     pub fn page_screen_rect(&self, page: u32) -> Rect {
-        Rect::from_min_size(
-            self.page_origin_screen(page),
-            vec2(self.layout.page_w, self.layout.page_h) * self.scale,
-        )
+        Rect::from_min_size(self.page_origin_screen(page), vec2(self.layout.page_w, self.layout.page_h) * self.scale)
     }
 
     /// Content-space y range shown in the view.
