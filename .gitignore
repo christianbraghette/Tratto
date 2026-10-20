@@ -4,3 +4,5 @@ target/
 *.ink
 # PDFium binaries (fetched, see crates/ui/pdfium/README.md)
 crates/ui/pdfium/*/
+# Release archives (scripts/package.sh)
+dist/

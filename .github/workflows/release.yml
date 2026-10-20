@@ -3,21 +3,21 @@
 # release. Publishing the draft makes it the latest release: the app's
 # updater (crates/ui/src/update.rs) finds it by that name.
 #
-# Archive layout (unpacked next to the executable by the updater):
-#   inknote(.exe), the PDFium library, LICENSE, licenses/ (PDFium's)
+# Run by hand (Actions > Release > Run workflow), it only builds: the
+# archives are in the run's artifacts (e.g. the macOS one, which cannot be
+# built on Windows or Linux).
+#
+# The archives are made by scripts/package.sh, as on a local machine.
 
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
-
-env:
-  # See crates/ui/pdfium/README.md.
-  PDFIUM_RELEASE: chromium%2F7881
 
 jobs:
   build:
@@ -26,21 +26,15 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            platform: windows
             target: x86_64-pc-windows-msvc
-            pdfium: win-x64
-            lib: bin/pdfium.dll
-            exe: inknote.exe
           # The oldest supported runner: the binary runs on older glibc too.
           - os: ubuntu-22.04
+            platform: linux
             target: x86_64-unknown-linux-gnu
-            pdfium: linux-x64
-            lib: lib/libpdfium.so
-            exe: inknote
           - os: macos-14
+            platform: macos
             target: aarch64-apple-darwin
-            pdfium: mac-arm64
-            lib: lib/libpdfium.dylib
-            exe: inknote
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -49,6 +43,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check the tag matches the version
+        if: github.ref_type == 'tag'
         run: |
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
@@ -66,28 +61,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Fetch PDFium
-        run: |
-          mkdir -p crates/ui/pdfium/${{ matrix.pdfium }}
-          curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_RELEASE/pdfium-${{ matrix.pdfium }}.tgz" \
-            | tar -xz -C crates/ui/pdfium/${{ matrix.pdfium }}
-
-      - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
-
-      - name: Package
-        run: |
-          pdfium=crates/ui/pdfium/${{ matrix.pdfium }}
-          dist=dist/pkg
-          mkdir -p $dist/licenses
-          cp target/${{ matrix.target }}/release/${{ matrix.exe }} $dist/
-          cp $pdfium/${{ matrix.lib }} $dist/
-          cp LICENSE $dist/
-          cp $pdfium/LICENSE $dist/licenses/PDFium-LICENSE
-          cp $pdfium/licenses/* $dist/licenses/
-          archive=inknote-${{ matrix.target }}.zip
-          cd $dist
-          if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip ../$archive .; else zip -r ../$archive .; fi
+      - name: Build and package
+        run: bash scripts/package.sh ${{ matrix.platform }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -96,6 +71,7 @@ jobs:
 
   release:
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -1,0 +1,2 @@
+# Shell scripts also run in WSL and on the CI's Linux/macOS runners.
+*.sh text eol=lf
