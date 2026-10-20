@@ -3458,6 +3458,7 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "ron",
+ "rustix 1.1.5",
  "serde",
  "sha2",
  "tratto-core",
@@ -3467,6 +3468,7 @@ dependencies = [
  "wayland-protocols",
  "windows-sys 0.61.2",
  "winresource",
+ "zbus",
  "zip",
 ]
 

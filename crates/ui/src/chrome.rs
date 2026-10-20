@@ -10,6 +10,9 @@
 //! the gesture to the OS (snapping keeps working). With the native frame only
 //! the menu bar is drawn, below the system title bar.
 //!
+//! The window buttons follow the desktop (see `desktop.rs`): which ones, on
+//! which side and how they look (Windows, GNOME's Adwaita, KDE's Breeze).
+//!
 //! In fullscreen the bar hides and slides in when the pointer reaches the top
 //! edge, like OneNote. On Windows 11 DWM rounds the corners of the normal
 //! (not maximized) window, see `round_corners`.
@@ -22,11 +25,11 @@ use eframe::egui::{
 };
 use egui_phosphor::regular as icon;
 
+use crate::desktop::{self, Button, Style};
 use crate::theme::{self, color, size, space};
 
 /// Height of the custom title bar.
 pub const TITLE_BAR_HEIGHT: f32 = 32.0;
-const WINDOW_BUTTON_WIDTH: f32 = 46.0;
 /// Width of the invisible resize borders.
 const RESIZE_BORDER: f32 = 5.0;
 const CLOSE_HOVER: Color32 = color::DANGER;
@@ -120,6 +123,8 @@ pub fn title_bar(
         return TitleBarResponse::default();
     }
     let mut response = TitleBarResponse::default();
+    let buttons = desktop::window_buttons(ctx);
+    let (_, edge) = button_size(buttons.style);
     egui::TopBottomPanel::top("title_bar")
         .exact_height(height * shown)
         .show_separator_line(false)
@@ -144,6 +149,13 @@ pub fn title_bar(
             let mut buttons_left = bar.right();
             ui.horizontal(|ui| {
                 ui.set_height(height);
+                if controls && !buttons.left.is_empty() {
+                    ui.scope(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.add_space(edge);
+                        window_buttons(ui, buttons.style, buttons.left.iter().copied(), state, height);
+                    });
+                }
                 ui.add_space(space::M);
                 ui.label(RichText::new(icon::PEN_NIB).size(size::ICON).color(color::ACCENT));
                 ui.add_space(space::XS);
@@ -161,14 +173,17 @@ pub fn title_bar(
             // In their own area spanning exactly the bar: nested in the row
             // above, the right-to-left layout would start one item spacing
             // (8 px) past the right edge, partly outside the window.
-            if controls || state.fullscreen {
+            if (controls && !buttons.right.is_empty()) || state.fullscreen {
                 let layout = Layout::right_to_left(Align::Center);
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(edge);
                     if state.fullscreen {
-                        response.exit_fullscreen = window_button(ui, icon::CORNERS_IN, color::HOVER, height).clicked();
+                        let exit = window_button(ui, buttons.style, icon::CORNERS_IN, false, height);
+                        response.exit_fullscreen = exit.clicked();
                     } else {
-                        window_buttons(ui, state, height);
+                        // Right to left: the last button first.
+                        window_buttons(ui, buttons.style, buttons.right.iter().rev().copied(), state, height);
                     }
                     buttons_left = ui.min_rect().left();
                 });
@@ -196,8 +211,6 @@ pub fn title_bar(
     response
 }
 
-/// Minimize, maximize / restore and close. No tooltips: the icons are
-/// standard, and a tooltip would open over the editor's top-right notch.
 /// The note title as a borderless text field: a hover fill shows that it can
 /// be edited; while typing it gets the input look of the other text fields.
 fn editable_title(
@@ -232,29 +245,86 @@ fn editable_title(
     Some(resp.on_hover_text("Rename the note"))
 }
 
-fn window_buttons(ui: &mut Ui, state: WindowState, height: f32) {
+/// The buttons in `order`, as the desktop draws them. No tooltips: the
+/// icons are standard, and a tooltip would open over the editor's top-right
+/// notch.
+fn window_buttons(ui: &mut Ui, style: Style, order: impl Iterator<Item = Button>, state: WindowState, height: f32) {
     let ctx = ui.ctx().clone();
-    if window_button(ui, icon::X, CLOSE_HOVER, height).clicked() {
-        ctx.send_viewport_cmd(ViewportCommand::Close);
-    }
-    let glyph = if state.maximized { icon::COPY } else { icon::SQUARE };
-    let hover = color::HOVER;
-    if window_button(ui, glyph, hover, height).clicked() {
-        ctx.send_viewport_cmd(ViewportCommand::Maximized(!state.maximized));
-    }
-    if window_button(ui, icon::MINUS, hover, height).clicked() {
-        ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+    for button in order {
+        if window_button(ui, style, glyph(style, button, state.maximized), button == Button::Close, height).clicked() {
+            ctx.send_viewport_cmd(match button {
+                Button::Minimize => ViewportCommand::Minimized(true),
+                Button::Maximize => ViewportCommand::Maximized(!state.maximized),
+                Button::Close => ViewportCommand::Close,
+            });
+        }
     }
 }
 
-fn window_button(ui: &mut Ui, glyph: &str, hover_fill: Color32, height: f32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(WINDOW_BUTTON_WIDTH, height), Sense::click());
-    let mut color = color::TEXT_MUTED;
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, hover_fill);
-        color = if hover_fill == CLOSE_HOVER { color::ON_ACCENT } else { color::TEXT_STRONG };
+/// Width of one window button, and the space between the outermost one and
+/// the window's edge.
+fn button_size(style: Style) -> (f32, f32) {
+    match style {
+        Style::Windows => (46.0, 0.0),
+        Style::Adwaita => (30.0, 3.0),
+        Style::Breeze => (28.0, 2.0),
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, theme::font(15.0), color);
+}
+
+fn glyph(style: Style, button: Button, maximized: bool) -> &'static str {
+    match (button, style) {
+        (Button::Close, _) => icon::X,
+        (Button::Minimize, Style::Breeze) => icon::CARET_DOWN,
+        (Button::Minimize, _) => icon::MINUS,
+        (Button::Maximize, Style::Breeze) => if maximized { icon::DIAMOND } else { icon::CARET_UP },
+        (Button::Maximize, _) => if maximized { icon::COPY } else { icon::SQUARE },
+    }
+}
+
+fn window_button(ui: &mut Ui, style: Style, glyph: &str, close: bool, height: f32) -> egui::Response {
+    let (width, _) = button_size(style);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let pressed = resp.is_pointer_button_down_on();
+    let painter = ui.painter();
+    let mut color = color::TEXT_MUTED;
+    let glyph_size = match style {
+        Style::Windows => {
+            if resp.hovered() {
+                painter.rect_filled(rect, 0.0, if close { CLOSE_HOVER } else { color::HOVER });
+                color = if close { color::ON_ACCENT } else { color::TEXT_STRONG };
+            }
+            15.0
+        }
+        // Always a filled circle, a bit lighter when hovered.
+        Style::Adwaita => {
+            let fill = if pressed {
+                color::PRESSED
+            } else if resp.hovered() {
+                color::HOVER
+            } else {
+                color::RAISED
+            };
+            painter.circle_filled(rect.center(), 12.0, fill);
+            color = color::TEXT;
+            13.0
+        }
+        // A circle only when hovered: red behind the close button.
+        Style::Breeze => {
+            if resp.hovered() || pressed {
+                let fill = if close {
+                    CLOSE_HOVER
+                } else if pressed {
+                    color::PRESSED
+                } else {
+                    color::HOVER
+                };
+                painter.circle_filled(rect.center(), 10.0, fill);
+                color = if close { color::ON_ACCENT } else { color::TEXT_STRONG };
+            }
+            14.0
+        }
+    };
+    painter.text(rect.center(), Align2::CENTER_CENTER, glyph, theme::font(glyph_size), color);
     resp
 }
 
@@ -395,7 +465,8 @@ mod tests {
             });
         };
         // Where the close button usually is: the right end of the bar.
-        let (x, y) = (800.0 - WINDOW_BUTTON_WIDTH * 0.5, 16.0);
+        let (width, edge) = button_size(desktop::window_buttons(&ctx).style);
+        let (x, y) = (800.0 - edge - width * 0.5, 16.0);
         for _ in 0..30 {
             run(vec![at(x, 0.0)]);
         }

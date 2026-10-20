@@ -38,12 +38,17 @@ sha2 = "0.11.0"
 rfd = "0.17.2"
 pollster = "0.4.0"
 
-# Native Wayland tablet (pen) support. Versions match what winit 0.30 uses so
-# there is a single wayland-client in the dependency tree.
+# Native Wayland tablet (pen) and drag and drop support. Versions match what
+# winit 0.30 uses so there is a single wayland-client in the dependency tree.
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+# The pipe a dropped file list is read from (see input/wayland_drop.rs).
+rustix = { version = "1", features = ["pipe"] }
+# Reads the desktop's window button layout from the portal (see desktop.rs);
+# already used by egui's accessibility support.
+zbus = { version = "4", default-features = false, features = ["async-io", "blocking"] }
 
 # Embeds the app icon (assets/icon/icon.ico) in the .exe, see build.rs.
 [target.'cfg(windows)'.build-dependencies]

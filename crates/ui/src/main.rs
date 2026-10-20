@@ -28,6 +28,7 @@
 
 mod app;
 mod chrome;
+mod desktop;
 mod file_picker;
 mod frame_limit;
 mod input;

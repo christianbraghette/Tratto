@@ -25,6 +25,7 @@ use tratto_core::storage::{self, NoteMeta, NoteWriter};
 use tratto_core::stroke_builder::StrokeBuilder;
 
 use crate::frame_limit::FrameLimiter;
+use crate::input::wayland_drop::{DropEvent, WaylandDrop};
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
 use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
@@ -171,6 +172,10 @@ pub struct InkApp {
     status_at: Option<Instant>,
     /// Native Wayland pen source (None on X11/Windows or without tablet support).
     pen: Option<WaylandPen>,
+    /// Wayland: dropped files, which winit does not report there.
+    wl_drop: Option<WaylandDrop>,
+    /// Wayland: files are dragged over the window.
+    wl_drop_hover: bool,
     /// Windows: pen side button / eraser end (None elsewhere).
     win_pen: Option<WindowsPen>,
     pen_init_done: bool,
@@ -325,6 +330,8 @@ impl InkApp {
             status: String::new(),
             status_at: None,
             pen: None,
+            wl_drop: None,
+            wl_drop_hover: false,
             win_pen: None,
             pen_init_done: false,
             frame_limit: FrameLimiter::new(vsync),
@@ -840,6 +847,27 @@ impl InkApp {
                 }
             }
         });
+    }
+
+    /// Wayland: reports the files dragged over and dropped onto the window
+    /// as winit does elsewhere. While dragged their paths are unknown.
+    fn inject_drop_events(&mut self, raw_input: &mut egui::RawInput) {
+        let Some(wl_drop) = self.wl_drop.as_ref() else { return };
+        for ev in wl_drop.try_iter() {
+            match ev {
+                DropEvent::Enter => self.wl_drop_hover = true,
+                DropEvent::Leave => self.wl_drop_hover = false,
+                DropEvent::Drop(paths) => {
+                    self.wl_drop_hover = false;
+                    raw_input.dropped_files.extend(
+                        paths.into_iter().map(|path| egui::DroppedFile { path: Some(path), ..Default::default() }),
+                    );
+                }
+            }
+        }
+        if self.wl_drop_hover {
+            raw_input.hovered_files.push(egui::HoveredFile { path: None, mime: "text/uri-list".to_owned() });
+        }
     }
 
     /// Converts native pen events into regular egui pointer events and pressure.
@@ -2776,6 +2804,7 @@ impl eframe::App for InkApp {
         if !self.pen_init_done {
             self.pen_init_done = true;
             self.pen = WaylandPen::start(ctx, frame);
+            self.wl_drop = WaylandDrop::start(ctx, frame);
             self.win_pen = WindowsPen::start(ctx, frame);
             crate::chrome::round_corners(frame);
         }
@@ -2825,6 +2854,7 @@ impl eframe::App for InkApp {
         // Wait first, so the frame gets the pen samples that arrive meanwhile.
         self.frame_limit.wait(self.settings.fps_limit);
         self.inject_pen_events(ctx, raw_input);
+        self.inject_drop_events(raw_input);
     }
 
     /// The window background, visible only through gaps between panels:
