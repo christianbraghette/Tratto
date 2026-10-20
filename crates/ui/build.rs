@@ -7,6 +7,8 @@
 //!   next to the built executable, where the app looks for it. See
 //!   `pdfium/README.md` for how to fetch it; without it the app still builds
 //!   and runs, only PDFs cannot be shown.
+//! * Passes the target triple to the updater (`INKNOTE_TARGET`): it picks
+//!   the release archive built for it.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +24,7 @@ fn main() {
         }
     }
     copy_pdfium();
+    println!("cargo:rustc-env=INKNOTE_TARGET={}", std::env::var("TARGET").expect("cargo sets TARGET"));
 }
 
 /// The PDFium library of the target platform, as laid out by the

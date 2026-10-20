@@ -32,9 +32,10 @@ use crate::pdf_nav::PdfNav;
 use crate::pdf_view::PdfTextures;
 use crate::render::{self, Layer, Moved, StrokeCache};
 use crate::scrollbar;
-use crate::settings::{LeftPanel, NoteView, Settings, ZoomMode};
+use crate::settings::{LeftPanel, NoteView, Settings, UpdateMode, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
+use crate::update::{self, Updater};
 use crate::view::{Layout, MARGIN, TOP_PAD_PX, View};
 
 mod library_panel;
@@ -270,6 +271,8 @@ pub struct InkApp {
     view_scale: f32,
     /// Zoom factor requested by a menu command, applied around the centre.
     zoom_request: Option<f32>,
+    /// New versions from the GitHub releases (checked at startup).
+    updater: Updater,
 }
 
 impl InkApp {
@@ -359,7 +362,11 @@ impl InkApp {
             notebook_focused: false,
             view_scale: 1.0,
             zoom_request: None,
+            updater: Updater::default(),
         };
+        if app.settings.updates != UpdateMode::Off {
+            app.updater.check(&cc.egui_ctx, app.settings.updates == UpdateMode::Install);
+        }
         app.refresh_library();
         // Back where the app was closed: the note that was open, if any.
         let last = app.settings.last_note.clone().filter(|_| app.settings.reopen_last_note).map(PathBuf::from);
@@ -372,6 +379,25 @@ impl InkApp {
             }
         }
         app
+    }
+
+    // -------------------------------------------------------------- updates
+
+    /// Tells about a new version found or installed in the background
+    /// (failures and "up to date" show only in Settings > Updates).
+    fn poll_update(&mut self) {
+        let msg = match self.updater.poll() {
+            Some(update::State::Available(r)) => format!("InkNote {} is available (File > Settings > Updates)", r.version),
+            Some(update::State::Installed(v)) => format!("InkNote {v} is installed: it starts next time (or File > Settings > Updates)"),
+            _ => return,
+        };
+        self.toast(msg);
+    }
+
+    /// Closes the window (saving, as usual) and starts the updated app.
+    fn restart(&mut self, ctx: &egui::Context) {
+        update::RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     // ---------------------------------------------------------------- notes
@@ -2727,6 +2753,7 @@ impl eframe::App for InkApp {
             self.toast(format!("The PDF pages cannot be shown: {e}"));
         }
         self.poll_loading();
+        self.poll_update();
         // While a note loads, the window waits: no shortcuts, no drops.
         if self.loading.is_none() {
             self.dropped_pdf(ctx);

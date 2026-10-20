@@ -63,6 +63,28 @@ impl LibrarySort {
     }
 }
 
+/// What happens when a new version is released.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpdateMode {
+    /// Checked at startup, downloaded and installed (used from the next start).
+    #[default]
+    Install,
+    /// Checked at startup; installed only when asked.
+    Notify,
+    /// Never checked automatically (Check now still works).
+    Off,
+}
+
+impl UpdateMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Install => "Install automatically",
+            Self::Notify => "Only tell me",
+            Self::Off => "Don't check",
+        }
+    }
+}
+
 /// Notes whose place is remembered, at most (the least recent is forgotten).
 pub const NOTE_VIEWS: usize = 200;
 /// PDFs listed as recently read, at most.
@@ -176,6 +198,8 @@ pub struct Settings {
     pub pdf_open_after: bool,
     /// Reopen, at startup, the note that was open when the app was closed.
     pub reopen_last_note: bool,
+    /// Checking for, and installing, new versions at startup.
+    pub updates: UpdateMode,
     /// The order of the notes in the library.
     pub library_sort: LibrarySort,
     /// The note (or PDF in the reader) open when the app was last closed
@@ -274,6 +298,7 @@ impl Default for Settings {
             pdf_author: String::new(),
             pdf_open_after: false,
             reopen_last_note: true,
+            updates: UpdateMode::Install,
             library_sort: LibrarySort::Manual,
             last_note: None,
             note_views: Vec::new(),

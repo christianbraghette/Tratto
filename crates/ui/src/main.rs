@@ -20,6 +20,7 @@
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `theme`          design system: colours, sizes, fonts, shared components
 //! - `input`          native pen input (Wayland tablet, Windows pen buttons)
+//! - `update`         updates from the GitHub releases
 
 // A GUI program on Windows: started from Explorer or a shortcut, no console
 // window opens next to it. See `attach_console` for output in a terminal.
@@ -39,6 +40,7 @@ mod settings;
 mod stroke_mesh;
 mod theme;
 mod toolbar;
+mod update;
 mod view;
 
 use eframe::egui;
@@ -69,6 +71,7 @@ fn attach_console() {
 fn main() -> eframe::Result<()> {
     #[cfg(windows)]
     attach_console();
+    update::remove_leftovers();
 
     // Low-latency presentation by default: no vsync wait and at most one frame
     // queued, frames capped (File > Settings, see `frame_limit`). Vsync (saves
@@ -111,7 +114,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let result = eframe::run_native(
         APP_ID,
         options,
         Box::new(move |cc| {
@@ -120,7 +123,10 @@ fn main() -> eframe::Result<()> {
             }
             Ok(Box::new(app::InkApp::new(cc, vsync)))
         }),
-    )
+    );
+    // "Restart now" after an update: the window is closed and saved.
+    update::restart_if_requested();
+    result
 }
 
 #[cfg(test)]

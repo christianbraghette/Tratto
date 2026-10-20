@@ -1,0 +1,108 @@
+# Builds InkNote for each platform when a version tag (v1.2.3) is pushed and
+# attaches one archive per platform, `inknote-<target>.zip`, to a draft
+# release. Publishing the draft makes it the latest release: the app's
+# updater (crates/ui/src/update.rs) finds it by that name.
+#
+# Archive layout (unpacked next to the executable by the updater):
+#   inknote(.exe), the PDFium library, LICENSE, licenses/ (PDFium's)
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  # See crates/ui/pdfium/README.md.
+  PDFIUM_RELEASE: chromium%2F7881
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            pdfium: win-x64
+            lib: bin/pdfium.dll
+            exe: inknote.exe
+          # The oldest supported runner: the binary runs on older glibc too.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            pdfium: linux-x64
+            lib: lib/libpdfium.so
+            exe: inknote
+          - os: macos-14
+            target: aarch64-apple-darwin
+            pdfium: mac-arm64
+            lib: lib/libpdfium.dylib
+            exe: inknote
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($version)"
+            exit 1
+          fi
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Fetch PDFium
+        run: |
+          mkdir -p crates/ui/pdfium/${{ matrix.pdfium }}
+          curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_RELEASE/pdfium-${{ matrix.pdfium }}.tgz" \
+            | tar -xz -C crates/ui/pdfium/${{ matrix.pdfium }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          pdfium=crates/ui/pdfium/${{ matrix.pdfium }}
+          dist=dist/pkg
+          mkdir -p $dist/licenses
+          cp target/${{ matrix.target }}/release/${{ matrix.exe }} $dist/
+          cp $pdfium/${{ matrix.lib }} $dist/
+          cp LICENSE $dist/
+          cp $pdfium/LICENSE $dist/licenses/PDFium-LICENSE
+          cp $pdfium/licenses/* $dist/licenses/
+          archive=inknote-${{ matrix.target }}.zip
+          cd $dist
+          if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip ../$archive .; else zip -r ../$archive .; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inknote-${{ matrix.target }}
+          path: dist/inknote-${{ matrix.target }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "InkNote ${GITHUB_REF_NAME#v}"

@@ -66,6 +66,8 @@ pub(super) enum Command {
     DeletePage(u32),
     PaperStyle(PageKind),
     Shortcuts,
+    /// Ask for the latest release now (shown in Settings > Updates).
+    CheckUpdates,
     About,
 }
 
@@ -347,6 +349,7 @@ impl InkApp {
         ui.menu_button("Help", |ui| {
             open = true;
             push(entry(ui, icon::KEYBOARD, "Keyboard shortcuts", "", true), ui, Command::Shortcuts);
+            push(entry(ui, icon::DOWNLOAD_SIMPLE, "Check for updates...", "", true), ui, Command::CheckUpdates);
             ui.separator();
             push(entry(ui, icon::INFO, "About InkNote", "", true), ui, Command::About);
         });
@@ -620,6 +623,11 @@ impl InkApp {
             Command::DeletePage(i) if editor => self.delete_page(i),
             Command::PaperStyle(k) if editor => self.doc.page.kind = k,
             Command::Shortcuts => self.help.shortcuts = true,
+            Command::CheckUpdates => {
+                self.global_settings_open = true;
+                let install = self.settings.updates == crate::settings::UpdateMode::Install;
+                self.updater.check(ctx, install);
+            }
             Command::About => self.help.about = true,
             // Editor commands that arrive after the note was closed.
             _ => {}

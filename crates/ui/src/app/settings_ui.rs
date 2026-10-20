@@ -15,7 +15,8 @@ use inknote_core::model::{paper_label, PageKind, PAPERS};
 
 use super::library_ui::{location, when, Dialog};
 use super::InkApp;
-use crate::settings::ToolbarPosition;
+use crate::settings::{ToolbarPosition, UpdateMode};
+use crate::update::{self, State as UpdateState};
 use crate::theme::{self, color, space};
 
 /// Note settings in the left panel: default width and resize range.
@@ -191,6 +192,10 @@ impl InkApp {
         let mut reset = false;
         let vsync_now = self.frame_limit.vsync();
         let fps_overridden = self.frame_limit.overridden();
+        let update_state = self.updater.state().clone();
+        let mut check_update = false;
+        let mut install_update = false;
+        let mut restart = false;
         let s = &mut self.settings;
 
         section(ui, "Appearance");
@@ -315,6 +320,60 @@ impl InkApp {
             });
         });
 
+        section(ui, "Updates");
+        rows(ui, "global_updates", |ui| {
+            row(ui, "New versions", |ui| {
+                egui::ComboBox::from_id_salt("updates").selected_text(s.updates.label()).show_ui(ui, |ui| {
+                    for mode in [UpdateMode::Install, UpdateMode::Notify, UpdateMode::Off] {
+                        ui.selectable_value(&mut s.updates, mode, mode.label());
+                    }
+                });
+            });
+            row(ui, "Version", |ui| {
+                ui.label(update::CURRENT);
+                if ui
+                    .add_enabled(!update_state.busy(), egui::Button::new(format!("{}  Check now", icon::MAGNIFYING_GLASS)))
+                    .clicked()
+                {
+                    check_update = true;
+                }
+            });
+        });
+        match &update_state {
+            UpdateState::Idle => hint(ui, "Checked when InkNote starts, from its GitHub releases."),
+            UpdateState::Checking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    hint(ui, "Checking for updates...");
+                });
+            }
+            UpdateState::UpToDate => hint(ui, "InkNote is up to date."),
+            UpdateState::Available(release) => {
+                hint(ui, &format!("InkNote {} is available.", release.version));
+                ui.horizontal(|ui| {
+                    if release.installable
+                        && ui.add(theme::primary_button(format!("{}  Install", icon::DOWNLOAD_SIMPLE))).clicked()
+                    {
+                        install_update = true;
+                    }
+                    ui.hyperlink_to(format!("{}  Release notes", icon::ARROW_SQUARE_OUT), &release.page);
+                });
+            }
+            UpdateState::Downloading(release) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    hint(ui, &format!("Downloading InkNote {}...", release.version));
+                });
+            }
+            UpdateState::Installed(version) => {
+                hint(ui, &format!("InkNote {version} is installed; it starts next time."));
+                if ui.add(theme::primary_button(format!("{}  Restart now", icon::ARROW_CLOCKWISE))).clicked() {
+                    restart = true;
+                }
+            }
+            UpdateState::Failed(e) => hint(ui, e),
+        }
+
         ui.add_space(space::L);
         ui.separator();
         ui.horizontal(|ui| {
@@ -324,6 +383,16 @@ impl InkApp {
             ui.label(RichText::new("Keeps the library folder and the panels.").small().color(color::TEXT_FAINT));
         });
 
+        if check_update {
+            let install = self.settings.updates == UpdateMode::Install;
+            self.updater.check(ui.ctx(), install);
+        }
+        if install_update {
+            self.updater.install(ui.ctx());
+        }
+        if restart {
+            self.restart(ui.ctx());
+        }
         if change_folder {
             self.lib_ui.dialog = Some(Dialog::Folder(self.settings.library_root.clone()));
         }
