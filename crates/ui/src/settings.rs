@@ -10,9 +10,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolbarPosition {
     Top,
-    /// Also the migration target for the removed Left / Right positions
-    /// that may still be present in saved settings.
-    #[serde(alias = "Left", alias = "Right")]
     Bottom,
 }
 
@@ -259,7 +256,7 @@ impl Default for Settings {
     fn default() -> Self {
         let blank = Document::default();
         Self {
-            toolbar_position: ToolbarPosition::Bottom,
+            toolbar_position: ToolbarPosition::Top,
             pen: ToolStyle { color: [20, 20, 20], width: 2.5 },
             highlighter: ToolStyle { color: [255, 235, 0], width: 14.0 },
             text: ToolStyle { color: [20, 20, 20], width: 18.0 },
