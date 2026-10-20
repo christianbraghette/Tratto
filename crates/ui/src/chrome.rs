@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Window chrome drawn by the app itself (VS Code style): a title bar with the
 //! menu bar, the window title and the minimize / maximize / close buttons,

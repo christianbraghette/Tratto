@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Serializable document model. Stroke coordinates are in *page space*:
 //! document units relative to the top-left corner of the stroke's page.

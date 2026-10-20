@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Text boxes: picking, editing in place, committing and moving them.
 

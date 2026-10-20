@@ -10,7 +10,7 @@ edition = "2024"
 rust-version = "1.95"
 authors = ["Christian Braghette <christianbraghette@gmail.com>"]
 # Also available under a commercial license, see README.md.
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/christianbraghette/Tratto"
 
 [workspace.dependencies]

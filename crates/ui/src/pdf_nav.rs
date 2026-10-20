@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Finding one's way in a note written on a PDF: the PDF's outline (its
 //! table of contents) and the links on its pages.

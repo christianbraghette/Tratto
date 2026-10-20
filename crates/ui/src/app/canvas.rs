@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The editor's canvas: input routing to the tools, scrolling and zoom,
 //! painting the pages, undo / redo and the editor shortcuts, and following

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The open note's lifecycle: opening (in the background when large), showing,
 //! saving, closing, and PDFs read, imported or dropped onto the window.

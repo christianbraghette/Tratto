@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Christian Braghette
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Builds the release archives the updater installs, `dist/tratto-<target>.zip`
 # (the same ones the Release workflow attaches to a GitHub release):

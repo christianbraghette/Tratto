@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Menus: the title-bar menu bar (File, Edit, View, Page, Help), the canvas
 //! context menu, the keyboard shortcuts for menu commands and the Help windows.
@@ -678,7 +678,7 @@ impl InkApp {
                     ui.label(env!("CARGO_PKG_DESCRIPTION"));
                     ui.add_space(10.0);
                     ui.label("Copyright © 2026 Christian Braghette");
-                    ui.label("Free software under the GNU GPL v3 or later.");
+                    ui.label("Free software under the GNU AGPL v3 or later.");
                     ui.label("Commercial licenses are also available.");
                     ui.add_space(6.0);
                     ui.hyperlink_to("Source code and license", env!("CARGO_PKG_REPOSITORY"));

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The system's file dialogs (Explorer, Finder, the desktop portal on
 //! Linux), through rfd, for the Browse buttons next to the path boxes.

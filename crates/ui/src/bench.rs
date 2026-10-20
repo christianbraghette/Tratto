@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Timings of the hot paths, on a page full of handwriting. Not run by
 //! default: `cargo test --release -p tratto-ui bench -- --ignored --nocapture`.

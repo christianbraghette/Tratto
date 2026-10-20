@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Application state and per-frame orchestration: [`InkApp`] holds the
 //! state, this module runs a frame (`eframe::App::ui`, `editor_screen`) and

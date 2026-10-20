@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! * Windows: embeds the app icon in the .exe, so Explorer, the taskbar and
 //!   shortcuts show it (the window icon itself is set at runtime, in main.rs).

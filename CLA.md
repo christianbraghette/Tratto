@@ -5,9 +5,9 @@ Version 1.0
 Thank you for your interest in contributing to Tratto (the "Project"),
 maintained by Christian Braghette (the "Maintainer").
 
-The Project is distributed under the GNU General Public License, version 3 or
-later (GPL-3.0-or-later), and is also offered under separate commercial
-licenses (see the *License* section of `README.md`). To make that dual
+The Project is distributed under the GNU Affero General Public License,
+version 3 or later (AGPL-3.0-or-later), and is also offered under separate
+commercial licenses (see the *License* section of `README.md`). To make that dual
 licensing possible, the Maintainer needs the right to distribute your
 Contribution under both kinds of license. This Contributor License Agreement
 (the "Agreement") grants that right. **You keep the copyright in your
@@ -34,7 +34,7 @@ Maintainer, a perpetual, worldwide, non-exclusive, no-charge, royalty-free,
 irrevocable copyright license to reproduce, prepare derivative works of,
 publicly display, publicly perform, sublicense and distribute Your
 Contributions and such derivative works, **under any license terms, including
-the GPL and proprietary or commercial licenses**.
+the AGPL and proprietary or commercial licenses**.
 
 ## 3. Patent license
 
@@ -55,7 +55,7 @@ filed.
 ## 4. Commitment to keep the Project free software
 
 In return, the Maintainer agrees that every Contribution accepted into the
-Project will remain available to the public under the GPL-3.0-or-later, or
+Project will remain available to the public under the AGPL-3.0-or-later, or
 under another license approved by the Free Software Foundation or the Open
 Source Initiative, for as long as the Project is distributed.
 
@@ -102,14 +102,23 @@ successor is bound by Section 4.
 
 ## How to sign
 
-Add the following statement to the description of your first pull request,
-or as a comment on it, with your name and the email address used in your
-commits:
+When you open your first pull request, a bot (CLA Assistant) checks whether
+every author of its commits has signed this Agreement. If not, it comments on
+the pull request. To sign, post this comment on the pull request, exactly as
+written:
 
-> I have read the Tratto Contributor License Agreement, version 1.0, and I
-> agree to its terms for this and all my future Contributions to Tratto.
->
-> Name: ………………… &nbsp; Email: …………………
+```text
+I have read the Tratto CLA and I hereby sign it
+```
 
-If you contribute on behalf of a company or other organisation, state its name
-too and confirm that you are authorised to sign for it.
+By posting it, You accept this Agreement, version 1.0, for that and all Your
+future Contributions to Tratto. The bot records Your GitHub user name and
+account id, the pull request and the date. You do not need to sign again in
+later pull requests.
+
+- Every commit author must sign. Commits must be made with an email address
+  linked to the author's GitHub account, or the bot cannot tell who wrote
+  them.
+- If you contribute on behalf of a company or other organisation, also post a
+  comment naming it and confirming that you are authorised to sign for it.
+- If the check does not update, comment `recheck`.

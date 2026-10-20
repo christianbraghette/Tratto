@@ -1,6 +1,6 @@
 # Tratto
 
-[![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![License: AGPL v3+](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Commercial license available](https://img.shields.io/badge/commercial%20license-available-green.svg)](#license)
 ![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)
 
@@ -362,9 +362,33 @@ development builds.
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md)
-first. Because Tratto is dual-licensed, contributors sign the
-[Contributor License Agreement](CLA.md) once, in their first pull request. You
-keep the copyright in your work.
+first.
+
+Before your first pull request can be merged, you sign the
+[Contributor License Agreement](CLA.md) (CLA). A bot comments on your pull
+request with a link to it; you sign by replying with one sentence. You sign
+once, and it covers all your later contributions.
+
+**Why a CLA?** Tratto is [dual-licensed](#license). Without a CLA, your code
+would reach the project under the AGPL only, and it could never be part of the
+commercially licensed version. Every outside contribution would split the
+codebase in two. The CLA gives the maintainer the extra permission needed to
+ship your contribution under both licenses.
+
+**What it means for you:**
+
+- **You keep the copyright** in your work. The CLA is a license, not a
+  transfer: you can still use, publish and relicense your own code however you
+  like.
+- **You allow** the maintainer to distribute your contribution under the AGPL
+  *and* under commercial licenses ([CLA, Section 2](CLA.md#2-copyright-license)).
+- **You confirm** that the work is yours to give: you wrote it, or you have
+  the right to submit it, and your employer agrees if they own what you write
+  ([Section 5](CLA.md#5-your-representations)).
+- **In return**, everything accepted into Tratto stays available to everyone
+  as free software, for as long as the project is distributed
+  ([Section 4](CLA.md#4-commitment-to-keep-the-project-free-software)). Your
+  contribution can never become closed-source only.
 
 ## Acknowledgements
 
@@ -380,18 +404,26 @@ Copyright © 2026 Christian Braghette.
 
 Tratto is **dual-licensed**:
 
-1. **Open source: GNU GPL v3 or later.**
+1. **Open source: GNU AGPL v3 or later.**
    You can use, study, modify and redistribute Tratto under the terms of the
-   [GNU General Public License](LICENSE), version 3 or (at your option) any
-   later version. If you distribute Tratto or a work based on it, you must
-   release it under the same license and make the complete source code
-   available.
+   [GNU Affero General Public License](LICENSE), version 3 or (at your option)
+   any later version. This is free for everyone, as long as you keep the
+   license's conditions:
+   - If you distribute Tratto or a work based on it, you must release the
+     whole work under the AGPL and provide its complete source code.
+   - If you modify Tratto and let people use it over a network (for example
+     as a hosted service), you must offer those users the source code of your
+     modified version too.
 
 2. **Commercial license.**
-   If you want to ship Tratto, or code derived from it, in a product without
-   the GPL obligations (for example in closed-source software), you can buy a
-   commercial license. Write to
+   If you want to use Tratto's code in a project without those obligations,
+   for example in a closed-source product, or in a service whose source you
+   do not want to publish, you need a commercial license. Write to
    [christianbraghette@gmail.com](mailto:christianbraghette@gmail.com).
+
+In short: using Tratto to take your own notes, at home or at work, is free.
+Building it into a product or service that you do not release under the AGPL
+requires a commercial license.
 
 Tratto is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR

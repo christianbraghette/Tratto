@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Christian Braghette
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Renders the app icon: the title bar's pen nib (Phosphor PEN_NIB, U+E3AC)
 in the accent colour on a transparent background.
 

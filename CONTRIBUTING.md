@@ -4,19 +4,25 @@ Thanks for helping out! Bug reports, ideas and pull requests are all welcome.
 
 ## Contributor License Agreement
 
-Tratto is dual-licensed: it is free software under the GPL-3.0-or-later and
-is also offered under commercial licenses. So every contribution must be
-covered by the [Contributor License Agreement](CLA.md) (CLA).
+Tratto is dual-licensed: it is free software under the AGPL-3.0-or-later and
+is also offered under commercial licenses for use in projects that do not
+follow the AGPL. Code contributed under the AGPL alone could not go into the
+commercial version, so every contribution must be covered by the
+[Contributor License Agreement](CLA.md) (CLA).
 
 - You keep the copyright in your work.
-- You allow the maintainer to distribute your contribution under the GPL and
+- You allow the maintainer to distribute your contribution under the AGPL and
   under commercial licenses.
+- You confirm that you have the right to contribute it (CLA, Section 5).
 - In return, everything accepted into the project stays available as free
   software (CLA, Section 4).
 
-Sign once by adding the statement from [How to sign](CLA.md#how-to-sign)
-to your first pull request. Pull requests without a signed CLA cannot be
-merged.
+The [Contributing](README.md#contributing) section of the README explains this
+in more detail.
+
+A bot checks the CLA on every pull request. Sign once by commenting the
+sentence it asks for (see [How to sign](CLA.md#how-to-sign)). Pull requests
+without a signed CLA cannot be merged.
 
 ## Reporting issues
 
@@ -58,7 +64,7 @@ Guidelines:
 
   ```rust
   // SPDX-FileCopyrightText: 2026 Christian Braghette
-  // SPDX-License-Identifier: GPL-3.0-or-later
+  // SPDX-License-Identifier: AGPL-3.0-or-later
   ```
 
   You may add your own `SPDX-FileCopyrightText` line for files you write or
