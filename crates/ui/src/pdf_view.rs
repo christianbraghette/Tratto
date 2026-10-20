@@ -3,7 +3,7 @@
 
 //! The PDF pages under the ink of a note written on a PDF.
 //!
-//! Pages are rasterised in the background (`inknote_core::pdf_pages`):
+//! Pages are rasterised in the background (`tratto_core::pdf_pages`):
 //!
 //! * a small image of every page shown (also the page previews), drawn first
 //!   so a page is never empty;
@@ -29,8 +29,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use eframe::egui::{self, pos2, vec2, Color32, ColorImage, Painter, Rect, TextureHandle, TextureOptions};
-use inknote_core::model::Document;
-use inknote_core::pdf_pages::{self, PdfError, PdfFile, RenderedPage};
+use tratto_core::model::Document;
+use tratto_core::pdf_pages::{self, PdfError, PdfFile, RenderedPage};
 
 /// Width of the whole-page stand-in (and page preview) images, in pixels.
 const SMALL_PX: u32 = 512;

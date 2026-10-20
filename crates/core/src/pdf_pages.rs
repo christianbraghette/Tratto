@@ -5,7 +5,7 @@
 //!
 //! Uses PDFium (through `pdfium-render`), loaded at runtime: the library
 //! (`pdfium.dll`, `libpdfium.so`, `libpdfium.dylib`) is the file named by
-//! `INKNOTE_PDFIUM` if set, else the one next to the executable, else the
+//! `TRATTO_PDFIUM` if set, else the one next to the executable, else the
 //! system's. Without it every
 //! request fails with [`PdfError::Unavailable`] and the rest of the app works
 //! as before.
@@ -271,7 +271,7 @@ fn library_next_to_exe() -> Option<PathBuf> {
 }
 
 fn bind() -> Result<Pdfium, PdfError> {
-    let chosen = std::env::var_os("INKNOTE_PDFIUM").map(PathBuf::from).or_else(library_next_to_exe);
+    let chosen = std::env::var_os("TRATTO_PDFIUM").map(PathBuf::from).or_else(library_next_to_exe);
     let bindings = match chosen.filter(|p| p.exists()) {
         Some(path) => Pdfium::bind_to_library(path),
         None => Pdfium::bind_to_system_library(),
@@ -602,7 +602,7 @@ mod tests {
         match lib {
             Some(p) => {
                 // SAFETY: set before the worker starts; tests read nothing else from it.
-                unsafe { std::env::set_var("INKNOTE_PDFIUM", p) };
+                unsafe { std::env::set_var("TRATTO_PDFIUM", p) };
                 true
             }
             None => {
@@ -727,7 +727,7 @@ mod tests {
         let id = doc.alloc_id();
         let pts = (0..50).map(|i| Point::new(100.0 + i as f32 * 10.0, 500.0, 1.0)).collect();
         doc.strokes.push(Stroke::new(id, 1, StrokeKind::Pen, [0, 0, 0, 255], 40.0, pts));
-        let path = std::env::temp_dir().join("inknote_pdf_pages_test.pdf");
+        let path = std::env::temp_dir().join("tratto_pdf_pages_test.pdf");
         let notes = [PdfNote { doc: &doc, title: "t".into() }];
         pdf_export::export_notes(&notes, &path, &PdfOptions::default()).unwrap();
         let file = PdfFile::new(std::fs::read(&path).unwrap());
@@ -761,7 +761,7 @@ mod tests {
         if !pdfium_available() {
             return;
         }
-        let dir = std::env::temp_dir().join("inknote_import_pdf_test");
+        let dir = std::env::temp_dir().join("tratto_import_pdf_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // A three-page US Letter PDF.
@@ -814,7 +814,7 @@ mod tests {
         let id = source.alloc_id();
         let line = (0..=50).map(|i| Point::new(100.0 + i as f32 * 10.0, 500.0, 1.0)).collect();
         source.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 40.0, line));
-        let path = std::env::temp_dir().join("inknote_underlay_source.pdf");
+        let path = std::env::temp_dir().join("tratto_underlay_source.pdf");
         pdf_export::export_notes(&[PdfNote { doc: &source, title: "s".into() }], &path, &PdfOptions::default()).unwrap();
         let file = PdfFile::new(std::fs::read(&path).unwrap());
         let sizes = page_sizes(&file).unwrap();
@@ -862,7 +862,7 @@ mod tests {
         let id = doc.alloc_id();
         let line = (0..=100).map(|i| Point::new(50.0 + i as f32 * 7.0, 60.0 + i as f32 * 10.0, 1.0)).collect();
         doc.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 12.0, line));
-        let path = std::env::temp_dir().join("inknote_tiles_test.pdf");
+        let path = std::env::temp_dir().join("tratto_tiles_test.pdf");
         pdf_export::export_notes(&[PdfNote { doc: &doc, title: "t".into() }], &path, &PdfOptions::default()).unwrap();
         let file = PdfFile::new(std::fs::read(&path).unwrap());
         let _ = std::fs::remove_file(&path);
@@ -899,12 +899,12 @@ mod tests {
         assert!(rx.recv().unwrap().image.is_err());
     }
 
-    /// Timings on a real (e.g. scanned) PDF: `INKNOTE_BENCH_PDF=<file>
-    /// cargo test -p inknote-core --release bench_tiles -- --ignored --nocapture`.
+    /// Timings on a real (e.g. scanned) PDF: `TRATTO_BENCH_PDF=<file>
+    /// cargo test -p tratto-core --release bench_tiles -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn bench_tiles() {
-        let Some(path) = std::env::var_os("INKNOTE_BENCH_PDF") else { return };
+        let Some(path) = std::env::var_os("TRATTO_BENCH_PDF") else { return };
         if !pdfium_available() {
             return;
         }

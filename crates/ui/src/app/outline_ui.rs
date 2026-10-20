@@ -10,7 +10,7 @@ use std::ops::RangeInclusive;
 
 use eframe::egui::{self, pos2, vec2, Align2, Rect, Sense, Ui};
 use egui_phosphor::regular as icon;
-use inknote_core::pdf_pages::OutlineEntry;
+use tratto_core::pdf_pages::OutlineEntry;
 
 use super::InkApp;
 use crate::pdf_nav::Read;

@@ -184,7 +184,7 @@ impl fmt::Display for StorageError {
         match self {
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Codec(e) => write!(f, "corrupt data: {e}"),
-            Self::BadMagic => write!(f, "not an InkNote file"),
+            Self::BadMagic => write!(f, "not a Tratto file"),
             Self::Corrupt => write!(f, "damaged note file"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported file version {v}"),
         }
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn roundtrip_with_meta_and_preview() {
         let doc = sample_doc();
-        let path = std::env::temp_dir().join("inknote_roundtrip_v4.ink");
+        let path = std::env::temp_dir().join("tratto_roundtrip_v4.ink");
         let mut meta = NoteMeta::new("Untitled note", true);
         save_note(&path, &mut meta, &doc).unwrap();
         assert_eq!(meta.title, "Shopping list"); // auto title from the first text line
@@ -806,7 +806,7 @@ mod tests {
     #[test]
     fn v4_files_still_load_and_keep_their_version() {
         let doc = sample_doc();
-        let path = std::env::temp_dir().join("inknote_legacy_v4.ink");
+        let path = std::env::temp_dir().join("tratto_legacy_v4.ink");
         let meta = bincode::serialize(&NoteMeta::new("Old note", false)).unwrap();
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(&V4.to_le_bytes());
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn notes_on_a_pdf_keep_it() {
-        let path = std::env::temp_dir().join("inknote_on_pdf.ink");
+        let path = std::env::temp_dir().join("tratto_on_pdf.ink");
         let file = PdfFile::new(b"%PDF-1.5 pretend".to_vec());
         let mut doc = Document::on_pdf(file.clone(), vec![[612.0, 792.0], [792.0, 612.0]]);
         let id = doc.alloc_id();
@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn autosaves_append_only_the_changes() {
-        let path = std::env::temp_dir().join("inknote_journal_append.ink");
+        let path = std::env::temp_dir().join("tratto_journal_append.ink");
         let pdf = PdfFile::new(vec![b'%'; 200_000]);
         let mut doc = Document::on_pdf(pdf.clone(), vec![[612.0, 792.0]; 3]);
         let mut meta = NoteMeta::new("Lecture", false);
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn a_torn_record_or_slot_falls_back_to_the_previous_save() {
-        let path = std::env::temp_dir().join("inknote_journal_torn.ink");
+        let path = std::env::temp_dir().join("tratto_journal_torn.ink");
         let mut doc = Document::default();
         let mut meta = NoteMeta::new("Torn", false);
         let mut writer = NoteWriter::default();
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn a_long_journal_is_compacted() {
-        let path = std::env::temp_dir().join("inknote_journal_compact.ink");
+        let path = std::env::temp_dir().join("tratto_journal_compact.ink");
         let mut doc = Document::default();
         let mut meta = NoteMeta::new("Long", false);
         let mut writer = NoteWriter::default();
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn the_writer_never_appends_to_a_file_replaced_behind_it() {
-        let path = std::env::temp_dir().join("inknote_journal_replaced.ink");
+        let path = std::env::temp_dir().join("tratto_journal_replaced.ink");
         let mut doc = Document::default();
         let mut meta = NoteMeta::new("Mine", false);
         let mut writer = NoteWriter::default();
@@ -1021,7 +1021,7 @@ mod tests {
     #[test]
     fn v5_files_still_load_and_are_converted_on_save() {
         let doc = sample_doc();
-        let path = std::env::temp_dir().join("inknote_legacy_v5.ink");
+        let path = std::env::temp_dir().join("tratto_legacy_v5.ink");
         let meta = bincode::serialize(&NoteMeta::new("Old", false)).unwrap();
         let body = bincode::serialize(&doc).unwrap();
         let mut bytes = MAGIC.to_vec();
@@ -1045,7 +1045,7 @@ mod tests {
     #[test]
     fn v3_files_still_load() {
         let doc = sample_doc();
-        let path = std::env::temp_dir().join("inknote_legacy_v3.ink");
+        let path = std::env::temp_dir().join("tratto_legacy_v3.ink");
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(&3u32.to_le_bytes());
         bytes.extend_from_slice(&old_layout(&doc));
@@ -1053,7 +1053,7 @@ mod tests {
 
         let (meta, loaded) = load_note(&path).unwrap();
         assert_eq!(loaded.strokes.len(), 1);
-        assert_eq!(meta.title, "inknote_legacy_v3");
+        assert_eq!(meta.title, "tratto_legacy_v3");
         assert_eq!(read_meta(&path).unwrap().pages, 1);
         let _ = fs::remove_file(&path);
     }

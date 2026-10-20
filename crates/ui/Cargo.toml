@@ -1,19 +1,19 @@
 [package]
-name = "inknote-ui"
+name = "tratto-ui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Minimal cross-platform digital handwriting note-taking app (egui + wgpu)"
+description = "Fast, low-latency handwriting notes and PDF annotation for pen and tablet"
 
 [[bin]]
-name = "inknote"
+name = "tratto"
 path = "src/main.rs"
 
 [dependencies]
-inknote-core.workspace = true
+tratto-core.workspace = true
 # Default features already include the Wayland + X11 backends and default fonts.
 # `wgpu` adds the wgpu renderer, `persistence` lets us store UI settings between runs.
 eframe.workspace = true

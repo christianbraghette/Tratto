@@ -1,12 +1,12 @@
 [package]
-name = "inknote-core"
+name = "tratto-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "InkNote backend: document model, editing history, storage, library and PDF export (no UI dependencies)"
+description = "Tratto backend: document model, editing history, storage, library and PDF export (no UI dependencies)"
 
 [dependencies]
 emath.workspace = true

@@ -9,7 +9,7 @@
 //! read, so latency stays at most one frame interval and the frame draws the
 //! freshest samples. Idle frames are unaffected: egui only repaints on demand.
 //!
-//! The cap is `Settings::fps_limit` (File > Settings); `INKNOTE_FPS=<n>`
+//! The cap is `Settings::fps_limit` (File > Settings); `TRATTO_FPS=<n>`
 //! overrides it, `0` removes it. With vsync the display paces the frames and
 //! there is no cap.
 
@@ -24,7 +24,7 @@ const SPIN: Duration = Duration::from_micros(1500);
 pub struct FrameLimiter {
     /// The window presents with vsync (set at startup): no cap.
     vsync: bool,
-    /// `INKNOTE_FPS`, which wins over the setting.
+    /// `TRATTO_FPS`, which wins over the setting.
     env_fps: Option<u32>,
     /// When the next frame may start.
     next: Option<Instant>,
@@ -32,7 +32,7 @@ pub struct FrameLimiter {
 
 impl FrameLimiter {
     pub fn new(vsync: bool) -> Self {
-        let env_fps = std::env::var("INKNOTE_FPS").ok().and_then(|v| v.trim().parse().ok());
+        let env_fps = std::env::var("TRATTO_FPS").ok().and_then(|v| v.trim().parse().ok());
         Self { vsync, env_fps, next: None }
     }
 
@@ -41,7 +41,7 @@ impl FrameLimiter {
         self.vsync
     }
 
-    /// `INKNOTE_FPS` is set: the setting has no effect.
+    /// `TRATTO_FPS` is set: the setting has no effect.
     pub fn overridden(&self) -> bool {
         self.env_fps.is_some()
     }

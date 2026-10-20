@@ -1752,39 +1752,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inknote-core"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "emath",
- "flate2",
- "pdfium-render",
- "serde",
-]
-
-[[package]]
-name = "inknote-ui"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "eframe",
- "egui-phosphor",
- "inknote-core",
- "pollster",
- "raw-window-handle",
- "ron",
- "serde",
- "sha2",
- "ureq",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "windows-sys 0.61.2",
- "winresource",
- "zip",
-]
-
-[[package]]
 name = "itertools"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3422,6 +3389,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "tratto-core"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "emath",
+ "flate2",
+ "pdfium-render",
+ "serde",
+]
+
+[[package]]
+name = "tratto-ui"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "eframe",
+ "egui-phosphor",
+ "pollster",
+ "raw-window-handle",
+ "ron",
+ "serde",
+ "sha2",
+ "tratto-core",
+ "ureq",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "windows-sys 0.61.2",
+ "winresource",
+ "zip",
 ]
 
 [[package]]

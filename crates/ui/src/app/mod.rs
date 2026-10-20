@@ -14,15 +14,15 @@ use eframe::egui::{
     Pos2, Rect, Sense, TouchPhase, Vec2, pos2, vec2,
 };
 
-use inknote_core::geometry::point_in_polygon;
-use inknote_core::history::{Action, History};
-use inknote_core::library::{self, Library};
-use inknote_core::model::{
+use tratto_core::geometry::point_in_polygon;
+use tratto_core::history::{Action, History};
+use tratto_core::library::{self, Library};
+use tratto_core::model::{
     Document, Point, Stroke, StrokeKind, TextBox,
 };
-use inknote_core::pdf_pages::{self, LinkAction, PdfFile, Target};
-use inknote_core::storage::{self, NoteMeta, NoteWriter};
-use inknote_core::stroke_builder::StrokeBuilder;
+use tratto_core::pdf_pages::{self, LinkAction, PdfFile, Target};
+use tratto_core::storage::{self, NoteMeta, NoteWriter};
+use tratto_core::stroke_builder::StrokeBuilder;
 
 use crate::frame_limit::FrameLimiter;
 use crate::input::wayland_pen::{PenEvent, WaylandPen};
@@ -44,6 +44,7 @@ mod export_ui;
 mod menus;
 mod outline_ui;
 mod settings_ui;
+mod update_ui;
 
 use menus::{Command, ContextMenu, HelpWindows};
 
@@ -60,7 +61,7 @@ const NAV_BACK_MAX: usize = 50;
 /// Autosave this long after the last change.
 /// Key under which eframe stores the window state (not public in eframe).
 const WINDOW_STATE_KEY: &str = "window";
-const SETTINGS_KEY: &str = "inknote_settings";
+const SETTINGS_KEY: &str = "tratto_settings";
 
 /// The settings saved by the last run, read before the window exists:
 /// `main` needs some of them to create it. Mirrors eframe's file storage
@@ -350,7 +351,7 @@ impl InkApp {
             decorations: Some(false),
             window_checked: false,
             maximize_after_fullscreen: false,
-            os_title: "InkNote".to_owned(),
+            os_title: "Tratto".to_owned(),
             title_buf: String::new(),
             title_focused: false,
             menu_open: false,
@@ -384,11 +385,11 @@ impl InkApp {
     // -------------------------------------------------------------- updates
 
     /// Tells about a new version found or installed in the background
-    /// (failures and "up to date" show only in Settings > Updates).
+    /// (failures and "up to date" show only in Help > Check for updates).
     fn poll_update(&mut self) {
         let msg = match self.updater.poll() {
-            Some(update::State::Available(r)) => format!("InkNote {} is available (File > Settings > Updates)", r.version),
-            Some(update::State::Installed(v)) => format!("InkNote {v} is installed: it starts next time (or File > Settings > Updates)"),
+            Some(update::State::Available(r)) => format!("Tratto {} is available (Help > Check for updates)", r.version),
+            Some(update::State::Installed(v)) => format!("Tratto {v} is installed: it starts next time (or Help > Check for updates)"),
             _ => return,
         };
         self.toast(msg);

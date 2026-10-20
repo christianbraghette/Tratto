@@ -3,8 +3,8 @@
 
 //! Persisted UI settings (stored through eframe's storage, not in the note file).
 
-use inknote_core::model::{Document, PageKind};
-use inknote_core::pdf_export::InkColors;
+use tratto_core::model::{Document, PageKind};
+use tratto_core::pdf_export::InkColors;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,7 +271,7 @@ impl Default for Settings {
             left_panel: LeftPanel::Closed,
             library_panel_open: false,
             pdf_rules: true,
-            library_root: inknote_core::library::default_root().to_string_lossy().into_owned(),
+            library_root: tratto_core::library::default_root().to_string_lossy().into_owned(),
             custom_title_bar: true,
             ui_scale: 1.0,
             smooth_scroll: true,

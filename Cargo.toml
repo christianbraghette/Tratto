@@ -14,7 +14,7 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/christianbraghette/inklav"
 
 [workspace.dependencies]
-inknote-core = { path = "crates/core" }
+tratto-core = { path = "crates/core" }
 # `emath` is the math crate egui is built on; sharing it keeps core types
 # (Pos2, Rect) directly usable by the UI without pulling egui into core.
 emath = "0.29"

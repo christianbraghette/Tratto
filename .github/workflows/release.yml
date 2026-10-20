@@ -1,5 +1,5 @@
-# Builds InkNote for each platform when a version tag (v1.2.3) is pushed and
-# attaches one archive per platform, `inknote-<target>.zip`, to a draft
+# Builds Tratto for each platform when a version tag (v1.2.3) is pushed and
+# attaches one archive per platform, `tratto-<target>.zip`, to a draft
 # release. Publishing the draft makes it the latest release: the app's
 # updater (crates/ui/src/update.rs) finds it by that name.
 #
@@ -66,8 +66,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: inknote-${{ matrix.target }}
-          path: dist/inknote-${{ matrix.target }}.zip
+          name: tratto-${{ matrix.target }}
+          path: dist/tratto-${{ matrix.target }}.zip
 
   release:
     needs: build
@@ -81,4 +81,4 @@ jobs:
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "InkNote ${GITHUB_REF_NAME#v}"
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "Tratto ${GITHUB_REF_NAME#v}"

@@ -18,7 +18,7 @@
 //! (`DefSubclassProc`), so winit keeps working exactly as before. State is
 //! published through atomics and the UI is woken with `request_repaint`.
 //!
-//! Set `INKNOTE_DEBUG_PEN=1` to print the pen flags whenever they change.
+//! Set `TRATTO_DEBUG_PEN=1` to print the pen flags whenever they change.
 //!
 //! On other platforms `WindowsPen::start` returns `None`.
 
@@ -141,7 +141,7 @@ mod imp {
 
     fn debug() -> bool {
         static D: OnceLock<bool> = OnceLock::new();
-        *D.get_or_init(|| std::env::var_os("INKNOTE_DEBUG_PEN").is_some())
+        *D.get_or_init(|| std::env::var_os("TRATTO_DEBUG_PEN").is_some())
     }
 
     fn publish(barrel: bool, eraser_end: bool) {

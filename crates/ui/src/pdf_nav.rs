@@ -4,7 +4,7 @@
 //! Finding one's way in a note written on a PDF: the PDF's outline (its
 //! table of contents) and the links on its pages.
 //!
-//! Both are read in the background (`inknote_core::pdf_pages`): the outline
+//! Both are read in the background (`tratto_core::pdf_pages`): the outline
 //! once, the links of a page when it is first shown. They are kept while the
 //! note is open; `clear` forgets them when another note is opened.
 
@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use eframe::egui;
-use inknote_core::pdf_pages::{self, Outline, OutlineEntry, PageLink, PageLinks, PdfFile};
+use tratto_core::pdf_pages::{self, Outline, OutlineEntry, PageLink, PageLinks, PdfFile};
 
 /// Something read in the background.
 pub enum Read<T> {

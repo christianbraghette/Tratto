@@ -16,7 +16,7 @@ use eframe::egui::{
     Stroke as UiStroke, Vec2,
 };
 
-use inknote_core::model::{self, PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
+use tratto_core::model::{self, PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
 
 use crate::highlight_gpu;
 use crate::stroke_mesh;

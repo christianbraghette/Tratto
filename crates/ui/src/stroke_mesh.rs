@@ -5,7 +5,7 @@
 //!
 //! A stroke is turned into one triangle mesh:
 //!
-//! 1. The smoothed centreline comes from [`inknote_core::stroke_path`],
+//! 1. The smoothed centreline comes from [`tratto_core::stroke_path`],
 //!    sampled densely enough that curves look round at any zoom.
 //! 2. A ribbon with 4 vertices per sample is built: two solid inner vertices
 //!    and two fully transparent outer vertices, one `aa` (= 1 physical pixel)
@@ -20,8 +20,8 @@
 use std::f32::consts::{PI, TAU};
 
 use eframe::egui::{epaint::Mesh, pos2, vec2, Color32, Pos2, Vec2};
-use inknote_core::model::{Point, StrokeKind};
-use inknote_core::stroke_path;
+use tratto_core::model::{Point, StrokeKind};
+use tratto_core::stroke_path;
 
 /// Target spacing of generated curve samples, in physical pixels.
 const SAMPLE_STEP_PX: f32 = 2.5;

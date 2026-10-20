@@ -1,8 +1,8 @@
-# InkNote Contributor License Agreement
+# Tratto Contributor License Agreement
 
 Version 1.0
 
-Thank you for your interest in contributing to InkNote (the "Project"),
+Thank you for your interest in contributing to Tratto (the "Project"),
 maintained by Christian Braghette (the "Maintainer").
 
 The Project is distributed under the GNU General Public License, version 3 or
@@ -106,8 +106,8 @@ Add the following statement to the description of your first pull request,
 or as a comment on it, with your name and the email address used in your
 commits:
 
-> I have read the InkNote Contributor License Agreement, version 1.0, and I
-> agree to its terms for this and all my future Contributions to InkNote.
+> I have read the Tratto Contributor License Agreement, version 1.0, and I
+> agree to its terms for this and all my future Contributions to Tratto.
 >
 > Name: ………………… &nbsp; Email: …………………
 

@@ -83,7 +83,7 @@ impl Default for PdfOptions {
             ink: InkColors::Original,
             page_size: None,
             margin: 0.0,
-            title: "InkNote".to_owned(),
+            title: "Tratto".to_owned(),
             author: String::new(),
         }
     }
@@ -251,7 +251,7 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     } else {
         format!("/Author ({}) ", pdf_string(opts.author.trim()))
     };
-    pdf.obj(4, &format!("<< /Title ({}) {author}/Producer (InkNote) >>", pdf_string(&opts.title)));
+    pdf.obj(4, &format!("<< /Title ({}) {author}/Producer (Tratto) >>", pdf_string(&opts.title)));
     pdf.obj(gs_obj, "<< /Type /ExtGState /BM /Darken >>");
 
     // Text boxes use the standard Helvetica (no font embedding needed).
@@ -646,7 +646,8 @@ mod tests {
         assert_eq!(&bytes[pos..pos + 4], b"xref");
 
         // Every xref entry must point at "<n> 0 obj".
-        let table = &text[pos..];
+        // Sliced from the bytes: `text` is lossy, so its offsets can differ.
+        let table = String::from_utf8_lossy(&bytes[pos..]);
         for (i, line) in table.lines().skip(3).take_while(|l| l.ends_with(" n ")).enumerate() {
             let off: usize = line[..10].parse().unwrap();
             let expect = format!("{} 0 obj", i + 1);

@@ -28,6 +28,6 @@ headers and import libraries can be deleted.
 
 `build.rs` copies the library next to the built executable (`target/debug`,
 `target/release`), where the app looks for it; a release ships it next to
-`inknote.exe` together with its license files. `INKNOTE_PDFIUM=<path>`
+`tratto.exe` together with its license files. `TRATTO_PDFIUM=<path>`
 points the app at another copy. Without the library the app works as
 before, only PDFs cannot be imported or shown.

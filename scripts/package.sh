@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Christian Braghette
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Builds the release archives the updater installs, `dist/inknote-<target>.zip`
+# Builds the release archives the updater installs, `dist/tratto-<target>.zip`
 # (the same ones the Release workflow attaches to a GitHub release):
-# inknote(.exe), the PDFium library, LICENSE and licenses/.
+# tratto(.exe), the PDFium library, LICENSE and licenses/.
 #
 # Usage: scripts/package.sh [windows] [linux] [macos]    (none: all three)
 #
@@ -38,9 +38,9 @@ host() {
 # platform -> target triple, PDFium archive, library in it, executable.
 platform_info() {
     case $1 in
-        windows) echo "x86_64-pc-windows-msvc win-x64 bin/pdfium.dll inknote.exe" ;;
-        linux) echo "x86_64-unknown-linux-gnu linux-x64 lib/libpdfium.so inknote" ;;
-        macos) echo "aarch64-apple-darwin mac-arm64 lib/libpdfium.dylib inknote" ;;
+        windows) echo "x86_64-pc-windows-msvc win-x64 bin/pdfium.dll tratto.exe" ;;
+        linux) echo "x86_64-unknown-linux-gnu linux-x64 lib/libpdfium.so tratto" ;;
+        macos) echo "aarch64-apple-darwin mac-arm64 lib/libpdfium.dylib tratto" ;;
         *) echo "unknown platform: $1 (windows, linux or macos)" >&2; exit 2 ;;
     esac
 }
@@ -86,9 +86,9 @@ build() {
     cp "$pdfium_dir/LICENSE" "$stage/licenses/PDFium-LICENSE"
     cp "$pdfium_dir"/licenses/* "$stage/licenses/"
     chmod 755 "$stage/$exe"
-    make_zip "$stage" "$dist/inknote-$target.zip"
+    make_zip "$stage" "$dist/tratto-$target.zip"
     rm -rf "$stage"
-    echo "    dist/inknote-$target.zip"
+    echo "    dist/tratto-$target.zip"
 }
 
 # Windows: the Linux build runs in WSL, with its own target folder (faster
@@ -106,7 +106,7 @@ linux_in_wsl() {
         echo "      curl https://sh.rustup.rs -sSf | sh -s -- -y"
         return 1
     fi
-    wsl.exe -- bash -lc "cd '$wsl_root' && CARGO_TARGET_DIR=\$HOME/.cache/inklav/target bash scripts/package.sh linux"
+    wsl.exe -- bash -lc "cd '$wsl_root' && CARGO_TARGET_DIR=\$HOME/.cache/tratto/target bash scripts/package.sh linux"
 }
 
 # Platforms asked for by name must be built; with none, the others are

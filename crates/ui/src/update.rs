@@ -3,9 +3,9 @@
 
 //! Updates from the project's GitHub releases.
 //!
-//! Each release carries one archive per platform, `inknote-<target>.zip`
+//! Each release carries one archive per platform, `tratto-<target>.zip`
 //! (see `.github/workflows/release.yml`), holding what goes next to the
-//! executable: `inknote(.exe)`, the PDFium library and the licenses. At
+//! executable: `tratto(.exe)`, the PDFium library and the licenses. At
 //! startup the latest release is asked for in the background; if it is
 //! newer, its archive is downloaded, checked against the SHA-256 digest
 //! GitHub publishes for it, and swapped in: each file is renamed to
@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 const REPO: &str = "christianbraghette/inklav";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// The Rust target triple this executable was built for (set by build.rs).
-const TARGET: &str = env!("INKNOTE_TARGET");
+const TARGET: &str = env!("TRATTO_TARGET");
 /// Archives larger than this are refused.
 const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
 const OLD: &str = ".old";
@@ -175,7 +175,7 @@ fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30))
-        .user_agent(&format!("InkNote/{CURRENT}"))
+        .user_agent(&format!("Tratto/{CURRENT}"))
         .build()
 }
 
@@ -200,7 +200,7 @@ fn latest_release() -> Result<Option<Release>, String> {
 }
 
 fn archive_name() -> String {
-    format!("inknote-{TARGET}.zip")
+    format!("tratto-{TARGET}.zip")
 }
 
 /// `a` is a later version than `b` ("1.10.0" > "1.9.2"; pre-release and
@@ -247,7 +247,7 @@ fn install_dir() -> Option<PathBuf> {
     }
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     // Writable by this user: not installed by a package manager.
-    let probe = dir.join(".inknote-update-probe");
+    let probe = dir.join(".tratto-update-probe");
     std::fs::write(&probe, b"").ok()?;
     let _ = std::fs::remove_file(&probe);
     Some(dir)
@@ -297,7 +297,7 @@ fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
             }
         }
         let has_exe = exe_name.as_ref().is_some_and(|n| files.iter().any(|f| f.parent() == Some(dir) && f.file_name() == Some(n)));
-        if has_exe { Ok(()) } else { Err(fail(&"the archive has no InkNote executable")) }
+        if has_exe { Ok(()) } else { Err(fail(&"the archive has no Tratto executable")) }
     })();
     if let Err(e) = unpacked {
         for f in &files {
@@ -397,7 +397,7 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("inknote-update-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tratto-update-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

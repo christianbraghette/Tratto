@@ -1,24 +1,34 @@
-# InkNote
+# Tratto
 
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Commercial license available](https://img.shields.io/badge/commercial%20license-available-green.svg)](#license)
 ![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
 
-InkNote is a minimal, cross-platform note-taking app for handwriting, built with
-Rust, [egui](https://github.com/emilk/egui) and [wgpu](https://wgpu.rs).
-You write with a pen on paged paper and keep notes in notebooks. Notes save
-automatically, and you can export any note as a vector PDF.
+**Tratto** (Italian for *stroke*) is a fast, distraction-free handwriting app
+for pen and tablet: take notes on paper that feels like paper, read PDFs and
+write directly on them, and keep everything in plain files on your own disk.
+It runs natively on Windows, macOS and Linux, built with Rust,
+[egui](https://github.com/emilk/egui) and [wgpu](https://wgpu.rs).
 
-It is designed for low-latency inking. Strokes are smoothed, anti-aliased on
-the GPU and, optionally, predicted slightly ahead of the pen tip.
+- **Ink that keeps up with your hand.** Tratto is designed for low latency:
+  strokes are pressure-sensitive, smoothed, anti-aliased on the GPU and,
+  optionally, predicted slightly ahead of the pen tip.
+- **Notes and PDFs in one place.** Write on blank, ruled or grid pages in any
+  paper size, or open a PDF to read it with its table of contents and links,
+  and import it to annotate it.
+- **Organised, and never lost.** Notebooks with sections, quick notes and
+  recent notes; every change is saved automatically with atomic writes,
+  backups and a trash folder.
+- **Yours to take anywhere.** Export any note as a crisp vector PDF. There is
+  no account and no cloud: your library is an ordinary folder.
 
-- [InkNote](#inknote)
+- [Tratto](#tratto)
   - [Features](#features)
   - [Getting Started](#getting-started)
     - [Requirements](#requirements)
     - [Build and run](#build-and-run)
     - [Tests](#tests)
-  - [Using InkNote](#using-inknote)
+  - [Using Tratto](#using-tratto)
     - [Library](#library)
     - [Window and menus](#window-and-menus)
     - [Editor](#editor)
@@ -82,7 +92,7 @@ the GPU and, optionally, predicted slightly ahead of the pen tip.
 - A GPU and driver supported by wgpu (Vulkan, Metal, DirectX 12 or OpenGL)
 - **Linux**: the Wayland and xkbcommon development packages, for example
   `sudo apt install libwayland-dev libxkbcommon-dev` on Debian/Ubuntu.
-  InkNote runs on both Wayland and X11, but native pen pressure needs Wayland.
+  Tratto runs on both Wayland and X11, but native pen pressure needs Wayland.
 
 ### Build and run
 
@@ -92,7 +102,7 @@ cd inklav
 cargo run --release
 ```
 
-The optimized executable is written to `target/release/inknote` (`inknote.exe` on Windows).
+The optimized executable is written to `target/release/tratto` (`tratto.exe` on Windows).
 
 ### Tests
 
@@ -102,11 +112,11 @@ cargo test --workspace
 
 Use `--workspace`: a plain `cargo test` only runs the tests of the UI crate.
 
-## Using InkNote
+## Using Tratto
 
 ### Library
 
-InkNote opens on the library screen. From there you can:
+Tratto opens on the library screen. From there you can:
 
 - create a **quick note** (**+ New note**) or a **notebook** (**+ New notebook**)
 - open a notebook to see its **sections** (**+ Section**) and the notes inside them
@@ -116,7 +126,7 @@ InkNote opens on the library screen. From there you can:
 
 ### Window and menus
 
-Like VS Code, InkNote draws its own title bar. It holds the menus, the
+Like VS Code, Tratto draws its own title bar. It holds the menus, the
 window title and the minimize, maximize and close buttons. Drag the title bar
 to move the window, double-click it to maximize, and drag the window edges to
 resize.
@@ -127,7 +137,7 @@ resize.
 | **Edit** | Undo, redo, select all on page, delete selection, deselect |
 | **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen |
 | **Page** | Insert a page before / after the current one, delete it, paper style, page setup |
-| **Help** | Keyboard shortcuts, about InkNote |
+| **Help** | Keyboard shortcuts, about Tratto |
 
 ### Editor
 
@@ -269,10 +279,10 @@ that follow the same smoothed curves as on screen.
 
 Notes are plain files in a plain folder, so they work with any backup or
 sync tool, and one damaged note cannot affect the others. The default library
-folder is `Documents/InkNote` in your home folder:
+folder is `Documents/Tratto` in your home folder:
 
 ```text
-InkNote/
+Tratto/
 ├── Quick note.ink          quick notes
 ├── My notebook/            a notebook
 │   ├── .notebook           cover colour
@@ -301,26 +311,26 @@ separately by eframe in the platform's application-data folder.
 
 ## Configuration
 
-By default InkNote presents frames without waiting for vsync, for the lowest
+By default Tratto presents frames without waiting for vsync, for the lowest
 latency, capped at 120 fps so the GPU does not render frames that are never
 shown. Both are set in **File > Settings > Display**: the frame rate limit
-applies at once, vsync when InkNote restarts. These environment variables
+applies at once, vsync when Tratto restarts. These environment variables
 override the settings:
 
 | Variable | Effect |
 | --- | --- |
-| `INKNOTE_FPS=144` | Frame rate cap without vsync, instead of the setting (`0` removes the cap) |
-| `INKNOTE_VSYNC=1` | Force vsync on: may save power, but adds latency |
-| `INKNOTE_MSAA=4` | Enable 4× MSAA (default `1`, off). Strokes are already anti-aliased, so this is rarely needed. |
+| `TRATTO_FPS=144` | Frame rate cap without vsync, instead of the setting (`0` removes the cap) |
+| `TRATTO_VSYNC=1` | Force vsync on: may save power, but adds latency |
+| `TRATTO_MSAA=4` | Enable 4× MSAA (default `1`, off). Strokes are already anti-aliased, so this is rarely needed. |
 
 ```sh
 # Linux / macOS
-INKNOTE_VSYNC=1 cargo run --release
+TRATTO_VSYNC=1 cargo run --release
 ```
 
 ```powershell
 # Windows PowerShell
-$env:INKNOTE_VSYNC = "1"; cargo run --release
+$env:TRATTO_VSYNC = "1"; cargo run --release
 ```
 
 ## Project Structure
@@ -329,23 +339,23 @@ The repository is a Cargo workspace that separates the backend from the UI:
 
 ```text
 crates/
-├── core/   inknote-core: backend library, no UI dependencies
+├── core/   tratto-core: backend library, no UI dependencies
 │           model, history (undo/redo), stroke_builder, stroke_path,
 │           storage (.ink files), library (notebooks/notes), pdf_export
-└── ui/     inknote-ui: the `inknote` executable (egui + wgpu)
+└── ui/     tratto-ui: the `tratto` executable (egui + wgpu)
             app (editor, library, menus), chrome (title bar), theme (design
             system), view, render, stroke_mesh, toolbar, kinetic (scrolling),
             scrollbar, settings, input (Wayland tablet / Windows pen)
 ```
 
-`inknote-core` depends only on `emath` (the geometry types egui is built on),
+`tratto-core` depends only on `emath` (the geometry types egui is built on),
 `serde`, `bincode` and `flate2`. It can be tested and reused without a window
 or GPU. The UI crate depends on the core, never the other way around.
 
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md)
-first. Because InkNote is dual-licensed, contributors sign the
+first. Because Tratto is dual-licensed, contributors sign the
 [Contributor License Agreement](CLA.md) once, in their first pull request. You
 keep the copyright in your work.
 
@@ -361,21 +371,21 @@ keep the copyright in your work.
 
 Copyright © 2026 Christian Braghette.
 
-InkNote is **dual-licensed**:
+Tratto is **dual-licensed**:
 
 1. **Open source: GNU GPL v3 or later.**
-   You can use, study, modify and redistribute InkNote under the terms of the
+   You can use, study, modify and redistribute Tratto under the terms of the
    [GNU General Public License](LICENSE), version 3 or (at your option) any
-   later version. If you distribute InkNote or a work based on it, you must
+   later version. If you distribute Tratto or a work based on it, you must
    release it under the same license and make the complete source code
    available.
 
 2. **Commercial license.**
-   If you want to ship InkNote, or code derived from it, in a product without
+   If you want to ship Tratto, or code derived from it, in a product without
    the GPL obligations (for example in closed-source software), you can buy a
    commercial license. Write to
    [christianbraghette@gmail.com](mailto:christianbraghette@gmail.com).
 
-InkNote is distributed in the hope that it will be useful, but WITHOUT ANY
+Tratto is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
 A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) for details.

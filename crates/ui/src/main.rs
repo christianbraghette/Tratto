@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! InkNote – a small handwriting note-taking application.
+//! Tratto – a low-latency handwriting note-taking and PDF annotation app.
 //!
 //! This crate is the UI (egui + wgpu). Document model, history, storage,
-//! library and PDF export live in `inknote_core`.
+//! library and PDF export live in `tratto_core`.
 //!
 //! Module layout:
 //! - `app`            application state and per-frame orchestration
@@ -50,7 +50,7 @@ use eframe::egui_wgpu::{self, wgpu};
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon/icon.png");
 
 /// eframe's app id: names the folder of the saved settings.
-const APP_ID: &str = "InkNote";
+const APP_ID: &str = "Tratto";
 
 /// Started from a terminal (`cargo run`, PowerShell), print there: a GUI
 /// program has no console of its own, so it borrows its parent's.
@@ -76,11 +76,11 @@ fn main() -> eframe::Result<()> {
     // Low-latency presentation by default: no vsync wait and at most one frame
     // queued, frames capped (File > Settings, see `frame_limit`). Vsync (saves
     // power, adds latency) is a setting too, read here because the present
-    // mode is fixed when the window is created; INKNOTE_VSYNC=1 forces it on.
-    // INKNOTE_MSAA=4 additionally enables 4x MSAA (strokes are already
+    // mode is fixed when the window is created; TRATTO_VSYNC=1 forces it on.
+    // TRATTO_MSAA=4 additionally enables 4x MSAA (strokes are already
     // anti-aliased analytically, so this is rarely needed).
-    let vsync = std::env::var_os("INKNOTE_VSYNC").is_some() || app::saved_settings().is_some_and(|s| s.vsync);
-    let msaa: u16 = std::env::var("INKNOTE_MSAA")
+    let vsync = std::env::var_os("TRATTO_VSYNC").is_some() || app::saved_settings().is_some_and(|s| s.vsync);
+    let msaa: u16 = std::env::var("TRATTO_MSAA")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
@@ -104,7 +104,7 @@ fn main() -> eframe::Result<()> {
             ..Default::default()
         },
         viewport: egui::ViewportBuilder::default()
-            .with_title("InkNote")
+            .with_title("Tratto")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("the bundled icon is a valid PNG"))
             // The app draws its own title bar; switching to the system one
             // (Settings) turns decorations back on at runtime.

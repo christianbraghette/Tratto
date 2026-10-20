@@ -24,10 +24,10 @@ use std::thread;
 
 use eframe::egui::{self, epaint::Mesh, pos2, vec2, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui};
 use egui_phosphor::regular as icon;
-use inknote_core::library::NoteInfo;
-use inknote_core::model::{Document, PageKind, StrokeKind, PAPERS};
-use inknote_core::pdf_export::{self, InkColors, PdfNote, PdfOptions};
-use inknote_core::{storage, stroke_path};
+use tratto_core::library::NoteInfo;
+use tratto_core::model::{Document, PageKind, StrokeKind, PAPERS};
+use tratto_core::pdf_export::{self, InkColors, PdfNote, PdfOptions};
+use tratto_core::{storage, stroke_path};
 
 use super::InkApp;
 use crate::pdf_view::PdfTextures;

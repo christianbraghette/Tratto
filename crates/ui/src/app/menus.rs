@@ -13,9 +13,9 @@ use eframe::egui::{
     self, Align2, Button, Frame, Id, Key, KeyboardShortcut, Modifiers, Order, Pos2, RichText, Ui,
 };
 use egui_phosphor::regular as icon;
-use inknote_core::history::Action;
-use inknote_core::library;
-use inknote_core::model::PageKind;
+use tratto_core::history::Action;
+use tratto_core::library;
+use tratto_core::model::PageKind;
 
 use super::library_ui::Dialog;
 use super::{InkApp, Screen};
@@ -66,7 +66,7 @@ pub(super) enum Command {
     DeletePage(u32),
     PaperStyle(PageKind),
     Shortcuts,
-    /// Ask for the latest release now (shown in Settings > Updates).
+    /// Open the updates window and ask for the latest release.
     CheckUpdates,
     About,
 }
@@ -84,6 +84,7 @@ pub(super) struct ContextMenu {
 pub(super) struct HelpWindows {
     pub shortcuts: bool,
     pub about: bool,
+    pub updates: bool,
 }
 
 fn shortcut(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> String {
@@ -151,8 +152,8 @@ impl InkApp {
 
     fn window_title(&self) -> String {
         match self.screen {
-            Screen::Editor => format!("{} - InkNote", self.note_meta.title),
-            Screen::Library => "InkNote".to_owned(),
+            Screen::Editor => format!("{} - Tratto", self.note_meta.title),
+            Screen::Library => "Tratto".to_owned(),
         }
     }
 
@@ -221,7 +222,7 @@ impl InkApp {
             self.title_buf = buf;
         } else {
             let mut menu_open = false;
-            let title = chrome::Title::Text("InkNote");
+            let title = chrome::Title::Text("Tratto");
             let bar = chrome::title_bar(ctx, state, self.menu_open, title, |ui| menu_open = self.menu_bar(ui, &mut cmds));
             self.menu_open = menu_open;
             if bar.exit_fullscreen {
@@ -260,6 +261,7 @@ impl InkApp {
     pub(super) fn finish_chrome(&mut self, ctx: &egui::Context) {
         self.poll_export();
         self.help_windows(ctx);
+        self.updates_window(ctx);
         self.global_settings_window(ctx);
         chrome::window_frame(ctx, self.window_state(ctx));
         for cmd in std::mem::take(&mut self.pending) {
@@ -351,7 +353,7 @@ impl InkApp {
             push(entry(ui, icon::KEYBOARD, "Keyboard shortcuts", "", true), ui, Command::Shortcuts);
             push(entry(ui, icon::DOWNLOAD_SIMPLE, "Check for updates...", "", true), ui, Command::CheckUpdates);
             ui.separator();
-            push(entry(ui, icon::INFO, "About InkNote", "", true), ui, Command::About);
+            push(entry(ui, icon::INFO, "About Tratto", "", true), ui, Command::About);
         });
         open
     }
@@ -623,11 +625,7 @@ impl InkApp {
             Command::DeletePage(i) if editor => self.delete_page(i),
             Command::PaperStyle(k) if editor => self.doc.page.kind = k,
             Command::Shortcuts => self.help.shortcuts = true,
-            Command::CheckUpdates => {
-                self.global_settings_open = true;
-                let install = self.settings.updates == crate::settings::UpdateMode::Install;
-                self.updater.check(ctx, install);
-            }
+            Command::CheckUpdates => self.check_for_updates(ctx),
             Command::About => self.help.about = true,
             // Editor commands that arrive after the note was closed.
             _ => {}
@@ -638,7 +636,7 @@ impl InkApp {
 
     fn help_windows(&mut self, ctx: &egui::Context) {
         let mut open = self.help.about;
-        egui::Window::new("About InkNote")
+        egui::Window::new("About Tratto")
             .open(&mut open)
             .collapsible(false)
             // Above the notches and the toolbar.
@@ -648,7 +646,7 @@ impl InkApp {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::ACCENT));
-                    ui.label(theme::title("InkNote"));
+                    ui.label(theme::title("Tratto"));
                     ui.label(theme::muted(format!("Version {}", env!("CARGO_PKG_VERSION"))));
                     ui.add_space(6.0);
                     ui.label(env!("CARGO_PKG_DESCRIPTION"));

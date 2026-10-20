@@ -19,8 +19,8 @@ use eframe::egui::{
 };
 use egui_phosphor::regular as icon;
 
-use inknote_core::library::{self, NoteInfo, NotebookInfo};
-use inknote_core::storage::{now_secs, Preview};
+use tratto_core::library::{self, NoteInfo, NotebookInfo};
+use tratto_core::storage::{now_secs, Preview};
 
 use super::menus::{button_menu, entry};
 use super::InkApp;
@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn sorting_and_place_names() {
-        use inknote_core::storage::NoteMeta;
+        use tratto_core::storage::NoteMeta;
         let note = |title: &str, modified: u64| {
             let mut meta = NoteMeta::new(title, false);
             meta.modified = modified;
@@ -1352,7 +1352,7 @@ mod tests {
     /// the views offer their actions.
     #[test]
     fn every_view_draws() {
-        let root = std::env::temp_dir().join("inknote_library_ui_test");
+        let root = std::env::temp_dir().join("tratto_library_ui_test");
         let _ = std::fs::remove_dir_all(&root);
         let nb = library::create_notebook(&root, "Work").unwrap();
         library::create_note(&nb.join("Section 1"), "Plan").unwrap();

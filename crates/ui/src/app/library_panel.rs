@@ -23,7 +23,7 @@ use eframe::egui::collapsing_header::CollapsingState;
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, Id, Layout, Rect, Sense, Ui};
 use egui_phosphor::regular as icon;
 
-use inknote_core::library::{self, NoteInfo, NotebookInfo, SectionInfo, TrashItem};
+use tratto_core::library::{self, NoteInfo, NotebookInfo, SectionInfo, TrashItem};
 
 use super::library_ui::{when, Act, Dialog};
 use super::menus::{button_menu, entry};

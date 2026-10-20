@@ -4,7 +4,7 @@
 //! The note library on disk.
 //!
 //! ```text
-//! <root>/                      library folder (default: Documents/InkNote)
+//! <root>/                      library folder (default: Documents/Tratto)
 //!   Quick note.ink             loose notes
 //!   My notebook/               a notebook (folder)
 //!     .notebook                  color=R,G,B
@@ -84,9 +84,9 @@ pub fn default_root() -> PathBuf {
     match home {
         Some(h) => {
             let docs = h.join("Documents");
-            (if docs.is_dir() { docs } else { h }).join("InkNote")
+            (if docs.is_dir() { docs } else { h }).join("Tratto")
         }
-        None => PathBuf::from("InkNote"),
+        None => PathBuf::from("Tratto"),
     }
 }
 
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn notes_in_creation_or_manual_order() {
-        let dir = std::env::temp_dir().join("inknote_order_test");
+        let dir = std::env::temp_dir().join("tratto_order_test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let note = |name: &str, created: u64| {
@@ -599,7 +599,7 @@ mod tests {
     fn sanitize_and_unique() {
         assert_eq!(sanitize("  a/b:c?  "), "a_b_c_");
         assert_eq!(sanitize("..."), "Untitled");
-        let dir = std::env::temp_dir().join("inknote_unique_test");
+        let dir = std::env::temp_dir().join("tratto_unique_test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("x.ink"), b"").unwrap();
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn notebook_lifecycle() {
-        let root = std::env::temp_dir().join("inknote_library_test");
+        let root = std::env::temp_dir().join("tratto_library_test");
         let _ = fs::remove_dir_all(&root);
 
         let nb = create_notebook(&root, "Work").unwrap();
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn trash_restore_and_erase() {
-        let root = std::env::temp_dir().join("inknote_trash_test");
+        let root = std::env::temp_dir().join("tratto_trash_test");
         let _ = fs::remove_dir_all(&root);
         let nb = create_notebook(&root, "Work").unwrap();
         let section = nb.join("Section 1");
@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn renaming_a_note_keeps_its_order_and_backup() {
-        let dir = std::env::temp_dir().join("inknote_rename_note_test");
+        let dir = std::env::temp_dir().join("tratto_rename_note_test");
         let _ = fs::remove_dir_all(&dir);
         let a = create_note(&dir, "A").unwrap();
         let b = create_note(&dir, "B").unwrap();

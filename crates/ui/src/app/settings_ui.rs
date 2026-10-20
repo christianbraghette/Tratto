@@ -10,13 +10,12 @@
 
 use eframe::egui::{self, Align2, DragValue, RichText, Slider, Ui};
 use egui_phosphor::regular as icon;
-use inknote_core::history::Action;
-use inknote_core::model::{paper_label, PageKind, PAPERS};
+use tratto_core::history::Action;
+use tratto_core::model::{paper_label, PageKind, PAPERS};
 
 use super::library_ui::{location, when, Dialog};
 use super::InkApp;
-use crate::settings::{ToolbarPosition, UpdateMode};
-use crate::update::{self, State as UpdateState};
+use crate::settings::ToolbarPosition;
 use crate::theme::{self, color, space};
 
 /// Note settings in the left panel: default width and resize range.
@@ -26,21 +25,21 @@ const NOTE_WIDTHS: std::ops::RangeInclusive<f32> = 280.0..=520.0;
 // ------------------------------------------------------------- helpers
 
 /// Label | control rows, aligned within a section.
-fn rows(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
+pub(super) fn rows(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
     egui::Grid::new(id).num_columns(2).spacing([space::L, space::S]).min_col_width(110.0).show(ui, add);
 }
 
-fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+pub(super) fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
     ui.label(theme::muted(label));
     ui.horizontal(add);
     ui.end_row();
 }
 
-fn hint(ui: &mut Ui, text: &str) {
+pub(super) fn hint(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).small().color(color::TEXT_FAINT));
 }
 
-fn section(ui: &mut Ui, title: &str) {
+pub(super) fn section(ui: &mut Ui, title: &str) {
     ui.add_space(space::M);
     theme::caption(ui, title);
     ui.add_space(space::XS);
@@ -192,10 +191,6 @@ impl InkApp {
         let mut reset = false;
         let vsync_now = self.frame_limit.vsync();
         let fps_overridden = self.frame_limit.overridden();
-        let update_state = self.updater.state().clone();
-        let mut check_update = false;
-        let mut install_update = false;
-        let mut restart = false;
         let s = &mut self.settings;
 
         section(ui, "Appearance");
@@ -246,7 +241,7 @@ impl InkApp {
             });
             row(ui, "At startup", |ui| {
                 ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it")
-                    .on_hover_text("Every note opens where it was left; this also reopens the last one when InkNote starts");
+                    .on_hover_text("Every note opens where it was left; this also reopens the last one when Tratto starts");
             });
         });
 
@@ -281,12 +276,12 @@ impl InkApp {
                 .on_disabled_hover_text(if vsync_now {
                     "With vsync the display sets the frame rate"
                 } else {
-                    "Set by the INKNOTE_FPS environment variable"
+                    "Set by the TRATTO_FPS environment variable"
                 });
             });
         });
         if s.vsync != vsync_now {
-            hint(ui, "Vsync changes when InkNote restarts.");
+            hint(ui, "Vsync changes when Tratto restarts.");
         } else {
             hint(ui, "A lower limit uses less GPU while you write or scroll.");
         }
@@ -320,60 +315,6 @@ impl InkApp {
             });
         });
 
-        section(ui, "Updates");
-        rows(ui, "global_updates", |ui| {
-            row(ui, "New versions", |ui| {
-                egui::ComboBox::from_id_salt("updates").selected_text(s.updates.label()).show_ui(ui, |ui| {
-                    for mode in [UpdateMode::Install, UpdateMode::Notify, UpdateMode::Off] {
-                        ui.selectable_value(&mut s.updates, mode, mode.label());
-                    }
-                });
-            });
-            row(ui, "Version", |ui| {
-                ui.label(update::CURRENT);
-                if ui
-                    .add_enabled(!update_state.busy(), egui::Button::new(format!("{}  Check now", icon::MAGNIFYING_GLASS)))
-                    .clicked()
-                {
-                    check_update = true;
-                }
-            });
-        });
-        match &update_state {
-            UpdateState::Idle => hint(ui, "Checked when InkNote starts, from its GitHub releases."),
-            UpdateState::Checking => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    hint(ui, "Checking for updates...");
-                });
-            }
-            UpdateState::UpToDate => hint(ui, "InkNote is up to date."),
-            UpdateState::Available(release) => {
-                hint(ui, &format!("InkNote {} is available.", release.version));
-                ui.horizontal(|ui| {
-                    if release.installable
-                        && ui.add(theme::primary_button(format!("{}  Install", icon::DOWNLOAD_SIMPLE))).clicked()
-                    {
-                        install_update = true;
-                    }
-                    ui.hyperlink_to(format!("{}  Release notes", icon::ARROW_SQUARE_OUT), &release.page);
-                });
-            }
-            UpdateState::Downloading(release) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    hint(ui, &format!("Downloading InkNote {}...", release.version));
-                });
-            }
-            UpdateState::Installed(version) => {
-                hint(ui, &format!("InkNote {version} is installed; it starts next time."));
-                if ui.add(theme::primary_button(format!("{}  Restart now", icon::ARROW_CLOCKWISE))).clicked() {
-                    restart = true;
-                }
-            }
-            UpdateState::Failed(e) => hint(ui, e),
-        }
-
         ui.add_space(space::L);
         ui.separator();
         ui.horizontal(|ui| {
@@ -383,16 +324,6 @@ impl InkApp {
             ui.label(RichText::new("Keeps the library folder and the panels.").small().color(color::TEXT_FAINT));
         });
 
-        if check_update {
-            let install = self.settings.updates == UpdateMode::Install;
-            self.updater.check(ui.ctx(), install);
-        }
-        if install_update {
-            self.updater.install(ui.ctx());
-        }
-        if restart {
-            self.restart(ui.ctx());
-        }
         if change_folder {
             self.lib_ui.dialog = Some(Dialog::Folder(self.settings.library_root.clone()));
         }

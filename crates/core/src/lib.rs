@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! InkNote core: everything that does not depend on the UI toolkit.
+//! Tratto core: everything that does not depend on the UI toolkit.
 //!
 //! - `model`          serializable data model (`Point`, `Stroke`, `Document`)
 //! - `geometry`       point-to-segment math used by the eraser

@@ -98,10 +98,10 @@ mod imp {
     /// `zwp_tablet_tool_v2::pressure` is normalised over this range.
     const PRESSURE_MAX: f32 = 65535.0;
 
-    /// `INKNOTE_DEBUG_PEN=1` prints every pen button code to stderr.
+    /// `TRATTO_DEBUG_PEN=1` prints every pen button code to stderr.
     fn debug() -> bool {
         static D: OnceLock<bool> = OnceLock::new();
-        *D.get_or_init(|| std::env::var_os("INKNOTE_DEBUG_PEN").is_some())
+        *D.get_or_init(|| std::env::var_os("TRATTO_DEBUG_PEN").is_some())
     }
 
     pub struct WaylandPen {

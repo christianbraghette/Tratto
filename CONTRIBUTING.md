@@ -1,10 +1,10 @@
-# Contributing to InkNote
+# Contributing to Tratto
 
 Thanks for helping out! Bug reports, ideas and pull requests are all welcome.
 
 ## Contributor License Agreement
 
-InkNote is dual-licensed: it is free software under the GPL-3.0-or-later and
+Tratto is dual-licensed: it is free software under the GPL-3.0-or-later and
 is also offered under commercial licenses. So every contribution must be
 covered by the [Contributor License Agreement](CLA.md) (CLA).
 
@@ -31,8 +31,8 @@ Please include:
 
 The repository is a Cargo workspace. The layout is described under *Project
 Structure* in the [README](README.md#project-structure). The main rule is that
-`inknote-core` must not depend on egui, eframe or any other UI or windowing
-crate. Code that needs those belongs in `inknote-ui`.
+`tratto-core` must not depend on egui, eframe or any other UI or windowing
+crate. Code that needs those belongs in `tratto-ui`.
 
 Before opening a pull request:
 
@@ -48,7 +48,7 @@ Guidelines:
 - Take colours, corner radii, spacing and text sizes from `crates/ui/src/theme.rs`
   instead of hard-coding them, so the interface stays consistent. Add a token
   there if none fits.
-- Add unit tests for new behaviour in `inknote-core`.
+- Add unit tests for new behaviour in `tratto-core`.
 - Keep the `.ink` format backwards-compatible. If the format has to change,
   bump the version in `storage.rs` and make sure older files still load.
 - Start every new source file with the license header:
