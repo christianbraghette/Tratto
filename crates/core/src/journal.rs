@@ -11,6 +11,7 @@
 //! edit is implemented.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -106,7 +107,8 @@ impl Item for Stroke {
             && *kind == other.kind
             && *color == other.color
             && *width == other.width
-            && *points == other.points
+            // Points shared with the other version are unchanged: not compared.
+            && (Arc::ptr_eq(points, &other.points) || *points == other.points)
     }
 }
 

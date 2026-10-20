@@ -10,7 +10,7 @@
 //!   (`alpha_min`), fast strokes pass almost unfiltered (`alpha -> 1`), so the
 //!   line does not lag behind the pen. This is a much better latency/jitter
 //!   trade-off than a fixed moving average.
-//! * **Live tip + prediction** – `preview_points` appends the newest raw
+//! * **Live tip + prediction** – `tip` gives the newest raw
 //!   sample (so the drawn line always reaches the pen) and optionally a short
 //!   extrapolated segment that hides display latency. Neither is ever stored.
 //!
@@ -91,10 +91,17 @@ impl StrokeBuilder {
         Some(Point::new(self.latest.x + vx * k, self.latest.y + vy * k, self.latest.pressure))
     }
 
-    /// Control points for live rendering: smoothed path + live tip (+ prediction).
-    pub fn preview_points(&self, predict: bool) -> Vec<Point> {
-        let mut v = self.out.clone();
-        if v.last().is_none_or(|o| o.distance(&self.latest) > 0.05) {
+    /// The smoothed points so far. They never change: points are only
+    /// added after them.
+    pub fn points(&self) -> &[Point] {
+        &self.out
+    }
+
+    /// What live rendering draws after [`Self::points`]: the live tip
+    /// (+ prediction). At most two points, different every time.
+    pub fn tip(&self, predict: bool) -> Vec<Point> {
+        let mut v = Vec::with_capacity(2);
+        if self.out.last().is_none_or(|o| o.distance(&self.latest) > 0.05) {
             v.push(self.latest);
         }
         if predict && let Some(t) = self.predicted_tip() {

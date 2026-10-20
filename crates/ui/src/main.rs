@@ -12,7 +12,7 @@
 //! - `view`           page layout + page/content/screen coordinate transforms
 //! - `render`         painting of page background and strokes
 //! - `pdf_view`       the PDF pages under the ink (background-rendered textures)
-//! - `highlight_gpu`  highlighter strokes with a darken blend (wgpu pipeline)
+//! - `stroke_gpu`     strokes kept on the GPU (wgpu pipelines: ink, darkening highlighters)
 //! - `stroke_mesh`    anti-aliased stroke tessellation
 //! - `kinetic`        scroll momentum, wheel acceleration and eased jumps
 //! - `scrollbar`      large pen-friendly scrollbars
@@ -20,6 +20,7 @@
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `theme`          design system: colours, sizes, fonts, shared components
 //! - `input`          native pen input (Wayland tablet, Windows pen buttons)
+//! - `saver`          saves the open note on a background thread
 //! - `update`         updates from the GitHub releases
 
 // A GUI program on Windows: started from Explorer or a shortcut, no console
@@ -27,18 +28,21 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+#[cfg(test)]
+mod bench;
 mod chrome;
 mod desktop;
 mod file_picker;
 mod frame_limit;
-mod highlight_gpu;
 mod input;
 mod kinetic;
 mod pdf_nav;
 mod pdf_view;
 mod render;
+mod saver;
 mod scrollbar;
 mod settings;
+mod stroke_gpu;
 mod stroke_mesh;
 mod theme;
 mod toolbar;
@@ -112,7 +116,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             if let Some(render_state) = cc.wgpu_render_state.as_ref() {
-                highlight_gpu::install(render_state, msaa.into());
+                stroke_gpu::install(render_state, msaa.into());
             }
             Ok(Box::new(app::InkApp::new(cc, vsync)))
         }),

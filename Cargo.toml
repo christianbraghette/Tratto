@@ -19,7 +19,8 @@ tratto-core = { path = "crates/core" }
 # (Pos2, Rect) directly usable by the UI without pulling egui into core.
 emath = "0.36.2"
 eframe = { version = "0.36.2", features = ["wgpu", "persistence"] }
-serde = { version = "1", features = ["derive"] }
+# `rc`: stroke points are shared (`Arc<[Point]>`), encoded like a `Vec`.
+serde = { version = "1", features = ["derive", "rc"] }
 
 [profile.dev]
 opt-level = 1

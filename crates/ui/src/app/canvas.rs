@@ -513,10 +513,13 @@ impl InkApp {
         let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
         let moved = self.selection.as_ref().map(|s| Moved { ids: &s.ids, page: s.page, offset: move_off });
         // The stroke being drawn, in its own layer.
-        let live = self.active.as_ref().map(|a| (a, a.builder.preview_points(self.settings.predict_pen)));
-        let paint_live = |kind: StrokeKind| {
-            if let Some((a, pts)) = live.as_ref().filter(|(a, _)| a.kind == kind) {
-                render::paint_live(&painter, &view, a.page, a.kind, a.color, a.width, pts, ppp);
+        let predict = self.settings.predict_pen;
+        let mut live = self.active.as_mut();
+        let mut paint_live = |kind: StrokeKind| {
+            if let Some(a) = live.as_deref_mut().filter(|a| a.kind == kind) {
+                let tip = a.builder.tip(predict);
+                let points = (a.builder.points(), &tip[..]);
+                a.live.paint(&painter, &view, a.page, a.kind, a.color, a.width, points, ppp);
             }
         };
         let strokes = &self.doc.strokes;

@@ -719,6 +719,8 @@ impl InkApp {
     }
 
     pub(super) fn apply_act(&mut self, a: Act) {
+        // Library actions move, rename and delete files: never during a save.
+        self.finish_saves();
         let root = self.library_root();
         match a {
             Act::Open(p) => self.open_note(&p),

@@ -19,6 +19,8 @@ use tratto_core::storage::{self, NoteMeta, NoteWriter};
 use crate::settings::{LeftPanel, NoteView};
 use crate::theme;
 
+use crate::saver::Saved;
+
 use super::{Fingerprint, InkApp, Loaded, Loading, Screen, is_pdf};
 
 /// Notes larger than this (bytes) are read in the background: notes written
@@ -67,29 +69,80 @@ impl InkApp {
         }
     }
 
-    /// Writes the open note. Returns false (and shows why) on failure.
+    /// Writes the open note and waits until it is on disk (with any save
+    /// still being written). Returns false (and shows why) on failure.
     pub(super) fn save_note(&mut self, announce: bool) -> bool {
         let Some(path) = self.note_path.clone() else {
             return false;
         };
-        match self.writer.save(&path, &mut self.note_meta, &self.doc) {
-            Ok(()) => {
-                self.dirty = false;
-                if announce {
-                    self.toast("Saved");
+        self.saver.save(path, self.note_meta.clone(), self.doc.clone());
+        self.dirty = false;
+        let saved = self.finish_saves();
+        if saved && announce {
+            self.toast("Saved");
+        }
+        saved
+    }
+
+    /// Saves the open note in the background (autosave). While a save is
+    /// being written, the note stays dirty and is saved after it.
+    pub(super) fn autosave(&mut self) {
+        let Some(path) = self.note_path.clone() else { return };
+        if self.saver.busy() {
+            return;
+        }
+        // Cheap: the strokes' points are shared, not copied.
+        self.saver.save(path, self.note_meta.clone(), self.doc.clone());
+        self.dirty = false;
+    }
+
+    /// Takes the results of the saves finished in the background.
+    pub(super) fn poll_saves(&mut self) {
+        let saves = self.saver.poll();
+        self.apply_saves(saves);
+    }
+
+    /// Waits for the saves still being written. False if the last one failed.
+    pub(super) fn finish_saves(&mut self) -> bool {
+        let saves = self.saver.wait();
+        self.apply_saves(saves)
+    }
+
+    /// What finished saves mean for the open note. False if the last failed.
+    fn apply_saves(&mut self, saves: Vec<Saved>) -> bool {
+        let mut ok = true;
+        for saved in saves {
+            let open = self.note_path.as_ref() == Some(&saved.path);
+            match saved.result {
+                // Only what the save derives from the document: the title may
+                // have been changed since.
+                Ok(meta) if open => {
+                    let m = &mut self.note_meta;
+                    m.modified = meta.modified;
+                    m.pages = meta.pages;
+                    m.preview = meta.preview;
+                    if m.auto_title && meta.auto_title {
+                        m.title = meta.title;
+                    }
+                    ok = true;
                 }
-                true
-            }
-            Err(e) => {
-                self.toast(format!("Save failed: {e}"));
-                false
+                Ok(_) => ok = true,
+                Err(e) => {
+                    self.toast(format!("Save failed: {e}"));
+                    // Tried again at the next autosave.
+                    self.dirty |= open;
+                    ok = false;
+                }
             }
         }
+        ok
     }
 
     /// Opens a note. A large one (written on a PDF) is read in the background
     /// behind a loading screen, so the window never freezes.
     pub(super) fn open_note(&mut self, path: &Path) {
+        // It may be the note being saved.
+        self.finish_saves();
         let large = std::fs::metadata(path).is_ok_and(|m| m.len() > LOAD_IN_BACKGROUND);
         if large {
             let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -107,7 +160,7 @@ impl InkApp {
     fn show_note(&mut self, path: &Path, meta: NoteMeta, doc: Document, writer: NoteWriter) {
         self.doc = doc;
         self.note_meta = meta;
-        self.writer = writer;
+        self.saver.set_writer(writer);
         self.note_path = Some(path.to_path_buf());
         self.ensure_pages();
         self.reset_editing_state();
@@ -153,7 +206,7 @@ impl InkApp {
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         self.doc = doc;
         self.note_meta = NoteMeta::new(&name, false);
-        self.writer = NoteWriter::default();
+        self.saver.set_writer(NoteWriter::default());
         self.note_path = None;
         self.reader = Some(path.to_path_buf());
         self.ensure_pages();
@@ -277,7 +330,7 @@ impl InkApp {
         self.context_menu = None;
         self.export_dialog = None;
         self.doc = Document::default();
-        self.writer = NoteWriter::default();
+        self.saver.set_writer(NoteWriter::default());
         self.reset_editing_state();
         self.screen = Screen::Library;
         self.refresh_library();

@@ -96,7 +96,9 @@ pub struct Stroke {
     pub color: [u8; 4],
     /// Base width in document units.
     pub width: f32,
-    pub points: Vec<Point>,
+    /// Shared: copies of the document (undo history, the last save, a save
+    /// in the background) cost nothing per point. Encoded like a `Vec`.
+    pub points: Arc<[Point]>,
     /// Cached `[min_x, min_y, max_x, max_y]` for culling and eraser rejection.
     pub bounds: [f32; 4],
     /// Bumped whenever the points change; invalidates cached meshes. Not saved.
@@ -107,12 +109,12 @@ pub struct Stroke {
 impl Stroke {
     pub fn new(id: u64, page: u32, kind: StrokeKind, color: [u8; 4], width: f32, points: Vec<Point>) -> Self {
         let bounds = compute_bounds(&points);
-        Self { id, page, kind, color, width, points, bounds, rev: 0 }
+        Self { id, page, kind, color, width, points: points.into(), bounds, rev: 0 }
     }
 
     /// Moves the stroke (page space).
     pub fn translate(&mut self, dx: f32, dy: f32) {
-        for p in &mut self.points {
+        for p in Arc::make_mut(&mut self.points) {
             p.x += dx;
             p.y += dy;
         }
@@ -132,7 +134,7 @@ impl Stroke {
         {
             return false; // cheap bounding-box rejection
         }
-        match self.points.as_slice() {
+        match &self.points[..] {
             [] => false,
             [p] => p.pos2().distance(center) <= reach,
             pts => pts.windows(2).any(|w| point_segment_distance(center, w[0].pos2(), w[1].pos2()) <= reach),
@@ -310,6 +312,29 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared points are encoded exactly like the `Vec` the format was
+    /// defined with: files do not change.
+    #[test]
+    fn shared_points_encode_like_a_vec() {
+        #[derive(Serialize)]
+        struct Written {
+            id: u64,
+            page: u32,
+            kind: StrokeKind,
+            color: [u8; 4],
+            width: f32,
+            points: Vec<Point>,
+            bounds: [f32; 4],
+        }
+        let points = vec![Point::new(1.0, 2.0, 0.5), Point::new(3.0, 4.0, 0.25)];
+        let stroke = Stroke::new(7, 2, StrokeKind::Pen, [1, 2, 3, 255], 2.5, points.clone());
+        let written = Written { id: 7, page: 2, kind: StrokeKind::Pen, color: [1, 2, 3, 255], width: 2.5, points, bounds: stroke.bounds };
+        let bytes = bincode::serialize(&stroke).unwrap();
+        assert_eq!(bytes, bincode::serialize(&written).unwrap());
+        let back: Stroke = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.points, stroke.points);
+    }
 
     #[test]
     fn highlight_mixes_with_the_paper() {

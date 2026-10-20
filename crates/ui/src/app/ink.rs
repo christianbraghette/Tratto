@@ -10,6 +10,7 @@ use tratto_core::history::Action;
 use tratto_core::model::{Stroke, StrokeKind};
 use tratto_core::stroke_builder::StrokeBuilder;
 
+use crate::render::LiveStroke;
 use crate::toolbar::Tool;
 use crate::view::{Layout, View};
 
@@ -48,7 +49,7 @@ impl InkApp {
                 if let Some(page) = view.layout.page_at(view.screen_to_content(pos)) {
                     let mut builder = StrokeBuilder::new(MIN_POINT_DIST, SMOOTH_ALPHA_MIN, SMOOTH_SPEED_REF);
                     builder.begin(to_page_point(view, page, pos, self.pen_pressure()));
-                    self.active = Some(ActiveStroke { page, kind, color, width, builder });
+                    self.active = Some(ActiveStroke { page, kind, color, width, builder, live: LiveStroke::default() });
                 }
             }
         } else if resp.dragged() || resp.drag_stopped() {

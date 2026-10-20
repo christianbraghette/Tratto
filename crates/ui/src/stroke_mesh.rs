@@ -16,12 +16,18 @@
 //!
 //! All output positions are `document_units * scale` (no translation), which
 //! lets the cache reuse a mesh while scrolling.
+//!
+//! [`LiveMesh`] makes the same triangles for the stroke being drawn, as it
+//! grows: only its end is made again each frame.
 
 use std::f32::consts::{PI, TAU};
+use std::ops::Range;
 
 use eframe::egui::{Color32, Pos2, Vec2, epaint::Mesh, pos2, vec2};
 use tratto_core::model::{Point, StrokeKind};
-use tratto_core::stroke_path;
+use tratto_core::stroke_path::{self, LiveCurve, Sample};
+
+use crate::stroke_gpu::Batch;
 
 /// Target spacing of generated curve samples, in physical pixels.
 const SAMPLE_STEP_PX: f32 = 2.5;
@@ -34,42 +40,49 @@ pub fn tessellate(mesh: &mut Mesh, kind: StrokeKind, rgba: [u8; 4], width: f32, 
     if pts.is_empty() {
         return;
     }
-    let solid = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
-    let half_aa = aa * 0.5;
-
     // Never thinner than one physical pixel.
-    let dense = stroke_path::smoothed(kind, width, pts, scale, half_aa, SAMPLE_STEP_PX * aa, 0.05 * aa);
-    let n = dense.len();
-    let at = |i: usize| pos2(dense[i].x, dense[i].y);
+    let dense = stroke_path::smoothed(kind, width, pts, scale, aa * 0.5, SAMPLE_STEP_PX * aa, 0.05 * aa);
+    whole(mesh, &dense, solid(rgba), aa);
+}
 
-    if n == 1 {
-        let r = dense[0].r;
-        add_arc(
-            mesh,
-            at(0),
-            vec2(1.0, 0.0),
-            vec2(0.0, 1.0),
-            r - half_aa,
-            r + half_aa,
-            solid,
-            TAU,
-            arc_segments(r, aa) * 2,
-        );
+fn solid(rgba: [u8; 4]) -> Color32 {
+    Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3])
+}
+
+/// All the triangles of the curve `dense`: ribbon and round caps, or a disc.
+fn whole(mesh: &mut Mesh, dense: &[Sample], solid: Color32, aa: f32) {
+    if let [dot] = dense {
+        let r = dot.r;
+        let half_aa = aa * 0.5;
+        let segs = arc_segments(r, aa) * 2;
+        add_arc(mesh, at(dot), vec2(1.0, 0.0), vec2(0.0, 1.0), r - half_aa, r + half_aa, solid, TAU, segs);
         return;
     }
+    ribbon(mesh, dense, 0..dense.len(), None, solid, aa * 0.5);
+    caps(mesh, dense, solid, aa);
+}
 
-    // Unit direction of every segment.
-    let dirs: Vec<Vec2> = (0..n - 1).map(|i| unit(at(i + 1) - at(i))).collect();
+fn at(s: &Sample) -> Pos2 {
+    pos2(s.x, s.y)
+}
 
-    // ---- ribbon
-    let base = mesh.vertices.len() as u32;
-    mesh.reserve_vertices(n * 4);
-    mesh.reserve_triangles((n - 1) * 6);
-    for i in 0..n {
-        let d_prev = dirs[i.saturating_sub(1)];
-        let d_next = dirs[i.min(n - 2)];
-        let n0 = perp(d_prev);
-        let n1 = perp(d_next);
+/// Unit direction from sample `k` to `k + 1`.
+fn dir(dense: &[Sample], k: usize) -> Vec2 {
+    unit(at(&dense[k + 1]) - at(&dense[k]))
+}
+
+/// The ribbon rows of samples `rows` of `dense` (at least two samples): two
+/// solid inner vertices and two transparent outer ones each, one `aa`
+/// apart, and the quads between the rows. With `after`, the first row is
+/// also joined to the row whose vertices start there (one made before).
+fn ribbon(mesh: &mut Mesh, dense: &[Sample], rows: Range<usize>, after: Option<u32>, solid: Color32, half_aa: f32) {
+    let n = dense.len();
+    let first = mesh.vertices.len() as u32;
+    mesh.reserve_vertices(rows.len() * 4);
+    mesh.reserve_triangles(rows.len() * 6);
+    for i in rows.clone() {
+        let n0 = perp(dir(dense, i.saturating_sub(1)));
+        let n1 = perp(dir(dense, i.min(n - 2)));
         let mut nrm = unit(n0 + n1);
         if nrm == Vec2::ZERO {
             nrm = n0; // 180° reversal
@@ -79,37 +92,107 @@ pub fn tessellate(mesh: &mut Mesh, kind: StrokeKind, rgba: [u8; 4], width: f32, 
         let r = dense[i].r;
         let r_in = (r - half_aa).max(0.0) * s;
         let r_out = (r + half_aa) * s;
-        let c = at(i);
+        let c = at(&dense[i]);
         mesh.colored_vertex(c + nrm * r_out, Color32::TRANSPARENT);
         mesh.colored_vertex(c + nrm * r_in, solid);
         mesh.colored_vertex(c - nrm * r_in, solid);
         mesh.colored_vertex(c - nrm * r_out, Color32::TRANSPARENT);
     }
-    for i in 0..(n - 1) as u32 {
+    let starts = after.into_iter().chain((0..rows.len() as u32).map(|r| first + 4 * r));
+    for (a0, c0) in starts.clone().zip(starts.skip(1)) {
         for k in 0..3u32 {
-            let a = base + 4 * i + k;
-            let b = a + 1;
-            let c = base + 4 * (i + 1) + k;
-            let d = c + 1;
-            mesh.add_triangle(a, b, c);
-            mesh.add_triangle(b, d, c);
+            let (a, c) = (a0 + k, c0 + k);
+            mesh.add_triangle(a, a + 1, c);
+            mesh.add_triangle(a + 1, c + 1, c);
+        }
+    }
+}
+
+/// The round caps of the curve `dense` (at least two samples).
+fn caps(mesh: &mut Mesh, dense: &[Sample], solid: Color32, aa: f32) {
+    let n = dense.len();
+    let half_aa = aa * 0.5;
+    let (d0, d1) = (dir(dense, 0), dir(dense, n - 2));
+    let (r0, r1) = (dense[0].r, dense[n - 1].r);
+    add_arc(mesh, at(&dense[0]), perp(d0), -d0, r0 - half_aa, r0 + half_aa, solid, PI, arc_segments(r0, aa));
+    add_arc(mesh, at(&dense[n - 1]), perp(d1), d1, r1 - half_aa, r1 + half_aa, solid, PI, arc_segments(r1, aa));
+}
+
+/// The stroke being drawn, tessellated as it grows: the same triangles as
+/// [`tessellate`], but the ribbon of the part of the curve that no longer
+/// changes (see `LiveCurve`) is made once and kept in a [`Batch`] that only
+/// grows (so only its new triangles are uploaded). Each frame makes just the
+/// end of the ribbon and the two caps.
+pub struct LiveMesh {
+    curve: LiveCurve,
+    solid: Color32,
+    aa: f32,
+    /// The ribbon rows of the fixed samples made so far (row `r` is
+    /// vertices `4 r ..`).
+    fixed: Batch,
+    rows: usize,
+}
+
+impl LiveMesh {
+    /// The parameters of [`tessellate`].
+    pub fn new(kind: StrokeKind, rgba: [u8; 4], width: f32, scale: f32, aa: f32) -> Self {
+        Self {
+            curve: LiveCurve::new(kind, width, scale, aa * 0.5, SAMPLE_STEP_PX * aa, 0.05 * aa),
+            solid: solid(rgba),
+            aa,
+            fixed: Batch::default(),
+            rows: 0,
         }
     }
 
-    // ---- round caps
-    let (r0, r1) = (dense[0].r, dense[n - 1].r);
-    add_arc(mesh, at(0), perp(dirs[0]), -dirs[0], r0 - half_aa, r0 + half_aa, solid, PI, arc_segments(r0, aa));
-    add_arc(
-        mesh,
-        at(n - 1),
-        perp(dirs[n - 2]),
-        dirs[n - 2],
-        r1 - half_aa,
-        r1 + half_aa,
-        solid,
-        PI,
-        arc_segments(r1, aa),
-    );
+    /// Brings the stroke to `fixed` points (which only grow) followed by `tip`
+    /// (see `StrokeBuilder`). Returns the triangles made for this frame only;
+    /// the others are in [`Self::fixed`].
+    pub fn update(&mut self, fixed: &[Point], tip: &[Point]) -> Mesh {
+        let (solid, aa) = (self.solid, self.aa);
+        let (done, rest) = self.curve.update(fixed, tip);
+        let mut mesh = Mesh::default();
+        if done.len() < 3 {
+            let all: Vec<Sample> = done.iter().copied().chain(rest).collect();
+            if !all.is_empty() {
+                whole(&mut mesh, &all, solid, aa);
+            }
+            return mesh;
+        }
+        // A row's vertices depend on the samples on both sides: the rows of
+        // all fixed samples but the last are final.
+        let last = done.len() - 2;
+        if self.rows <= last {
+            let (from, after) = (self.rows, self.rows.checked_sub(1).map(|r| 4 * r as u32));
+            self.fixed.append(|m| ribbon(m, done, from..last + 1, after, solid, aa * 0.5));
+            self.rows = last + 1;
+        }
+        // The rest of the ribbon from the last kept row on (made again, joining
+        // it), with the samples on either side, then the caps.
+        let end: Vec<Sample> = done[last - 1..].iter().copied().chain(rest).collect();
+        ribbon(&mut mesh, &end, 1..end.len(), None, solid, aa * 0.5);
+        let (d0, d1) = (dir(done, 0), dir(&end, end.len() - 2));
+        let half_aa = aa * 0.5;
+        let (first, tip_end) = (done[0], end[end.len() - 1]);
+        add_arc(&mut mesh, at(&first), perp(d0), -d0, first.r - half_aa, first.r + half_aa, solid, PI, arc_segments(first.r, aa));
+        add_arc(
+            &mut mesh,
+            at(&tip_end),
+            perp(d1),
+            d1,
+            tip_end.r - half_aa,
+            tip_end.r + half_aa,
+            solid,
+            PI,
+            arc_segments(tip_end.r, aa),
+        );
+        mesh
+    }
+
+    /// The triangles kept from frame to frame.
+    pub fn fixed(&self) -> &Batch {
+        &self.fixed
+    }
 }
 
 fn unit(v: Vec2) -> Vec2 {
@@ -175,5 +258,48 @@ mod tests {
         let mut dot = Mesh::default();
         tessellate(&mut dot, StrokeKind::Pen, [0, 0, 0, 255], 3.0, &pts[..1], 1.0, 1.0);
         assert!(!dot.is_empty() && dot.is_valid());
+    }
+
+    /// The triangles of a mesh, as their corners, in a canonical order.
+    fn triangles(meshes: &[&Mesh]) -> Vec<[(u32, u32, [u8; 4]); 3]> {
+        let mut out: Vec<_> = meshes
+            .iter()
+            .flat_map(|m| {
+                m.indices.chunks(3).map(|t| {
+                    let mut c = [0, 1, 2].map(|k| {
+                        let v = m.vertices[t[k] as usize];
+                        (v.pos.x.to_bits(), v.pos.y.to_bits(), v.color.to_array())
+                    });
+                    c.sort();
+                    c
+                })
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// While a stroke is drawn, the live mesh (kept + this frame's) has
+    /// exactly the triangles of the whole stroke tessellated at once.
+    #[test]
+    fn the_live_mesh_is_the_whole_mesh() {
+        let pts: Vec<Point> = (0..80)
+            .map(|i| {
+                let t = i as f32;
+                Point::new(t * 4.0, (t * 0.3).sin() * 20.0 - if i > 60 { t * 3.0 } else { 0.0 }, 0.3 + 0.008 * t)
+            })
+            .collect();
+        for kind in [StrokeKind::Pen, StrokeKind::Highlighter] {
+            let mut live = LiveMesh::new(kind, [10, 20, 30, 255], 3.0, 1.7, 1.0);
+            for m in 1..=pts.len() {
+                let tip: Vec<Point> = (0..m % 3).map(|k| Point::new(400.0, 9.0 * k as f32, 0.6)).collect();
+                let now = live.update(&pts[..m], &tip);
+                let all: Vec<Point> = pts[..m].iter().chain(&tip).copied().collect();
+                let mut whole = Mesh::default();
+                tessellate(&mut whole, kind, [10, 20, 30, 255], 3.0, &all, 1.7, 1.0);
+                assert!(now.is_valid() && live.fixed().mesh().is_valid());
+                assert_eq!(triangles(&[live.fixed().mesh(), &now]), triangles(&[&whole]), "after {m} points");
+            }
+        }
     }
 }

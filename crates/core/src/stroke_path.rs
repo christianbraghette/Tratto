@@ -14,7 +14,7 @@ use emath::{Pos2, pos2};
 use crate::model::{Point, StrokeKind};
 
 /// One sample of a stroke's smoothed centreline.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     pub x: f32,
     pub y: f32,
@@ -33,12 +33,46 @@ pub fn pressure_factor(p: f32) -> f32 {
     0.35 + 0.65 * p.clamp(0.0, 1.0)
 }
 
+/// How a stroke's points become samples: everything [`smoothed`] takes
+/// besides the points.
+#[derive(Clone, Copy)]
+struct Params {
+    kind: StrokeKind,
+    width: f32,
+    scale: f32,
+    min_radius: f32,
+    step: f32,
+    min_dist: f32,
+}
+
+impl Params {
+    fn node(&self, p: &Point) -> Node {
+        let w = match self.kind {
+            StrokeKind::Pen => self.width * pressure_factor(p.pressure),
+            StrokeKind::Highlighter => self.width,
+        };
+        Node { p: pos2(p.x * self.scale, p.y * self.scale), r: (w * self.scale * 0.5).max(self.min_radius) }
+    }
+
+    /// Adds `n` to `out` unless it is closer than `min_dist` to the sample
+    /// before it (the last of `out`, else `before`).
+    fn push(&self, out: &mut Vec<Sample>, before: Option<&Sample>, n: Node) {
+        let last = out.last().or(before);
+        if last.is_none_or(|l| (n.p - pos2(l.x, l.y)).length() >= self.min_dist) {
+            out.push(Sample { x: n.p.x, y: n.p.y, r: n.r });
+        }
+    }
+}
+
 /// The smoothed curve of a stroke, with all coordinates and radii multiplied
 /// by `scale`.
 ///
 /// * `min_radius` – lower bound for the (scaled) radius
 /// * `step`       – target spacing of samples (scaled units)
 /// * `min_dist`   – samples closer than this to their predecessor are dropped
+///
+/// The points are interpolated with quadratic Béziers through the midpoints
+/// of their segments, so each piece of the curve depends on three points.
 ///
 /// Never returns an empty vector.
 pub fn smoothed(
@@ -50,17 +84,25 @@ pub fn smoothed(
     step: f32,
     min_dist: f32,
 ) -> Vec<Sample> {
-    let nodes: Vec<Node> = pts
-        .iter()
-        .map(|p| {
-            let w = match kind {
-                StrokeKind::Pen => width * pressure_factor(p.pressure),
-                StrokeKind::Highlighter => width,
-            };
-            Node { p: pos2(p.x * scale, p.y * scale), r: (w * scale * 0.5).max(min_radius) }
-        })
-        .collect();
-    dedup(smooth(&nodes, step), min_dist).into_iter().map(|n| Sample { x: n.p.x, y: n.p.y, r: n.r }).collect()
+    let params = Params { kind, width, scale, min_radius, step, min_dist };
+    let nodes: Vec<Node> = pts.iter().map(|p| params.node(p)).collect();
+    let n = nodes.len();
+    let mut out = Vec::with_capacity(if n < 3 { n } else { n * 3 });
+    if n < 3 {
+        for node in nodes {
+            params.push(&mut out, None, node);
+        }
+    } else {
+        params.push(&mut out, None, nodes[0]);
+        for i in 1..n - 1 {
+            segment([nodes[i - 1], nodes[i], nodes[i + 1]], i == 1, step, |node| params.push(&mut out, None, node));
+        }
+        params.push(&mut out, None, nodes[n - 1]);
+    }
+    if out.is_empty() {
+        out.push(Sample { x: 0.0, y: 0.0, r: 0.5 });
+    }
+    out
 }
 
 /// The curve sampled every `step` page units. Used by the PDF export.
@@ -71,41 +113,78 @@ pub fn centerline(kind: StrokeKind, width: f32, pts: &[Point], step: f32) -> Vec
     smoothed(kind, width, pts, 1.0, 0.0, step, 0.01)
 }
 
-/// Quadratic Bézier through segment midpoints, using the points as controls.
-fn smooth(nodes: &[Node], step: f32) -> Vec<Node> {
-    let n = nodes.len();
-    if n < 3 {
-        return nodes.to_vec();
+/// The piece of curve of the middle point of `[a, c, b]`: a quadratic Bézier
+/// from the midpoint of `a`-`c` to that of `c`-`b`, with `c` as control. Each
+/// piece starts where the one before ended, so only the `first` one has its
+/// start.
+fn segment([prev, c, next]: [Node; 3], first: bool, step: f32, mut out: impl FnMut(Node)) {
+    let a = mid(prev, c);
+    let b = mid(c, next);
+    let len = (c.p - a.p).length() + (b.p - c.p).length();
+    let k = ((len / step).ceil() as usize).clamp(1, 32);
+    for j in if first { 0 } else { 1 }..=k {
+        out(bezier(a, c, b, j as f32 / k as f32));
     }
-    let mut out = Vec::with_capacity(n * 3);
-    out.push(nodes[0]);
-    for i in 1..n - 1 {
-        let a = mid(nodes[i - 1], nodes[i]);
-        let c = nodes[i];
-        let b = mid(nodes[i], nodes[i + 1]);
-        let len = (c.p - a.p).length() + (b.p - c.p).length();
-        let k = ((len / step).ceil() as usize).clamp(1, 32);
-        // The curve of segment i starts where the previous one ended.
-        let start = if i == 1 { 0 } else { 1 };
-        for j in start..=k {
-            out.push(bezier(a, c, b, j as f32 / k as f32));
-        }
-    }
-    out.push(nodes[n - 1]);
-    out
 }
 
-fn dedup(nodes: Vec<Node>, min_dist: f32) -> Vec<Node> {
-    let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
-    for n in nodes {
-        if out.last().is_none_or(|l| (n.p - l.p).length() >= min_dist) {
-            out.push(n);
+/// [`smoothed`] for a stroke being drawn, made as it goes: its points only
+/// grow at the end (the fixed ones), followed by a few that change every
+/// time (the tip: the pen's live position and a prediction). The curve as
+/// far as only fixed points shape it is made once; only the rest is made
+/// again each time.
+pub struct LiveCurve {
+    params: Params,
+    /// The curve that no point added later changes.
+    fixed: Vec<Sample>,
+    /// The next piece of curve (see `segment`) to add to `fixed`.
+    next: usize,
+}
+
+impl LiveCurve {
+    /// The parameters of [`smoothed`].
+    pub fn new(kind: StrokeKind, width: f32, scale: f32, min_radius: f32, step: f32, min_dist: f32) -> Self {
+        Self { params: Params { kind, width, scale, min_radius, step, min_dist }, fixed: Vec::new(), next: 1 }
+    }
+
+    /// The curve through `fixed` and then `tip`, exactly as [`smoothed`]
+    /// makes it, as the samples no later point changes and the others.
+    /// Between calls, `fixed` may only have grown at the end.
+    pub fn update(&mut self, fixed: &[Point], tip: &[Point]) -> (&[Sample], Vec<Sample>) {
+        let params = self.params;
+        let m = fixed.len();
+        if m < 3 {
+            // Too short to have pieces that cannot change.
+            let all: Vec<Point> = fixed.iter().chain(tip).copied().collect();
+            let rest = if all.is_empty() { Vec::new() } else { smoothed_with(&params, &all) };
+            return (&[], rest);
         }
+        // The pieces of the middle points up to m - 2 only use fixed points.
+        if self.fixed.is_empty() {
+            params.push(&mut self.fixed, None, params.node(&fixed[0]));
+        }
+        while self.next <= m - 2 {
+            let i = self.next;
+            let nodes = [params.node(&fixed[i - 1]), params.node(&fixed[i]), params.node(&fixed[i + 1])];
+            let out = &mut self.fixed;
+            segment(nodes, i == 1, params.step, |node| params.push(out, None, node));
+            self.next += 1;
+        }
+        // The rest: the pieces from m - 1 on, then the last point.
+        let nodes: Vec<Node> = fixed[m - 2..].iter().chain(tip).map(|p| params.node(p)).collect();
+        let before = self.fixed.last();
+        let mut rest = Vec::new();
+        for i in 1..nodes.len() - 1 {
+            segment([nodes[i - 1], nodes[i], nodes[i + 1]], false, params.step, |node| {
+                params.push(&mut rest, before, node);
+            });
+        }
+        params.push(&mut rest, before, nodes[nodes.len() - 1]);
+        (&self.fixed, rest)
     }
-    if out.is_empty() {
-        out.push(Node { p: Pos2::ZERO, r: 0.5 });
-    }
-    out
+}
+
+fn smoothed_with(p: &Params, pts: &[Point]) -> Vec<Sample> {
+    smoothed(p.kind, p.width, pts, p.scale, p.min_radius, p.step, p.min_dist)
 }
 
 fn mid(a: Node, b: Node) -> Node {
@@ -124,6 +203,31 @@ fn bezier(a: Node, c: Node, b: Node, t: f32) -> Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Drawing point by point, with zero to two tip points each time, the
+    /// live curve is always exactly the whole curve.
+    #[test]
+    fn the_live_curve_is_the_whole_curve() {
+        for kind in [StrokeKind::Pen, StrokeKind::Highlighter] {
+            let pts: Vec<Point> = (0..120)
+                .map(|i| {
+                    let t = i as f32;
+                    // Fast and slow parts, a pause (repeated points), a reversal.
+                    let x = if (40..50).contains(&i) { 80.0 } else { t * (1.0 + (t * 0.3).sin()) };
+                    Point::new(x, (t * 0.2).sin() * 30.0 - if i > 90 { t } else { 0.0 }, 0.3 + (t * 0.1).cos().abs() * 0.6)
+                })
+                .collect();
+            let mut live = LiveCurve::new(kind, 3.0, 1.7, 0.5, 2.5, 0.05);
+            for m in 0..=pts.len() {
+                let tip: Vec<Point> = (0..m % 3).map(|k| Point::new(500.0 + k as f32 * 7.0, 3.0, 0.8)).collect();
+                let (fixed, rest) = live.update(&pts[..m], &tip);
+                let got: Vec<Sample> = fixed.iter().copied().chain(rest).collect();
+                let all: Vec<Point> = pts[..m].iter().chain(&tip).copied().collect();
+                let whole = if all.is_empty() { Vec::new() } else { smoothed(kind, 3.0, &all, 1.7, 0.5, 2.5, 0.05) };
+                assert_eq!(got, whole, "after {m} points");
+            }
+        }
+    }
 
     #[test]
     fn centerline_follows_endpoints() {

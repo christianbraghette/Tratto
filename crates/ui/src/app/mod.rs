@@ -41,7 +41,8 @@ use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
 use crate::pdf_nav::PdfNav;
 use crate::pdf_view::PdfTextures;
-use crate::render::StrokeCache;
+use crate::render::{LiveStroke, StrokeCache};
+use crate::saver::Saver;
 use crate::scrollbar;
 use crate::settings::{NoteView, Settings, UpdateMode};
 use crate::theme::{self, color, radius, space};
@@ -85,6 +86,8 @@ struct ActiveStroke {
     color: [u8; 4],
     width: f32,
     builder: StrokeBuilder,
+    /// Its triangles so far.
+    live: LiveStroke,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -258,8 +261,8 @@ pub struct InkApp {
     /// File of the open note.
     note_path: Option<PathBuf>,
     note_meta: NoteMeta,
-    /// Appends the open note's changes to its file.
-    writer: NoteWriter,
+    /// Writes the open note in the background.
+    saver: Saver,
     dirty: bool,
     last_change: Instant,
     last_fp: Fingerprint,
@@ -363,7 +366,7 @@ impl InkApp {
             lib_ui: library_ui::LibraryUi::default(),
             note_path: None,
             note_meta: NoteMeta::new("Untitled note", true),
-            writer: NoteWriter::default(),
+            saver: Saver::new(cc.egui_ctx.clone()),
             dirty: false,
             last_change: Instant::now(),
             last_fp: (0, 0, 0, 0, 0),
@@ -577,7 +580,7 @@ impl InkApp {
             let delay = Duration::from_secs_f32(self.settings.autosave_secs.clamp(0.5, 60.0));
             let waited = self.last_change.elapsed();
             if waited >= delay {
-                self.save_note(false);
+                self.autosave();
             } else {
                 ctx.request_repaint_after(delay - waited);
             }
@@ -664,6 +667,9 @@ impl eframe::App for InkApp {
                 self.save_note(false);
             }
         }
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.finish_saves();
+        }
 
         let scale = self.settings.ui_scale.clamp(0.5, 2.0);
         if (ctx.zoom_factor() - scale).abs() > 1e-3 && !ctx.input(|i| i.pointer.any_down()) {
@@ -674,6 +680,7 @@ impl eframe::App for InkApp {
             self.toast(format!("The PDF pages cannot be shown: {e}"));
         }
         self.poll_loading();
+        self.poll_saves();
         self.poll_update();
         self.poll_file_picker();
         // While a note loads, the window waits: no shortcuts, no drops.
@@ -725,5 +732,7 @@ impl eframe::App for InkApp {
                 self.save_note(false);
             }
         }
+        // Nothing may be left half written when the app exits.
+        self.finish_saves();
     }
 }
