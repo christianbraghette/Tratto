@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use eframe::egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Stroke as UiStroke, StrokeKind as UiStrokeKind, Vec2,
-    epaint::Mesh, pos2, vec2,
+    Align2, Color32, FontId, Painter, Pos2, Rect, Stroke as UiStroke, StrokeKind as UiStrokeKind, Vec2, epaint::Mesh,
+    pos2, vec2,
 };
 
 use tratto_core::model::{self, PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
@@ -182,7 +182,12 @@ fn copy_part(mesh: &mut Mesh, from: &Mesh, part: &Part) -> Part {
     let shift = v0.wrapping_sub(part.vertices.start);
     let indices = &from.indices[part.indices.start as usize..part.indices.end as usize];
     mesh.indices.extend(indices.iter().map(|i| i.wrapping_add(shift)));
-    Part { id: part.id, rev: part.rev, vertices: v0..mesh.vertices.len() as u32, indices: i0..mesh.indices.len() as u32 }
+    Part {
+        id: part.id,
+        rev: part.rev,
+        vertices: v0..mesh.vertices.len() as u32,
+        indices: i0..mesh.indices.len() as u32,
+    }
 }
 
 // ------------------------------------------------------------ strokes

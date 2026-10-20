@@ -2,7 +2,7 @@
 
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Commercial license available](https://img.shields.io/badge/commercial%20license-available-green.svg)](#license)
-![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
+![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)
 
 **Tratto** (Italian for *stroke*) is a fast, distraction-free handwriting app
 for pen and tablet: take notes on paper that feels like paper, read PDFs and
@@ -88,7 +88,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 
 ### Requirements
 
-- [Rust](https://www.rust-lang.org/tools/install) 1.85 or newer (Rust 2024 edition)
+- [Rust](https://www.rust-lang.org/tools/install) 1.95 or newer (Rust 2024 edition)
 - A GPU and driver supported by wgpu (Vulkan, Metal, DirectX 12 or OpenGL)
 - **Linux**: the Wayland and xkbcommon development packages, for example
   `sudo apt install libwayland-dev libxkbcommon-dev` on Debian/Ubuntu.
@@ -342,16 +342,22 @@ The repository is a Cargo workspace that separates the backend from the UI:
 crates/
 ├── core/   tratto-core: backend library, no UI dependencies
 │           model, history (undo/redo), stroke_builder, stroke_path,
-│           storage (.ink files), library (notebooks/notes), pdf_export
+│           storage + journal (.ink files), library (notebooks/notes),
+│           pdf_export, pdf_pages (PDFium)
 └── ui/     tratto-ui: the `tratto` executable (egui + wgpu)
             app (editor, library, menus), chrome (title bar), theme (design
-            system), view, render, stroke_mesh, toolbar, kinetic (scrolling),
-            scrollbar, settings, input (Wayland tablet / Windows pen)
+            system), view, render, stroke_mesh, stroke_gpu (strokes kept on
+            the GPU), pdf_view, toolbar, kinetic (scrolling), scrollbar,
+            settings, saver (background saves), update, input (Wayland
+            tablet / Windows pen)
 ```
 
 `tratto-core` depends only on `emath` (the geometry types egui is built on),
-`serde`, `bincode` and `flate2`. It can be tested and reused without a window
-or GPU. The UI crate depends on the core, never the other way around.
+`serde`, `bincode`, `flate2` and `pdfium-render`. It can be tested and reused
+without a window or GPU. The UI crate depends on the core, never the other way
+around. PDFium itself is loaded at runtime: see
+[crates/ui/pdfium/README.md](crates/ui/pdfium/README.md) to fetch it for
+development builds.
 
 ## Contributing
 

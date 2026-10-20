@@ -66,6 +66,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Without PDFium (fetched by the packaging below) or a GPU, the tests
+      # that need them are skipped.
+      - name: Test
+        run: cargo test --workspace --locked
+
       - name: Build and package
         run: bash scripts/package.sh ${{ matrix.platform }}
 

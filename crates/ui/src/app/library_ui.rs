@@ -233,7 +233,7 @@ impl InkApp {
                         }
                         note_grid(ui, &hits, &root, true, None, &mut acts);
                     } else if let Some(nb) = &notebook {
-                        notebook_view(ui, nb, &self.lib_ui.section, &root, sort, &mut acts);
+                        notebook_view(ui, nb, self.lib_ui.section.as_deref(), &root, sort, &mut acts);
                     } else {
                         match self.lib_ui.view {
                             LibView::Home => {
@@ -410,7 +410,10 @@ impl InkApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.lib_ui.view != LibView::Trash || notebook.is_some() || searching {
                             let new_note = theme::primary_button(format!("{}  New note", icon::NOTE_PENCIL));
-                            let tip = format!("A new note in {} (Ctrl+N)", place_name(notebook, &self.lib_ui.section));
+                            let tip = format!(
+                                "A new note in {} (Ctrl+N)",
+                                place_name(notebook, self.lib_ui.section.as_deref())
+                            );
                             if ui.add(new_note).on_hover_text(tip).clicked() {
                                 acts.push(Act::NewNote(target_dir.to_path_buf()));
                             }
@@ -927,9 +930,9 @@ fn empty_state(ui: &mut Ui, glyph: &str, title: &str, hint: &str) {
 }
 
 /// Where a new note goes, for tooltips.
-fn place_name(notebook: Option<&NotebookInfo>, section: &Option<PathBuf>) -> String {
+fn place_name(notebook: Option<&NotebookInfo>, section: Option<&Path>) -> String {
     match notebook {
-        Some(nb) => match section.as_ref().and_then(|s| nb.sections.iter().find(|x| &x.path == s)) {
+        Some(nb) => match section.and_then(|s| nb.sections.iter().find(|x| x.path == s)) {
             Some(s) => format!("\u{201c}{} \u{203a} {}\u{201d}", nb.name, s.name),
             None => format!("\u{201c}{}\u{201d}", nb.name),
         },
@@ -1070,7 +1073,7 @@ fn quick_view(ui: &mut Ui, lib: &library::Library, root: &Path, sort: LibrarySor
 fn notebook_view(
     ui: &mut Ui,
     nb: &NotebookInfo,
-    section: &Option<PathBuf>,
+    section: Option<&Path>,
     root: &Path,
     sort: LibrarySort,
     acts: &mut Vec<Act>,
@@ -1086,7 +1089,7 @@ fn notebook_view(
             acts.push(Act::SelectSection(None));
         }
         for s in &nb.sections {
-            let resp = pill(ui, &s.name, s.notes.len(), section.as_ref() == Some(&s.path), tint);
+            let resp = pill(ui, &s.name, s.notes.len(), section == Some(s.path.as_path()), tint);
             if resp.clicked() {
                 acts.push(Act::SelectSection(Some(s.path.clone())));
             }
@@ -1110,11 +1113,10 @@ fn notebook_view(
     });
     ui.add_space(space::M);
 
-    let (dir, notes): (&Path, Vec<&NoteInfo>) =
-        match section.as_ref().and_then(|p| nb.sections.iter().find(|s| &s.path == p)) {
-            Some(s) => (&s.path, s.notes.iter().collect()),
-            None => (&nb.path, nb.loose.iter().collect()),
-        };
+    let (dir, notes): (&Path, Vec<&NoteInfo>) = match section.and_then(|p| nb.sections.iter().find(|s| s.path == p)) {
+        Some(s) => (&s.path, s.notes.iter().collect()),
+        None => (&nb.path, nb.loose.iter().collect()),
+    };
     let notes = sorted(notes, sort);
     heading_with_sort(ui, &count(notes.len(), "note"), sort, acts);
     note_grid(ui, &notes, root, false, Some(dir), acts);
@@ -1571,7 +1573,7 @@ mod tests {
         assert_eq!(titles(sorted(notes.clone(), LibrarySort::Manual)), ["banana", "Apple", "cherry"]);
         assert_eq!(titles(sorted(notes.clone(), LibrarySort::Edited)), ["Apple", "cherry", "banana"]);
         assert_eq!(titles(sorted(notes, LibrarySort::Title)), ["Apple", "banana", "cherry"]);
-        assert_eq!(place_name(None, &None), "the quick notes");
+        assert_eq!(place_name(None, None), "the quick notes");
     }
 
     /// Every view drawn with a real library (a notebook with a section,
@@ -1598,8 +1600,8 @@ mod tests {
                 let pdfs = ["/papers/a.pdf".to_owned(), "b.pdf".to_owned()];
                 home_view(ui, &lib, &root, 12, &pdfs, &mut acts);
                 quick_view(ui, &lib, &root, LibrarySort::Edited, &mut acts);
-                notebook_view(ui, &nb, &None, &root, LibrarySort::Manual, &mut acts);
-                notebook_view(ui, &nb, &Some(nb.sections[0].path.clone()), &root, LibrarySort::Title, &mut acts);
+                notebook_view(ui, &nb, None, &root, LibrarySort::Manual, &mut acts);
+                notebook_view(ui, &nb, Some(&nb.sections[0].path), &root, LibrarySort::Title, &mut acts);
                 trash_view(ui, &lib, &mut acts);
             });
         });

@@ -329,7 +329,15 @@ mod tests {
         }
         let points = vec![Point::new(1.0, 2.0, 0.5), Point::new(3.0, 4.0, 0.25)];
         let stroke = Stroke::new(7, 2, StrokeKind::Pen, [1, 2, 3, 255], 2.5, points.clone());
-        let written = Written { id: 7, page: 2, kind: StrokeKind::Pen, color: [1, 2, 3, 255], width: 2.5, points, bounds: stroke.bounds };
+        let written = Written {
+            id: 7,
+            page: 2,
+            kind: StrokeKind::Pen,
+            color: [1, 2, 3, 255],
+            width: 2.5,
+            points,
+            bounds: stroke.bounds,
+        };
         let bytes = bincode::serialize(&stroke).unwrap();
         assert_eq!(bytes, bincode::serialize(&written).unwrap());
         let back: Stroke = bincode::deserialize(&bytes).unwrap();

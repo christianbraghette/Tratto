@@ -42,7 +42,7 @@ fn ms(start: Instant, n: usize) -> f64 {
 }
 
 #[test]
-#[ignore]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
 fn bench_paint_page() {
     crate::stroke_gpu::pretend_installed();
     let mut doc = Document::default();
@@ -88,7 +88,7 @@ fn bench_paint_page() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
 fn bench_live_stroke() {
     let layout = Layout { page_w: 794.0, page_h: 1123.0, count: 1 };
     let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0));
@@ -115,15 +115,11 @@ fn bench_live_stroke() {
             last += ms;
         }
     }
-    println!(
-        "live stroke of {samples} samples: {:.3} ms per frame at its end, {:.0} ms in all",
-        last / 100.0,
-        total
-    );
+    println!("live stroke of {samples} samples: {:.3} ms per frame at its end, {:.0} ms in all", last / 100.0, total);
 }
 
 #[test]
-#[ignore]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
 fn bench_autosave() {
     let mut doc = Document::default();
     doc.page_count = 20;
@@ -158,13 +154,14 @@ fn bench_autosave() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
 fn bench_page_changes() {
     crate::stroke_gpu::pretend_installed();
     let mut doc = Document::default();
     written_page(&mut doc, 0);
     let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: 1 };
-    let view = View::new(Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0)), Vec2::new(0.0, 200.0), 1.83, layout);
+    let view =
+        View::new(Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0)), Vec2::new(0.0, 200.0), 1.83, layout);
     let ctx = egui::Context::default();
     let mut cache = StrokeCache::default();
     let frame = |doc: &Document, cache: &mut StrokeCache| {

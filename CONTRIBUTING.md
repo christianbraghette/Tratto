@@ -38,6 +38,7 @@ Before opening a pull request:
 
 ```sh
 cargo fmt --all
+cargo clippy --workspace --all-targets
 cargo test --workspace
 cargo build --release
 ```

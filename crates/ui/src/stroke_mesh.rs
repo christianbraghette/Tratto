@@ -174,7 +174,17 @@ impl LiveMesh {
         let (d0, d1) = (dir(done, 0), dir(&end, end.len() - 2));
         let half_aa = aa * 0.5;
         let (first, tip_end) = (done[0], end[end.len() - 1]);
-        add_arc(&mut mesh, at(&first), perp(d0), -d0, first.r - half_aa, first.r + half_aa, solid, PI, arc_segments(first.r, aa));
+        add_arc(
+            &mut mesh,
+            at(&first),
+            perp(d0),
+            -d0,
+            first.r - half_aa,
+            first.r + half_aa,
+            solid,
+            PI,
+            arc_segments(first.r, aa),
+        );
         add_arc(
             &mut mesh,
             at(&tip_end),

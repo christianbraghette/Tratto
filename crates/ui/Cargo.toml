@@ -23,8 +23,7 @@ ron = "0.12.2"
 raw-window-handle = "0.6"
 # Icon font (MIT OR Apache-2.0); 0.14 is the release built for egui 0.36.
 egui-phosphor = "0.14.0"
-windows-sys = "0.61.2"
-# Uploads egui's vertices to the highlighter pipeline (already used by egui).
+# Uploads the stroke meshes to the GPU (see stroke_gpu.rs; already used by egui).
 bytemuck = "1.25.2"
 # Updates from the GitHub releases (see update.rs): HTTPS with rustls, the
 # release archive (reading deflate only) and its checksum.
@@ -33,7 +32,7 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2
 sha2 = "0.11.0"
 # The system's file dialogs (see file_picker.rs); on Linux through the desktop
 # portal, without GTK. pollster awaits them on a background thread (and
-# wgpu's async device setup in the highlighter pipeline test).
+# wgpu's async device setup in the stroke pipeline test).
 rfd = "0.17.2"
 pollster = "1.0.1"
 
@@ -41,6 +40,7 @@ pollster = "1.0.1"
 # winit 0.30 uses so there is a single wayland-client in the dependency tree.
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31"
+# Only for `client_system`: wrapping winit's own `wl_display`.
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 # The pipe a dropped file list is read from (see input/wayland_drop.rs).
@@ -48,6 +48,10 @@ rustix = { version = "1", features = ["pipe"] }
 # Reads the desktop's window button layout from the portal (see desktop.rs);
 # already used by egui's accessibility support.
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
+# Subclasses the window to read the pen's buttons (see input/windows_pen.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell"] }
 
 # Embeds the app icon (assets/icon/icon.ico) in the .exe, see build.rs.
 [target.'cfg(windows)'.build-dependencies]

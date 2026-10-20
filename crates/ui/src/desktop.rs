@@ -116,7 +116,7 @@ mod linux {
 
     use eframe::egui;
 
-    use super::{Button, Style, WindowButtons, ini_value, parse_gnome_layout, parse_kwin_buttons};
+    use super::{Style, WindowButtons, ini_value, parse_gnome_layout, parse_kwin_buttons};
 
     /// The layout read from the desktop's settings.
     static READ: OnceLock<WindowButtons> = OnceLock::new();
@@ -214,7 +214,7 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use Button::*;
+        use crate::desktop::Button::*;
 
         #[test]
         fn kwin_buttons_come_from_kwinrc_or_its_defaults() {

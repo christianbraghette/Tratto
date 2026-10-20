@@ -148,12 +148,6 @@ impl PdfOptions {
     }
 }
 
-/// Writes `doc` to `path` (via a temp file, so a failure never truncates an
-/// existing export).
-pub fn export_pdf(doc: &Document, path: &Path, opts: &PdfOptions) -> io::Result<()> {
-    export_notes(&[PdfNote { doc, title: opts.title.clone() }], path, opts)
-}
-
 /// One note of a multi-note export.
 pub struct PdfNote<'a> {
     pub doc: &'a Document,
@@ -163,7 +157,8 @@ pub struct PdfNote<'a> {
 
 /// Writes several notes, one after the other, to one PDF (`opts.pages` only
 /// applies to a single note). With more than one note the PDF gets a
-/// bookmark per note. Via a temp file, like `export_pdf`.
+/// bookmark per note. Via a temp file, so a failure never truncates an
+/// existing export.
 pub fn export_notes(notes: &[PdfNote], path: &Path, opts: &PdfOptions) -> io::Result<()> {
     let mut bytes = build_pdf(notes, opts)?;
     let under = underlays(notes, opts);

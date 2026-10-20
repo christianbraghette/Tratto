@@ -161,7 +161,7 @@ impl InkApp {
         let title = self.window_title();
         if self.chrome.os_title != title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            self.chrome.os_title = title.clone();
+            self.chrome.os_title = title;
         }
 
         let mut cmds = Vec::new();

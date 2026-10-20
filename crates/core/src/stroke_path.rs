@@ -214,7 +214,11 @@ mod tests {
                     let t = i as f32;
                     // Fast and slow parts, a pause (repeated points), a reversal.
                     let x = if (40..50).contains(&i) { 80.0 } else { t * (1.0 + (t * 0.3).sin()) };
-                    Point::new(x, (t * 0.2).sin() * 30.0 - if i > 90 { t } else { 0.0 }, 0.3 + (t * 0.1).cos().abs() * 0.6)
+                    Point::new(
+                        x,
+                        (t * 0.2).sin() * 30.0 - if i > 90 { t } else { 0.0 },
+                        0.3 + (t * 0.1).cos().abs() * 0.6,
+                    )
                 })
                 .collect();
             let mut live = LiveCurve::new(kind, 3.0, 1.7, 0.5, 2.5, 0.05);

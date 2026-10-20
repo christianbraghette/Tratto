@@ -207,7 +207,11 @@ pub fn install(render_state: &egui_wgpu::RenderState, msaa: u32) {
                 module: &shader,
                 entry_point: Some(fragment),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
             depth_stencil: None,
@@ -339,7 +343,8 @@ impl GpuBatch {
     }
 
     fn fits(&self, mesh: &Mesh) -> bool {
-        mesh.vertices.len() as u64 * VERTEX_SIZE <= self.vertices.size() && mesh.indices.len() as u64 * 4 <= self.indices.size()
+        mesh.vertices.len() as u64 * VERTEX_SIZE <= self.vertices.size()
+            && mesh.indices.len() as u64 * 4 <= self.indices.size()
     }
 }
 
@@ -410,8 +415,7 @@ pub fn paint_batch(painter: &Painter, batch: &Batch, offset: Vec2, blend: Blend)
         painter.add(Shape::mesh(mesh));
         return;
     }
-    let callback =
-        DrawBatch { id: batch.id, generation: batch.generation, mesh: batch.mesh.clone(), offset, blend };
+    let callback = DrawBatch { id: batch.id, generation: batch.generation, mesh: batch.mesh.clone(), offset, blend };
     // The whole screen: the vertex shader maps screen points; the painter's
     // clip rect becomes the scissor.
     painter.add(egui_wgpu::Callback::new_paint_callback(painter.ctx().viewport_rect(), callback));
@@ -565,8 +569,12 @@ mod tests {
                 let renderer = self.state.renderer.read();
                 let rect = eframe::egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(4.0, 1.0));
                 for c in callbacks {
-                    let info =
-                        PaintCallbackInfo { viewport: rect, clip_rect: rect, pixels_per_point: 1.0, screen_size_px: [4, 1] };
+                    let info = PaintCallbackInfo {
+                        viewport: rect,
+                        clip_rect: rect,
+                        pixels_per_point: 1.0,
+                        screen_size_px: [4, 1],
+                    };
                     c.paint(info, &mut pass, &renderer.callback_resources);
                 }
             }

@@ -613,12 +613,16 @@ mod tests {
     /// Uses the PDFium of the repository (crates/ui/pdfium, see its README);
     /// skipped when it has not been fetched.
     fn pdfium_available() -> bool {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/pdfium");
-        let lib = ["win-x64/bin/pdfium.dll", "linux-x64/lib/libpdfium.so", "mac-arm64/lib/libpdfium.dylib"]
-            .iter()
-            .map(|p| dir.join(p))
-            .find(|p| p.exists());
-        match lib {
+        // The library of this platform (several may have been fetched).
+        let lib = if cfg!(windows) {
+            "win-x64/bin/pdfium.dll"
+        } else if cfg!(target_os = "macos") {
+            "mac-arm64/lib/libpdfium.dylib"
+        } else {
+            "linux-x64/lib/libpdfium.so"
+        };
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/pdfium").join(lib);
+        match Some(lib).filter(|p| p.exists()) {
             Some(p) => {
                 // SAFETY: set before the worker starts; tests read nothing else from it.
                 unsafe { std::env::set_var("TRATTO_PDFIUM", p) };

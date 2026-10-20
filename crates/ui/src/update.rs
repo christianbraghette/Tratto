@@ -62,7 +62,7 @@ struct Asset {
     name: String,
     browser_download_url: String,
     size: u64,
-    /// "sha256:<hex>" (GitHub computes it on upload).
+    /// `sha256:<hex>` (GitHub computes it on upload).
     #[serde(default)]
     digest: Option<String>,
 }

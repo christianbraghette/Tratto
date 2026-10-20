@@ -22,7 +22,11 @@ use tratto_core::storage::{NoteMeta, NoteWriter};
 enum Job {
     /// The writer of the note opened from now on.
     Writer(NoteWriter),
-    Save { path: PathBuf, meta: NoteMeta, doc: Document },
+    Save {
+        path: PathBuf,
+        meta: NoteMeta,
+        doc: Document,
+    },
 }
 
 /// A save that finished.

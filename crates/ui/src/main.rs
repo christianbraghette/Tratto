@@ -12,6 +12,7 @@
 //! - `view`           page layout + page/content/screen coordinate transforms
 //! - `render`         painting of page background and strokes
 //! - `pdf_view`       the PDF pages under the ink (background-rendered textures)
+//! - `pdf_nav`        a PDF's outline and links
 //! - `stroke_gpu`     strokes kept on the GPU (wgpu pipelines: ink, darkening highlighters)
 //! - `stroke_mesh`    anti-aliased stroke tessellation
 //! - `kinetic`        scroll momentum, wheel acceleration and eased jumps
@@ -20,6 +21,9 @@
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `theme`          design system: colours, sizes, fonts, shared components
 //! - `input`          native pen input (Wayland tablet, Windows pen buttons)
+//! - `desktop`        the desktop's window button layout (Linux portal)
+//! - `file_picker`    the system's file dialogs, off the UI thread
+//! - `frame_limit`    frame rate cap when vsync is off
 //! - `saver`          saves the open note on a background thread
 //! - `update`         updates from the GitHub releases
 

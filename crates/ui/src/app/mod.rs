@@ -453,7 +453,7 @@ impl InkApp {
     }
 
     /// Closes the window (saving, as usual) and starts the updated app.
-    fn restart(&mut self, ctx: &egui::Context) {
+    fn restart(&self, ctx: &egui::Context) {
         update::RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
