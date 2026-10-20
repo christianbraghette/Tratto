@@ -283,14 +283,14 @@ fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
                 std::fs::create_dir_all(parent).map_err(|e| fail(&e))?;
             }
             let mut out = std::fs::File::create(&new).map_err(|e| fail(&e))?;
-            files.push(dest);
+            files.push(dest.clone());
             std::io::copy(&mut entry, &mut out).map_err(|e| fail(&e))?;
             // The archive's permissions, else those of the file replaced (an
             // archive zipped on Windows has none: the executable must stay one).
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mode = entry.unix_mode().or_else(|_| std::fs::metadata(&dest).ok().map(|m| m.permissions().mode()));
+                let mode = entry.unix_mode().or_else(|| std::fs::metadata(&dest).ok().map(|m| m.permissions().mode()));
                 if let Some(mode) = mode {
                     std::fs::set_permissions(&new, std::fs::Permissions::from_mode(mode)).map_err(|e| fail(&e))?;
                 }

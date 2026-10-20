@@ -32,10 +32,11 @@ bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
 ureq = { version = "2.12.1", features = ["json"] }
 zip = { version = "7.3.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 sha2 = "0.11.0"
-
-[dev-dependencies]
-# Waits for wgpu's async device setup in the highlighter pipeline test.
-pollster = "0.3.0"
+# The system's file dialogs (see file_picker.rs); on Linux through the desktop
+# portal, without GTK. pollster awaits them on a background thread (and
+# wgpu's async device setup in the highlighter pipeline test).
+rfd = "0.17.2"
+pollster = "0.4.0"
 
 # Native Wayland tablet (pen) support. Versions match what winit 0.30 uses so
 # there is a single wayland-client in the dependency tree.

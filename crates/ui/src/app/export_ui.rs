@@ -29,7 +29,8 @@ use tratto_core::model::{Document, PageKind, StrokeKind, PAPERS};
 use tratto_core::pdf_export::{self, InkColors, PdfNote, PdfOptions};
 use tratto_core::{storage, stroke_path};
 
-use super::InkApp;
+use super::{InkApp, PathField};
+use crate::file_picker::{self, Pick, Request};
 use crate::pdf_view::PdfTextures;
 use crate::render::{self, Layer};
 use crate::stroke_mesh;
@@ -70,6 +71,17 @@ pub(super) struct ExportDialog {
     loaded: HashMap<PathBuf, Option<Document>>,
     /// Index of the previewed page among the exported pages.
     preview: usize,
+    /// The file was just chosen in the system's Save dialog: export now.
+    export_now: bool,
+}
+
+impl ExportDialog {
+    /// The file to write, chosen in the system's file dialog; `export`:
+    /// write it at once (Export was clicked, `file_picker::DIRECT`).
+    pub(super) fn set_path(&mut self, path: String, export: bool) {
+        self.path = path;
+        self.export_now = export;
+    }
 }
 
 /// A PDF being written in the background.
@@ -276,6 +288,7 @@ impl InkApp {
             selected: section,
             loaded: HashMap::new(),
             preview: 0,
+            export_now: false,
         };
         self.apply_scope_defaults(&mut d);
         self.export_dialog = Some(d);
@@ -288,7 +301,8 @@ impl InkApp {
 
         let mut open = true;
         let mut cancel = false;
-        let mut export = false;
+        let mut export = std::mem::take(&mut dialog.export_now);
+        let picking = self.file_picker.is_open();
         let max_h = (ctx.screen_rect().height() * 0.75).max(300.0);
         egui::Window::new("Export PDF")
             .open(&mut open)
@@ -316,15 +330,26 @@ impl InkApp {
                 });
                 ui.add_space(space::M);
                 ui.horizontal(|ui| {
-                    let label = format!("{}  Export", icon::FILE_PDF);
+                    // With the system's Save dialog next, the button says so.
+                    let label = format!("{}  Export{}", icon::FILE_PDF, if file_picker::DIRECT { "..." } else { "" });
                     let running = self.export_job.is_some();
-                    let ready = !dialog.path.trim().is_empty() && !list.is_empty() && !running;
+                    let has_path = file_picker::DIRECT || !dialog.path.trim().is_empty();
+                    let ready = has_path && !list.is_empty() && !running && !picking;
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.ctx().wants_keyboard_input();
                     let resp = ui
                         .add_enabled(ready, theme::primary_button(label))
                         .on_disabled_hover_text(if running { "Another export is still running" } else { "Nothing to export" });
                     if (resp.clicked() || enter) && ready {
-                        export = true;
+                        if file_picker::DIRECT {
+                            self.pick_request = Some(Request {
+                                pick: Pick::Save("PDF", &["pdf"]),
+                                title: "Export PDF",
+                                current: dialog.path.clone(),
+                                field: PathField::ExportTo,
+                            });
+                        } else {
+                            export = true;
+                        }
                     }
                     if ui.button("Cancel").clicked() {
                         cancel = true;
@@ -447,7 +472,24 @@ impl InkApp {
         }
 
         section(ui, "File");
-        ui.add(egui::TextEdit::singleline(&mut d.path).desired_width(f32::INFINITY));
+        // On Windows and macOS the file is chosen when exporting.
+        let picking = self.file_picker.is_open();
+        if !file_picker::DIRECT {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let browse = ui
+                    .add_enabled(!picking, egui::Button::new(format!("{}  Browse...", icon::FOLDER_OPEN)))
+                    .on_hover_text("Choose with the system's file explorer");
+                if browse.clicked() {
+                    self.pick_request = Some(Request {
+                        pick: Pick::Save("PDF", &["pdf"]),
+                        title: "Export PDF",
+                        current: d.path.clone(),
+                        field: PathField::Export,
+                    });
+                }
+                ui.add(egui::TextEdit::singleline(&mut d.path).desired_width(f32::INFINITY));
+            });
+        }
         ui.checkbox(&mut s.pdf_open_after, "Open the PDF after exporting");
     }
 

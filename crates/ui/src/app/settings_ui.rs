@@ -325,7 +325,7 @@ impl InkApp {
         });
 
         if change_folder {
-            self.lib_ui.dialog = Some(Dialog::Folder(self.settings.library_root.clone()));
+            self.show_dialog(Dialog::Folder(self.settings.library_root.clone()));
         }
         if reset {
             let old = std::mem::take(&mut self.settings);

@@ -553,7 +553,7 @@ impl InkApp {
                     self.close_note(ctx);
                 }
                 if self.screen == Screen::Library {
-                    self.lib_ui.dialog = Some(match cmd {
+                    self.show_dialog(match cmd {
                         Command::NewNotebook => Dialog::NewNotebook(String::new()),
                         Command::Import => Dialog::Import(String::new()),
                         Command::ImportPdf => Dialog::ImportPdf(String::new()),

@@ -35,6 +35,7 @@ use crate::scrollbar;
 use crate::settings::{LeftPanel, NoteView, Settings, UpdateMode, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
+use crate::file_picker::{self, FilePicker};
 use crate::update::{self, Updater};
 use crate::view::{Layout, MARGIN, TOP_PAD_PX, View};
 
@@ -274,6 +275,25 @@ pub struct InkApp {
     zoom_request: Option<f32>,
     /// New versions from the GitHub releases (checked at startup).
     updater: Updater,
+    /// The system file dialog opened by a Browse button, if any.
+    file_picker: FilePicker<PathField>,
+    /// A Browse button was clicked: the dialog to open at the end of the
+    /// frame, where the window (its parent) is at hand.
+    pick_request: Option<file_picker::Request<PathField>>,
+}
+
+/// Where the path chosen in a file dialog goes.
+enum PathField {
+    /// The path box of the open library dialog (import, PDF, library folder).
+    Library,
+    /// The file box of the Export PDF dialog.
+    Export,
+    /// Used at once (`file_picker::DIRECT`): what the library dialog would
+    /// do with it, new notes going to `target_dir`.
+    Run { dialog: library_ui::Dialog, target_dir: PathBuf },
+    /// Used at once (`file_picker::DIRECT`): the Export PDF dialog exports
+    /// to it.
+    ExportTo,
 }
 
 impl InkApp {
@@ -364,6 +384,8 @@ impl InkApp {
             view_scale: 1.0,
             zoom_request: None,
             updater: Updater::default(),
+            file_picker: FilePicker::default(),
+            pick_request: None,
         };
         if app.settings.updates != UpdateMode::Off {
             app.updater.check(&cc.egui_ctx, app.settings.updates == UpdateMode::Install);
@@ -393,6 +415,30 @@ impl InkApp {
             _ => return,
         };
         self.toast(msg);
+    }
+
+    /// Puts the path chosen in a file dialog into the box that asked for
+    /// it, if its dialog is still open.
+    fn poll_file_picker(&mut self) {
+        let Some((field, path)) = self.file_picker.poll() else { return };
+        let path = path.to_string_lossy().into_owned();
+        match field {
+            PathField::Library => {
+                if let Some(text) = self.lib_ui.dialog.as_mut().and_then(library_ui::Dialog::path_mut) {
+                    *text = path;
+                }
+            }
+            PathField::Export | PathField::ExportTo => {
+                if let Some(d) = &mut self.export_dialog {
+                    d.set_path(path, matches!(field, PathField::ExportTo));
+                }
+            }
+            PathField::Run { dialog, target_dir } => {
+                if let Some(act) = dialog.path_act(&target_dir, path) {
+                    self.apply_act(act);
+                }
+            }
+        }
     }
 
     /// Closes the window (saving, as usual) and starts the updated app.
@@ -2755,6 +2801,7 @@ impl eframe::App for InkApp {
         }
         self.poll_loading();
         self.poll_update();
+        self.poll_file_picker();
         // While a note loads, the window waits: no shortcuts, no drops.
         if self.loading.is_none() {
             self.dropped_pdf(ctx);
@@ -2766,6 +2813,9 @@ impl eframe::App for InkApp {
             Screen::Editor => self.editor_screen(ctx),
         }
         self.finish_chrome(ctx);
+        if let Some(req) = self.pick_request.take() {
+            self.file_picker.open(ctx, frame, req);
+        }
         if let Some(loading) = &self.loading {
             loading_screen(ctx, &loading.label);
         }
