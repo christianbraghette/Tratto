@@ -100,6 +100,9 @@ impl InkApp {
         }
         if let Some(v) = clicked {
             self.settings.left_panel.toggle(v);
+            if self.settings.left_panel == LeftPanel::Search {
+                self.search.focus = true;
+            }
         }
     }
 

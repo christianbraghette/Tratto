@@ -112,13 +112,18 @@ impl InkApp {
     }
 
     /// Opens the search view and puts the cursor in its field; the selected
-    /// text, if short, becomes the query.
+    /// text, if short, becomes the query. Closes the view if already open.
     pub(super) fn find(&mut self) {
+        use crate::settings::LeftPanel;
+        if self.settings.left_panel == LeftPanel::Search {
+            self.settings.left_panel = LeftPanel::Closed;
+            return;
+        }
         let selected = self.selected_text();
         if !selected.is_empty() && selected.chars().count() <= 100 && !selected.contains('\n') {
             self.search.query = selected;
         }
-        self.settings.left_panel = crate::settings::LeftPanel::Search;
+        self.settings.left_panel = LeftPanel::Search;
         self.search.focus = true;
         self.search.select_query = true;
     }

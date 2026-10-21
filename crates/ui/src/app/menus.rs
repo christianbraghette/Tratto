@@ -856,7 +856,9 @@ impl InkApp {
                     ui.add_space(20.0);
                     ui.label("Copyright © 2026 Christian Braghette");
                     ui.add_space(10.0);
-                    ui.label(RichText::new("Free software under the GNU AGPL v3 or later.").small().color(color::TEXT_MUTED));
+                    ui.label(
+                        RichText::new("Free software under the GNU AGPL v3 or later.").small().color(color::TEXT_MUTED),
+                    );
                     ui.label(RichText::new("Commercial licenses are also available.").small().color(color::TEXT_MUTED));
                     ui.add_space(5.0);
                     ui.hyperlink_to("Source code and license", env!("CARGO_PKG_REPOSITORY"));
@@ -875,6 +877,9 @@ impl InkApp {
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
             .resizable(false)
+            // Pinned: a window never shrinks below the size it remembers.
+            .min_width(SHORTCUTS_WIDTH)
+            .max_width(SHORTCUTS_WIDTH)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 let c = Modifiers::COMMAND;
@@ -943,7 +948,6 @@ impl InkApp {
                         ],
                     ),
                 ];
-                ui.set_width(SHORTCUTS_WIDTH);
                 // As wide as the window: the scroll bar at its edge.
                 let max_h = (ctx.viewport_rect().height() * 0.7).max(240.0);
                 egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
