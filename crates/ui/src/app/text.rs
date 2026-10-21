@@ -5,11 +5,13 @@
 //! them. The box being edited has a handle on either side: dragging one
 //! changes its width, and the text wraps again as it goes.
 
-use eframe::egui::{self, Color32, CursorIcon, FontId, Margin, PointerButton, Pos2, Rect, Vec2, pos2, vec2};
+use eframe::egui::text::{CCursor, CCursorRange};
+use eframe::egui::{self, CursorIcon, Key, Margin, Modifiers, PointerButton, Pos2, Rect, Vec2, pos2, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::model::TextBox;
 
+use crate::markdown;
 use crate::view::{Layout, View};
 
 use super::{EditState, InkApp, TextPress};
@@ -27,6 +29,49 @@ const MIN_WIDTH: f32 = 40.0;
 pub(super) enum Side {
     Left,
     Right,
+}
+
+/// The Markdown keys of the editor `id`, which writes `buf`, taken before it
+/// sees them: Enter goes on with a list, Tab and Shift+Tab nest and unnest
+/// its items, Ctrl+B / Ctrl+I / Ctrl+K make bold, italic and links (see
+/// `markdown::enter` and the others). Tab never leaves the box.
+pub(super) fn markdown_keys(ctx: &egui::Context, id: egui::Id, buf: &mut String) {
+    if !ctx.memory(|m| m.has_focus(id)) {
+        return;
+    }
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return };
+    let Some(range) = state.cursor.char_range() else { return };
+    let chars = range.as_sorted_char_range();
+    let byte = |c: usize| buf.char_indices().nth(c).map_or(buf.len(), |(b, _)| b);
+    let sel = byte(chars.start.0)..byte(chars.end.0);
+    let cmd = Modifiers::COMMAND;
+    let edit = ctx.input_mut(|i| {
+        if i.consume_key(Modifiers::SHIFT, Key::Tab) {
+            markdown::indent(buf, sel, true)
+        } else if i.consume_key(Modifiers::NONE, Key::Tab) {
+            markdown::indent(buf, sel, false)
+        } else if i.consume_key(cmd, Key::B) {
+            Some(markdown::emphasis(buf, sel, "**"))
+        } else if i.consume_key(cmd, Key::I) {
+            Some(markdown::emphasis(buf, sel, "*"))
+        } else if i.consume_key(cmd, Key::K) {
+            Some(markdown::link(buf, sel))
+        } else if i.modifiers.is_none() && i.key_pressed(Key::Enter) {
+            // Only taken when it goes on with a list; else a line break.
+            let edit = markdown::enter(buf, sel);
+            if edit.is_some() {
+                i.consume_key(Modifiers::NONE, Key::Enter);
+            }
+            edit
+        } else {
+            None
+        }
+    });
+    let Some(edit) = edit else { return };
+    let at = |b: usize| CCursor::new(edit.text[..b].chars().count());
+    state.cursor.set_char_range(Some(CCursorRange::two(at(edit.sel.start), at(edit.sel.end))));
+    *buf = edit.text;
+    state.store(ctx, id);
 }
 
 impl InkApp {
@@ -118,8 +163,7 @@ impl InkApp {
             }
             return;
         }
-        let (lines, line_h) = layout_lines(ctx, &e.buf, e.size, e.width);
-        let tb = TextBox {
+        let mut tb = TextBox {
             id: e.id,
             page: e.page,
             x: e.x,
@@ -128,9 +172,11 @@ impl InkApp {
             size: e.size,
             color: e.color,
             text: e.buf,
-            lines,
-            line_h,
+            lines: Vec::new(),
+            line_h: 0.0,
+            layout: None,
         };
+        markdown::lay_out_box(ctx, &mut tb);
         match e.orig {
             None => {
                 let index = self.doc.texts.len();
@@ -251,13 +297,4 @@ impl InkApp {
         new.y = (old.y + local.y).clamp(0.0, (layout.page_h - old.height()).max(0.0));
         self.history.exec(&mut self.doc, Action::ReplaceText { text: new });
     }
-}
-
-/// Wraps `text` to `width` with egui's font at the box's own size and returns
-/// the lines plus the line height (all in document units).
-fn layout_lines(ctx: &egui::Context, text: &str, size: f32, width: f32) -> (Vec<String>, f32) {
-    let galley = ctx.fonts_mut(|f| f.layout(text.to_owned(), FontId::proportional(size), Color32::BLACK, width));
-    let lines: Vec<String> = galley.rows.iter().map(|r| r.glyphs.iter().map(|g| g.chr).collect::<String>()).collect();
-    let line_h = galley.rows.first().map_or(size * 1.25, |r| r.rect().height());
-    (lines, line_h)
 }

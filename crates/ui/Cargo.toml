@@ -35,6 +35,7 @@ sha2 = "0.11.0"
 # wgpu's async device setup in the stroke pipeline test).
 rfd = "0.17.2"
 pollster = "1.0.1"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 
 # Native Wayland tablet (pen) and drag and drop support. Versions match what
 # winit 0.30 uses so there is a single wayland-client in the dependency tree.

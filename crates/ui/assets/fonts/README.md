@@ -1,6 +1,8 @@
 # Fonts
 
-`Inter-Regular.ttf` and `Inter-SemiBold.ttf` are from
+`Inter-Regular.ttf`, `Inter-SemiBold.ttf`, `Inter-MediumItalic.ttf` and
+`Inter-BoldItalic.ttf` (italic text in text boxes, a weight heavier than the
+upright it goes with) are from
 [Inter 4.1](https://github.com/rsms/inter) by The Inter Project Authors,
 licensed under the SIL Open Font License 1.1 (see `OFL.txt`).
 

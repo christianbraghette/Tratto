@@ -12,13 +12,15 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     Align2, Color32, FontId, Painter, Pos2, Rect, Stroke as UiStroke, StrokeKind as UiStrokeKind, Vec2, epaint::Mesh,
     pos2, vec2,
 };
 
-use tratto_core::model::{self, Document, PageKind, Point, Stroke, StrokeKind, TextBox};
+use tratto_core::model::{self, Document, PageKind, Point, Stroke, StrokeKind, TextBox, TextMark};
 
+use crate::markdown;
 use crate::stroke_gpu::{self, Batch, Blend};
 use crate::stroke_mesh::{self, LiveMesh};
 use crate::theme::color;
@@ -272,22 +274,12 @@ pub fn paint_texts(
             {
                 pos += d * view.scale;
             }
-            let line_h = t.line_h * view.scale;
             let rect = Rect::from_min_size(pos, vec2(t.width, t.height()) * view.scale);
             if !rect.intersects(view.rect) {
                 continue;
             }
             let color = Color32::from_rgb(t.color[0], t.color[1], t.color[2]);
-            let size_px = t.size * view.scale;
-            if size_px >= 2.0 {
-                for (i, line) in t.lines.iter().enumerate() {
-                    let y = pos.y + i as f32 * line_h;
-                    if line.is_empty() || y > view.rect.bottom() || y + line_h < view.rect.top() {
-                        continue;
-                    }
-                    painter.text(pos2(pos.x, y), Align2::LEFT_TOP, line, FontId::proportional(size_px), color);
-                }
-            }
+            paint_text_box(painter, pos, view.scale, t, color);
             if outline {
                 painter.rect_stroke(
                     rect.expand(2.0),
@@ -296,6 +288,82 @@ pub fn paint_texts(
                     UiStrokeKind::Middle,
                 );
             }
+        }
+    }
+}
+
+/// Paints the text box `t` with its top-left corner at `pos`, `scale` points
+/// per document unit: its Markdown as laid out (see `markdown`), or, not laid
+/// out, its stored lines. Lines out of the painter's clip are skipped.
+pub fn paint_text_box(painter: &Painter, pos: Pos2, scale: f32, t: &TextBox, color: Color32) {
+    if t.size * scale < 2.0 {
+        return;
+    }
+    let clip = painter.clip_rect();
+    let Some(layout) = &t.layout else {
+        let line_h = t.line_h * scale;
+        for (i, line) in t.lines.iter().enumerate() {
+            let y = pos.y + i as f32 * line_h;
+            if line.is_empty() || y > clip.bottom() || y + line_h < clip.top() {
+                continue;
+            }
+            painter.text(pos2(pos.x, y), Align2::LEFT_TOP, line, FontId::proportional(t.size * scale), color);
+        }
+        return;
+    };
+    let at = |x: f32, y: f32| pos + vec2(x, y) * scale;
+    let thin = UiStroke::new((t.size * scale * 0.06).max(1.0), color);
+    // Code blocks' grey first, under everything.
+    for mark in &layout.marks {
+        if let TextMark::Shade { x, top, width, height } = *mark {
+            let r = Rect::from_min_max(at(x, top), at(x + width, top + height));
+            painter.rect_filled(r, 3.0, Color32::from_black_alpha(15));
+        }
+    }
+    for mark in &layout.marks {
+        match *mark {
+            TextMark::Line { x0, y0, x1, y1 } => {
+                painter.line_segment([at(x0, y0), at(x1, y1)], UiStroke::new(thin.width, color.gamma_multiply(0.5)));
+            }
+            TextMark::Shade { .. } => {}
+            TextMark::Quote { x, top, bottom } => {
+                let bar = Rect::from_min_max(at(x, top), at(x + t.size * 0.18, bottom));
+                painter.rect_filled(bar, 1.0, color.gamma_multiply(0.45));
+            }
+            TextMark::Check { x, top, size, checked } => {
+                let r = Rect::from_min_size(at(x, top), vec2(size, size) * scale);
+                painter.rect_stroke(r, 2.0, thin, UiStrokeKind::Inside);
+                if checked {
+                    let tick =
+                        [(0.22, 0.52), (0.42, 0.72), (0.78, 0.28)].map(|(u, v)| at(x + u * size, top + v * size));
+                    painter.line(tick.to_vec(), thin);
+                }
+            }
+        }
+    }
+    for run in &layout.runs {
+        let (top, bottom) = (at(0.0, run.top).y, at(0.0, run.top + run.line_h).y);
+        if bottom < clip.top() || top > clip.bottom() {
+            continue;
+        }
+        if run.style.code_span {
+            let bg = Rect::from_min_max(
+                at(run.x - 2.0, run.top + run.line_h * 0.08),
+                at(run.x + run.width + 2.0, run.top + run.line_h * 0.92),
+            );
+            painter.rect_filled(bg, 2.0, Color32::from_black_alpha(15));
+        }
+        let format = TextFormat {
+            font_id: markdown::font(run.style, run.size * scale),
+            color,
+            italics: markdown::slanted(run.style),
+            ..Default::default()
+        };
+        let galley = painter.layout_job(LayoutJob::single_section(run.text.clone(), format));
+        painter.galley(at(run.x, run.baseline - run.ascent), galley, color);
+        if run.style.strike || run.style.underline {
+            let y = if run.style.strike { run.baseline - run.size * 0.3 } else { run.baseline + run.size * 0.12 };
+            painter.line_segment([at(run.x, y), at(run.x + run.width, y)], thin);
         }
     }
 }

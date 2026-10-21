@@ -16,6 +16,7 @@ use eframe::egui::{
 use tratto_core::model::StrokeKind;
 use tratto_core::pdf_pages::{LinkAction, Target};
 
+use crate::markdown;
 use crate::render::{self, Layer, Moved};
 use crate::scrollbar;
 use crate::settings::ZoomMode;
@@ -652,10 +653,19 @@ impl InkApp {
 
             let id = Id::new(("text_edit", e.id));
             let color = Color32::from_rgb(e.color[0], e.color[1], e.color[2]);
+            let size = (e.size * scale).max(6.0);
+            // The Markdown in the styles it makes, its marks dimmed.
+            super::text::markdown_keys(ui.ctx(), id, &mut e.buf);
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                let mut job = markdown::highlight(buf.as_str(), size, color);
+                job.wrap.max_width = wrap;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
             let widget = egui::TextEdit::multiline(&mut e.buf)
                 .id(id)
-                .font(FontId::proportional((e.size * scale).max(6.0)))
+                .font(FontId::proportional(size))
                 .text_color(color)
+                .layouter(&mut layouter)
                 .desired_width(editor.width())
                 .desired_rows(1)
                 // No background; the text wraps at the box's width.

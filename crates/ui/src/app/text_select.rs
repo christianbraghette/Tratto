@@ -23,6 +23,7 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, pos2};
 use tratto_core::model::TextBox;
 use tratto_core::pdf_pages::TextChar;
 
+use crate::markdown;
 use crate::theme::color;
 use crate::view::View;
 
@@ -368,10 +369,33 @@ fn place_pdf_text(chars: &[TextChar], placed: [f32; 4]) -> Vec<Glyph> {
 }
 
 /// The glyphs of a text box, laid out as it is painted (`render::paint_texts`):
-/// its lines one under the other, each with the box's font. The characters
-/// of its text that are not in the lines (line breaks, the spaces where a
-/// line was wrapped) are kept, without a place.
+/// its Markdown's runs, each where its text is in the Markdown, or (not laid
+/// out) its lines one under the other, each with the box's font. The
+/// characters of its text that are not shown (the Markdown's marks, line
+/// breaks, the spaces where a line was wrapped) are kept, without a place.
 fn box_glyphs(ctx: &egui::Context, t: &TextBox) -> Vec<Glyph> {
+    if let Some(layout) = &t.layout {
+        let unplaced = |s: &str| s.chars().map(|ch| Glyph { ch, rect: None }).collect::<Vec<_>>();
+        let mut out = Vec::new();
+        // Bytes of the text done.
+        let mut done = 0;
+        for run in &layout.runs {
+            let Some(at) = run.source.filter(|at| *at >= done) else { continue };
+            let Some(before) = t.text.get(done..at) else { continue };
+            out.extend(unplaced(before));
+            let font = markdown::font(run.style, run.size);
+            let galley = ctx.fonts_mut(|f| f.layout_no_wrap(run.text.clone(), font, Color32::BLACK));
+            for g in galley.rows.iter().flat_map(|r| r.row.glyphs.iter()) {
+                let left = t.x + run.x + g.pos.x;
+                let top = t.y + run.top;
+                let rect = Rect::from_min_max(pos2(left, top), pos2(left + g.advance_width, top + run.line_h));
+                out.push(Glyph { ch: g.chr, rect: Some(rect) });
+            }
+            done = at + run.text.len();
+        }
+        out.extend(unplaced(t.text.get(done..).unwrap_or_default()));
+        return out;
+    }
     let mut source: Vec<char> = t.text.chars().collect();
     source.reverse();
     let mut out = Vec::new();

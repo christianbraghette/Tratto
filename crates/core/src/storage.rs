@@ -604,6 +604,7 @@ mod tests {
             text: "\n  Shopping list\nmilk".into(),
             lines: vec!["".into(), "  Shopping list".into(), "milk".into()],
             line_h: 22.0,
+            layout: None,
         });
         doc
     }

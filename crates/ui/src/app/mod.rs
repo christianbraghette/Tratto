@@ -561,6 +561,9 @@ impl InkApp {
     fn editor_screen(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.pdf_nav.begin_frame(ctx);
+        // The text boxes of a note just opened (their layouts are not saved).
+        // Here, not when it is opened: one opened at startup has no fonts yet.
+        crate::markdown::lay_out_document(ctx, &mut self.doc);
         self.pen_input.windows_touch = self.pen_input.windows.as_ref().is_some_and(|p| p.take_touching());
         self.search_step(ctx);
         self.handle_shortcuts(ctx);

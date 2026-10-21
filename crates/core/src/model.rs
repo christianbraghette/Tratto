@@ -155,9 +155,11 @@ fn compute_bounds(points: &[Point]) -> [f32; 4] {
 
 /// A keyboard-typed text box. `x`/`y` is its top-left corner in page space.
 ///
-/// `lines` is the text already wrapped to `width` (computed with egui's font
-/// when the box is committed), so the screen, the thumbnails and the PDF all
-/// show identical line breaks and no font metrics are needed to draw it.
+/// `text` is Markdown. `lines` is the text as shown (without the Markdown
+/// marks) wrapped to `width`, computed with egui's font when the box is
+/// committed, for what draws it roughly (page previews). `layout` is the text
+/// laid out in its styles, which the screen and the PDF draw; it is not
+/// saved, the UI (which has the fonts) makes it again after loading.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextBox {
     pub id: u64,
@@ -168,23 +170,85 @@ pub struct TextBox {
     /// Font size in document units.
     pub size: f32,
     pub color: [u8; 3],
-    /// The source text (may contain explicit newlines).
+    /// The source text, Markdown (may contain explicit newlines).
     pub text: String,
-    /// `text` wrapped to `width`.
+    /// `text` as shown, wrapped to `width`.
     pub lines: Vec<String>,
-    /// Height of one line in document units.
+    /// Height of one line in document units (on average, with headings).
     pub line_h: f32,
+    #[serde(skip)]
+    pub layout: Option<Arc<TextLayout>>,
 }
 
 impl TextBox {
     pub fn height(&self) -> f32 {
-        self.lines.len().max(1) as f32 * self.line_h
+        match &self.layout {
+            Some(l) => l.height,
+            None => self.lines.len().max(1) as f32 * self.line_h,
+        }
     }
 
     /// Bounding box in page space.
     pub fn rect(&self) -> Rect {
         Rect::from_min_size(pos2(self.x, self.y), vec2(self.width, self.height()))
     }
+}
+
+/// A text box's Markdown laid out: runs of text in one style, placed in the
+/// box, and the marks drawn with them. Document units, from the box's
+/// top-left corner.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextLayout {
+    pub runs: Vec<TextRun>,
+    pub marks: Vec<TextMark>,
+    pub height: f32,
+}
+
+/// Text of one style on one line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextRun {
+    pub text: String,
+    /// Where `text` starts in the box's Markdown (a byte offset); none for
+    /// what the Markdown only stands for (a list's bullet).
+    pub source: Option<usize>,
+    /// Left end, and the baseline.
+    pub x: f32,
+    pub baseline: f32,
+    /// Top of its line, and the line's height.
+    pub top: f32,
+    pub line_h: f32,
+    pub width: f32,
+    /// Font size, and the font's ascent at that size.
+    pub size: f32,
+    pub ascent: f32,
+    pub style: RunStyle,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunStyle {
+    pub bold: bool,
+    pub italic: bool,
+    /// Code: in a monospace font.
+    pub code: bool,
+    pub strike: bool,
+    /// A link's text.
+    pub underline: bool,
+    /// Code within a line, on a grey background of its own (a code block
+    /// has one for the whole block, a [`TextMark::Shade`]).
+    pub code_span: bool,
+}
+
+/// What a text box draws besides its text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextMark {
+    /// A thin line: a horizontal rule (`---`), a table's grid.
+    Line { x0: f32, y0: f32, x1: f32, y1: f32 },
+    /// A light grey area: a code block.
+    Shade { x: f32, top: f32, width: f32, height: f32 },
+    /// The bar left of a quote (`> `).
+    Quote { x: f32, top: f32, bottom: f32 },
+    /// A task's box (`- [ ]`, `- [x]`), `size` wide and high.
+    Check { x: f32, top: f32, size: f32, checked: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

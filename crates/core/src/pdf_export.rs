@@ -30,7 +30,7 @@ use std::path::Path;
 use flate2::{Compression, write::ZlibEncoder};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{self, Document, PageKind, Stroke, StrokeKind, TextBox};
+use crate::model::{self, Document, PageKind, RunStyle, Stroke, StrokeKind, TextBox, TextLayout, TextMark, TextRun};
 use crate::pdf_pages::{self, Underlay};
 use crate::stroke_path::{self, Sample};
 
@@ -208,11 +208,12 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     let pages = page_list.len();
 
     // Object numbers: 1 catalog, 2 page tree, 3 resources, 4 info, 5 the
-    // highlighters' graphics state, 6 the font, then (page, content) pairs,
-    // then (several notes only) the outline root and one bookmark per note.
+    // highlighters' graphics state, 6.. the fonts, then (page, content)
+    // pairs, then (several notes only) the outline root and one bookmark per
+    // note.
     let gs_obj = 5;
     let font_obj = 6;
-    let first_page_obj = font_obj + 1;
+    let first_page_obj = font_obj + FONTS.len();
     let outline_obj = first_page_obj + 2 * pages;
     let outlined = notes.len() > 1;
 
@@ -228,7 +229,8 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", first_page_obj + 2 * i)).collect();
     pdf.obj(2, &format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" ")));
 
-    pdf.obj(3, &format!("<< /ExtGState << /GSH {gs_obj} 0 R >> /Font << /F1 {font_obj} 0 R >> >>"));
+    let fonts: Vec<String> = (0..FONTS.len()).map(|i| format!("/F{} {} 0 R", i + 1, font_obj + i)).collect();
+    pdf.obj(3, &format!("<< /ExtGState << /GSH {gs_obj} 0 R >> /Font << {} >> >>", fonts.join(" ")));
 
     let author = if opts.author.trim().is_empty() {
         String::new()
@@ -238,8 +240,13 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     pdf.obj(4, &format!("<< /Title ({}) {author}/Producer (Tratto) >>", pdf_string(&opts.title)));
     pdf.obj(gs_obj, "<< /Type /ExtGState /BM /Darken >>");
 
-    // Text boxes use the standard Helvetica (no font embedding needed).
-    pdf.obj(font_obj, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+    // Text boxes use the standard fonts (no font embedding needed).
+    for (i, name) in FONTS.iter().enumerate() {
+        pdf.obj(
+            font_obj + i,
+            &format!("<< /Type /Font /Subtype /Type1 /BaseFont /{name} /Encoding /WinAnsiEncoding >>"),
+        );
+    }
 
     for (p, &(note, page)) in page_list.iter().enumerate() {
         let doc = notes[note].doc;
@@ -403,10 +410,30 @@ fn write_rules(c: &mut String, doc: &Document) {
     }
 }
 
-/// Text box: one `Tj` per stored line, so the PDF breaks lines exactly like the
-/// screen. Only characters of the WinAnsi (Latin-1 like) set can be printed;
-/// anything else becomes `?`.
+/// The standard fonts text boxes use, `/F1` to `/F5`: regular, bold, italic,
+/// bold italic, code.
+const FONTS: [&str; 5] = ["Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique", "Courier"];
+
+/// The font (`/F<n>`) of a run of text.
+fn font_of(style: RunStyle) -> usize {
+    match style {
+        RunStyle { code: true, .. } => 5,
+        RunStyle { bold: true, italic: true, .. } => 4,
+        RunStyle { italic: true, .. } => 3,
+        RunStyle { bold: true, .. } => 2,
+        _ => 1,
+    }
+}
+
+/// Text box: its Markdown laid out as on screen (one `Tj` per run of one
+/// style, at the run's place, with the rules, quote bars and task boxes), or
+/// without a layout one `Tj` per stored line. Either way the PDF breaks
+/// lines exactly like the screen. Only characters of the WinAnsi (Latin-1
+/// like) set can be printed; anything else becomes `?`.
 fn write_text(c: &mut String, t: &TextBox, opts: &PdfOptions) {
+    if let Some(layout) = &t.layout {
+        return write_layout(c, t, layout, opts);
+    }
     if t.lines.iter().all(|l| l.trim().is_empty()) {
         return;
     }
@@ -421,6 +448,66 @@ fn write_text(c: &mut String, t: &TextBox, opts: &PdfOptions) {
         c.push_str(&format!("1 0 0 -1 {} {} Tm\n({}) Tj\n", num(t.x, 2), num(baseline, 2), pdf_string(line)));
     }
     c.push_str("ET\nQ\n");
+}
+
+fn write_layout(c: &mut String, t: &TextBox, layout: &TextLayout, opts: &PdfOptions) {
+    let (r, g, b) = opts.ink_rgb(t.color, false);
+    let (r, g, b) = (num(r, 3), num(g, 3), num(b, 3));
+    c.push_str(&format!("q\n{r} {g} {b} rg {r} {g} {b} RG\n"));
+    let at = |x: f32, y: f32| format!("{} {}", num(t.x + x, 2), num(t.y + y, 2));
+    // Code's grey background, under its text: code blocks', then code
+    // within lines.
+    let spans: Vec<&TextRun> = layout.runs.iter().filter(|r| r.style.code_span).collect();
+    let shades = layout.marks.iter().filter(|m| matches!(m, TextMark::Shade { .. }));
+    c.push_str("q\n0.94 0.94 0.94 rg\n");
+    for mark in shades {
+        if let TextMark::Shade { x, top, width, height } = *mark {
+            c.push_str(&format!("{} {} {} re f\n", at(x, top), num(width, 2), num(height, 2)));
+        }
+    }
+    for run in spans {
+        let (x, y) = (run.x - 2.0, run.top + run.line_h * 0.08);
+        c.push_str(&format!("{} {} {} re f\n", at(x, y), num(run.width + 4.0, 2), num(run.line_h * 0.84, 2)));
+    }
+    c.push_str("Q\n");
+    for mark in &layout.marks {
+        match *mark {
+            TextMark::Line { x0, y0, x1, y1 } => {
+                c.push_str(&format!("{} w {} m {} l S\n", num(t.size * 0.05, 2), at(x0, y0), at(x1, y1)));
+            }
+            TextMark::Shade { .. } => {}
+            TextMark::Quote { x, top, bottom } => {
+                let w = (t.size * 0.18).max(1.0);
+                c.push_str(&format!("{} {} {} re f\n", at(x, top), num(w, 2), num(bottom - top, 2)));
+            }
+            TextMark::Check { x, top, size, checked } => {
+                let s = num(size, 2);
+                c.push_str(&format!("{} w {} {s} {s} re S\n", num(size * 0.09, 2), at(x, top)));
+                if checked {
+                    let tick =
+                        [(0.22, 0.52), (0.42, 0.72), (0.78, 0.28)].map(|(u, v)| at(x + u * size, top + v * size));
+                    c.push_str(&format!("{} m {} l {} l S\n", tick[0], tick[1], tick[2]));
+                }
+            }
+        }
+    }
+    c.push_str("BT\n");
+    for run in &layout.runs {
+        if run.text.trim().is_empty() {
+            continue;
+        }
+        let font = font_of(run.style);
+        // The page matrix is y-down; this text matrix flips it back so glyphs are upright.
+        c.push_str(&format!("/F{font} {} Tf\n1 0 0 -1 {} Tm\n", num(run.size, 2), at(run.x, run.baseline)));
+        c.push_str(&format!("({}) Tj\n", pdf_string(&run.text)));
+    }
+    c.push_str("ET\n");
+    // Struck and underlined runs.
+    for run in layout.runs.iter().filter(|r| r.style.strike || r.style.underline) {
+        let y = if run.style.strike { run.baseline - run.size * 0.3 } else { run.baseline + run.size * 0.12 };
+        c.push_str(&format!("{} w {} m {} l S\n", num(run.size * 0.06, 2), at(run.x, y), at(run.x + run.width, y)));
+    }
+    c.push_str("Q\n");
 }
 
 fn winansi(ch: char) -> u8 {
@@ -589,6 +676,7 @@ mod tests {
             text: "Città (test) \\ €".into(),
             lines: vec!["Città (test) \\ €".into()],
             line_h: 22.0,
+            layout: None,
         });
         doc
     }
@@ -613,6 +701,49 @@ mod tests {
             let expect = format!("{} 0 obj", i + 1);
             assert_eq!(&bytes[off..off + expect.len()], expect.as_bytes());
         }
+    }
+
+    /// A box laid out from Markdown prints its runs in their fonts, at their
+    /// places, and its marks.
+    #[test]
+    fn laid_out_text_uses_its_fonts_and_marks() {
+        let mut doc = sample_doc();
+        let run = |text: &str, x: f32, style: RunStyle| TextRun {
+            text: text.into(),
+            source: None,
+            x,
+            baseline: 16.0,
+            top: 0.0,
+            line_h: 20.0,
+            width: 30.0,
+            size: 16.0,
+            ascent: 15.0,
+            style,
+        };
+        let layout = TextLayout {
+            runs: vec![
+                run("bold", 0.0, RunStyle { bold: true, ..Default::default() }),
+                run("code", 40.0, RunStyle { code: true, ..Default::default() }),
+                run("gone", 80.0, RunStyle { strike: true, ..Default::default() }),
+            ],
+            marks: vec![
+                TextMark::Check { x: 0.0, top: 22.0, size: 12.0, checked: true },
+                TextMark::Line { x0: 0.0, y0: 50.0, x1: 300.0, y1: 50.0 },
+            ],
+            height: 60.0,
+        };
+        doc.texts[0].layout = Some(std::sync::Arc::new(layout));
+        let c = page_content(&doc, 0, &PdfOptions::default());
+        assert!(c.contains("/F2 16 Tf\n1 0 0 -1 40 216 Tm\n(bold) Tj"), "bold, at the run's baseline");
+        assert!(c.contains("/F5 16 Tf\n1 0 0 -1 80 216 Tm\n(code) Tj"), "code in Courier");
+        assert!(c.contains(" re S\n"), "the task's box");
+        assert!(c.contains("40 250 m 340 250 l S"), "the rule");
+        assert!(!c.contains("Città"), "the stored lines are not printed too");
+        let fonts = String::from_utf8_lossy(
+            &build_pdf(&[PdfNote { doc: &doc, title: "A".into() }], &PdfOptions::default()).unwrap(),
+        )
+        .into_owned();
+        assert!(FONTS.iter().all(|f| fonts.contains(&format!("/BaseFont /{f} "))));
     }
 
     fn pdf_text(opts: &PdfOptions) -> String {

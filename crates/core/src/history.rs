@@ -361,6 +361,7 @@ mod tests {
             text: "hello".into(),
             lines: vec!["hello".into()],
             line_h: 20.0,
+            layout: None,
         }
     }
 

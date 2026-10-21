@@ -19,8 +19,8 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Button, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Painter, Pos2, Rect,
-    RichText, Shadow, Stroke, StrokeKind, TextStyle, Theme, ThemePreference, Ui, WidgetText, pos2, vec2,
+    self, Button, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Margin, Painter,
+    Pos2, Rect, RichText, Shadow, Stroke, StrokeKind, TextStyle, Theme, ThemePreference, Ui, WidgetText, pos2, vec2,
 };
 
 pub mod color {
@@ -105,6 +105,12 @@ pub fn strong_family() -> FontFamily {
     FontFamily::Name("semibold".into())
 }
 
+/// Inter's own italics, for text boxes' Markdown (egui's slanted upright
+/// glyphs blur): medium for regular text, bold for semibold.
+pub fn italic_family(bold: bool) -> FontFamily {
+    FontFamily::Name(if bold { "semibold-italic" } else { "italic" }.into())
+}
+
 pub fn font(size: f32) -> FontId {
     FontId::proportional(size)
 }
@@ -118,13 +124,17 @@ pub fn font_strong(size: f32) -> FontId {
 /// widgets always match the custom-painted surfaces.
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("inter".into(), Arc::new(FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf"))));
-    fonts.font_data.insert(
-        "inter-semibold".into(),
-        Arc::new(FontData::from_static(include_bytes!("../assets/fonts/Inter-SemiBold.ttf"))),
-    );
+    // Inter's glyphs on whole pixels: sharper than egui's default of four
+    // fractional offsets, for slightly less even spacing.
+    let inter = |bytes: &'static [u8]| {
+        Arc::new(FontData::from_static(bytes).tweak(FontTweak { subpixel_binning: Some(false), ..Default::default() }))
+    };
+    fonts.font_data.insert("inter".into(), inter(include_bytes!("../assets/fonts/Inter-Regular.ttf")));
+    fonts.font_data.insert("inter-semibold".into(), inter(include_bytes!("../assets/fonts/Inter-SemiBold.ttf")));
+    // Italics a weight heavier than their upright: slanted strokes cross the
+    // pixel grid and look lighter.
+    fonts.font_data.insert("inter-italic".into(), inter(include_bytes!("../assets/fonts/Inter-MediumItalic.ttf")));
+    fonts.font_data.insert("inter-bold-italic".into(), inter(include_bytes!("../assets/fonts/Inter-BoldItalic.ttf")));
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     // Inter first; then the icons (Unicode private use area, which the
     // bundled Inter leaves free, see assets/fonts/README.md) and egui's own
@@ -138,6 +148,8 @@ pub fn install(ctx: &egui::Context) {
         |main: &str| [main.to_owned(), "phosphor".to_owned()].into_iter().chain(fallbacks.iter().cloned()).collect();
     fonts.families.insert(FontFamily::Proportional, family("inter"));
     fonts.families.insert(strong_family(), family("inter-semibold"));
+    fonts.families.insert(italic_family(false), family("inter-italic"));
+    fonts.families.insert(italic_family(true), family("inter-bold-italic"));
     ctx.set_fonts(fonts);
 
     ctx.set_theme(ThemePreference::Dark);

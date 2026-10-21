@@ -126,7 +126,8 @@ impl Item for TextBox {
     }
 
     fn same_content(&self, other: &Self) -> bool {
-        let TextBox { id, page: _, x, y, width, size, color, text, lines, line_h } = self;
+        // The layout is made from the rest, and not saved.
+        let TextBox { id, page: _, x, y, width, size, color, text, lines, line_h, layout: _ } = self;
         *id == other.id
             && *x == other.x
             && *y == other.y
@@ -272,6 +273,7 @@ mod tests {
             text: s.into(),
             lines: vec![s.into()],
             line_h: 20.0,
+            layout: None,
         }
     }
 

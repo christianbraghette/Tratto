@@ -43,6 +43,7 @@ mod file_picker;
 mod frame_limit;
 mod input;
 mod kinetic;
+mod markdown;
 mod pdf_nav;
 mod pdf_view;
 mod render;

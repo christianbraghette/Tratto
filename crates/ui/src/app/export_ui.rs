@@ -23,8 +23,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 use eframe::egui::{
-    self, Align2, Color32, DragValue, FontId, Rect, RichText, Sense, Shape, Slider, Stroke, Ui, epaint::Mesh, pos2,
-    vec2,
+    self, Align2, Color32, DragValue, Rect, RichText, Sense, Shape, Slider, Stroke, Ui, epaint::Mesh, pos2, vec2,
 };
 use egui_phosphor::regular as icon;
 use tratto_core::library::NoteInfo;
@@ -211,7 +210,11 @@ impl InkApp {
     fn load_for_export(&self, d: &mut ExportDialog, list: &[(PathBuf, String)]) {
         for (path, _) in list {
             if Some(path) != self.note_path.as_ref() && !d.loaded.contains_key(path) {
-                d.loaded.insert(path.clone(), storage::load_note(path).ok().map(|(_, doc)| doc));
+                let doc = storage::load_note(path).ok().map(|(_, mut doc)| {
+                    crate::markdown::lay_out_document(&self.egui_ctx, &mut doc);
+                    doc
+                });
+                d.loaded.insert(path.clone(), doc);
             }
         }
     }
@@ -742,11 +745,7 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions,
     }
     if opts.include_text {
         for t in doc.texts.iter().filter(|t| t.page == page) {
-            let ink = rgb(opts.ink_rgb(t.color, false));
-            for (i, line) in t.lines.iter().enumerate() {
-                let size = (t.size * f).max(1.0);
-                p.text(at(t.x, t.y + i as f32 * t.line_h), Align2::LEFT_TOP, line, FontId::proportional(size), ink);
-            }
+            render::paint_text_box(&p, at(t.x, t.y), f, t, rgb(opts.ink_rgb(t.color, false)));
         }
     }
     paint_strokes(StrokeKind::Pen);
