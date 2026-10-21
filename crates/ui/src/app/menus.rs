@@ -99,6 +99,20 @@ fn shortcut(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> String {
     ctx.format_shortcut(&KeyboardShortcut::new(modifiers, key))
 }
 
+/// Width of the keyboard shortcuts window's list, and of its keys' column.
+const SHORTCUTS_WIDTH: f32 = 430.0;
+const SHORTCUT_KEYS_WIDTH: f32 = 170.0;
+
+/// A key, or keys pressed together, drawn as a key cap.
+fn keycap(ui: &mut Ui, keys: &str) {
+    Frame::new()
+        .fill(color::SURFACE)
+        .stroke(egui::Stroke::new(1.0, color::BORDER))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(6, 1))
+        .show(ui, |ui| ui.label(RichText::new(keys).monospace().size(11.5).color(color::TEXT)));
+}
+
 /// One menu entry: icon, label and shortcut. Returns true when clicked.
 pub(super) fn entry(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: bool) -> bool {
     // All menus share a minimum width, and widen to fit the label and the
@@ -200,7 +214,7 @@ impl InkApp {
             let pinned = self.chrome.menu_open || self.chrome.title_focused;
             let bar = chrome::title_bar(ui, state, pinned, field, |ui| menu_open = self.menu_bar(ui, &mut cmds));
             self.chrome.menu_open = menu_open;
-            if bar.exit_fullscreen {
+            if bar.toggle_fullscreen {
                 cmds.push(Command::Fullscreen);
             }
             let resp = bar.title;
@@ -217,7 +231,7 @@ impl InkApp {
                 menu_open = self.menu_bar(ui, &mut cmds)
             });
             self.chrome.menu_open = menu_open;
-            if bar.exit_fullscreen {
+            if bar.toggle_fullscreen {
                 cmds.push(Command::Fullscreen);
             }
         }
@@ -361,7 +375,7 @@ impl InkApp {
                 ui.separator();
             }
             push(
-                entry(ui, icon::CORNERS_OUT, "Full screen", &shortcut(&ctx, Modifiers::NONE, Key::F11), true),
+                entry(ui, icon::ARROWS_OUT_SIMPLE, "Full screen", &shortcut(&ctx, Modifiers::NONE, Key::F11), true),
                 ui,
                 Command::Fullscreen,
             );
@@ -832,45 +846,99 @@ impl InkApp {
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 let c = Modifiers::COMMAND;
-                let none = Modifiers::NONE;
-                let rows = [
-                    (shortcut(ctx, c, Key::N), "New note"),
-                    (shortcut(ctx, c, Key::S), "Save now"),
-                    (shortcut(ctx, c, Key::E), "Export as PDF"),
-                    (shortcut(ctx, c, Key::W), "Close note"),
-                    (shortcut(ctx, c, Key::Z), "Undo"),
-                    (format!("{} / {}", shortcut(ctx, c, Key::Y), shortcut(ctx, c | Modifiers::SHIFT, Key::Z)), "Redo"),
-                    (shortcut(ctx, c, Key::A), "Select all on the current page"),
-                    (shortcut(ctx, none, Key::Delete), "Delete the selection"),
-                    (shortcut(ctx, none, Key::Escape), "Deselect"),
-                    (format!("{} / {}", shortcut(ctx, c, Key::Plus), shortcut(ctx, c, Key::Minus)), "Zoom in / out"),
-                    (shortcut(ctx, c, Key::Num0), "Actual size"),
-                    ("Ctrl + wheel, pinch".to_owned(), "Zoom around the pointer"),
-                    ("Page Up / Page Down".to_owned(), "Scroll by one screen (a page in the PDF reader)"),
-                    (format!("{} / {}", shortcut(ctx, c, Key::B), shortcut(ctx, c, Key::I)), "Text box: bold / italic"),
-                    (shortcut(ctx, c, Key::K), "Text box: link"),
-                    ("Tab / Shift + Tab".to_owned(), "Text box: nest / unnest a list item"),
-                    ("Enter".to_owned(), "Text box: next list item (on an empty one: end the list)"),
-                    (shortcut(ctx, c, Key::O), "Open a PDF to read"),
-                    (shortcut(ctx, c, Key::C), "Copy the selected text"),
-                    (shortcut(ctx, c, Key::F), "Search the text"),
+                let (none, shift) = (Modifiers::NONE, Modifiers::SHIFT);
+                let key = |m, k| shortcut(ctx, m, k);
+                let or = |a: String, b: String| format!("{a} / {b}");
+                // Groups of (keys, what); keys split by " / " are alternatives.
+                let groups: [(&str, Vec<(String, &str)>); 6] = [
                     (
-                        format!("{} / {}", shortcut(ctx, none, Key::F3), shortcut(ctx, Modifiers::SHIFT, Key::F3)),
-                        "Next / previous match",
+                        "Notes",
+                        vec![
+                            (key(c, Key::N), "New note"),
+                            (key(c, Key::S), "Save now"),
+                            (key(c, Key::E), "Export as PDF"),
+                            (key(c, Key::W), "Close the note"),
+                            (key(c, Key::O), "Open a PDF to read"),
+                        ],
                     ),
-                    ("Left / Right, Space".to_owned(), "PDF reader: previous / next page"),
-                    ("Alt + Left, Backspace".to_owned(), "PDF reader: back after following a link"),
-                    ("Home / End".to_owned(), "First / last page"),
-                    (shortcut(ctx, none, Key::F11), "Full screen"),
-                    ("Right click".to_owned(), "Context menu"),
-                    (shortcut(ctx, c, Key::Comma), "Settings"),
-                    (shortcut(ctx, c, Key::Q), "Exit"),
+                    (
+                        "Editing",
+                        vec![
+                            (key(c, Key::Z), "Undo"),
+                            (or(key(c, Key::Y), key(c | shift, Key::Z)), "Redo"),
+                            (key(c, Key::A), "Select all on the page"),
+                            (key(none, Key::Delete), "Delete the selection"),
+                            (key(none, Key::Escape), "Deselect"),
+                            (key(c, Key::C), "Copy the selected text"),
+                        ],
+                    ),
+                    (
+                        "Text boxes",
+                        vec![
+                            (or(key(c, Key::B), key(c, Key::I)), "Bold / italic"),
+                            (key(c, Key::K), "Link"),
+                            ("Enter".to_owned(), "Next list item"),
+                            (or(key(none, Key::Tab), key(shift, Key::Tab)), "Nest / unnest an item"),
+                        ],
+                    ),
+                    (
+                        "View",
+                        vec![
+                            (or(key(c, Key::Plus), key(c, Key::Minus)), "Zoom in / out"),
+                            (key(c, Key::Num0), "Actual size"),
+                            ("Ctrl+Wheel / Pinch".to_owned(), "Zoom at the pointer"),
+                            ("PgUp / PgDn".to_owned(), "Scroll by a screen"),
+                            ("Home / End".to_owned(), "First / last page"),
+                            (key(none, Key::F11), "Full screen"),
+                        ],
+                    ),
+                    (
+                        "Search and PDF reader",
+                        vec![
+                            (key(c, Key::F), "Search the text"),
+                            (or(key(none, Key::F3), key(shift, Key::F3)), "Next / previous match"),
+                            ("Left / Right / Space".to_owned(), "Previous / next page"),
+                            ("Alt+Left / Backspace".to_owned(), "Back after a link"),
+                        ],
+                    ),
+                    (
+                        "App",
+                        vec![
+                            ("Right click".to_owned(), "Context menu"),
+                            (key(c, Key::Comma), "Settings"),
+                            (key(c, Key::Q), "Exit"),
+                        ],
+                    ),
                 ];
-                egui::Grid::new("shortcuts_grid").num_columns(2).spacing([24.0, 6.0]).striped(true).show(ui, |ui| {
-                    for (keys, what) in rows {
-                        ui.monospace(keys);
-                        ui.label(what);
-                        ui.end_row();
+                ui.set_width(SHORTCUTS_WIDTH);
+                // As wide as the window: the scroll bar at its edge.
+                let max_h = (ctx.viewport_rect().height() * 0.7).max(240.0);
+                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                    for (n, (title, rows)) in groups.iter().enumerate() {
+                        if n > 0 {
+                            ui.add_space(theme::space::M);
+                        }
+                        theme::caption(ui, title);
+                        ui.add_space(theme::space::XS);
+                        egui::Grid::new(("shortcuts", n))
+                            .num_columns(2)
+                            .min_col_width(SHORTCUT_KEYS_WIDTH)
+                            .spacing([theme::space::L, theme::space::S])
+                            .show(ui, |ui| {
+                                for (keys, what) in rows {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        for (k, alt) in keys.split(" / ").enumerate() {
+                                            if k > 0 {
+                                                ui.label(theme::muted("/"));
+                                            }
+                                            keycap(ui, alt);
+                                        }
+                                    });
+                                    ui.label(*what);
+                                    ui.end_row();
+                                }
+                            });
                     }
                 });
             });

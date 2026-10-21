@@ -119,17 +119,8 @@ impl InkApp {
             let local = center - layout.page_origin(page).to_vec2();
             hits.extend(self.doc.strokes.iter().filter(|s| s.page == page && s.hit_test(local, radius)).map(|s| s.id));
         }
-        // A text box is erased when the eraser centre is inside it.
-        let mut text_hits: Vec<u64> = Vec::new();
-        for page in layout.pages_overlapping(center.y - radius, center.y + radius) {
-            let local = center - layout.page_origin(page).to_vec2();
-            text_hits
-                .extend(self.doc.texts.iter().filter(|t| t.page == page && t.rect().contains(local)).map(|t| t.id));
-        }
-        for id in text_hits {
-            let inverse = Action::RemoveText { id }.apply(&mut self.doc);
-            self.erase_session.push(inverse);
-        }
+        // Only ink: text boxes are deleted from their context menu (or by
+        // emptying them), never wiped by accident.
         for id in hits {
             let inverse = Action::RemoveStroke { id }.apply(&mut self.doc);
             self.erase_session.push(inverse);

@@ -8,7 +8,7 @@
 //! * **Settings** (File > Settings, `Ctrl+,`): global preferences, in a
 //!   floating window, on the library screen too.
 
-use eframe::egui::{self, Align2, DragValue, RichText, Slider, Ui};
+use eframe::egui::{self, Align2, DragValue, RichText, Slider, Ui, vec2};
 use egui_phosphor::regular as icon;
 use tratto_core::history::Action;
 use tratto_core::model::{PAPERS, PageKind, paper_label};
@@ -175,17 +175,19 @@ impl InkApp {
             return;
         }
         let mut open = true;
-        let max_h = ctx.viewport_rect().height() * 0.75;
+        // Large: most of the window, what does not fit scrolls.
+        let screen = ctx.viewport_rect();
+        let size = vec2((screen.width() * 0.9).min(540.0), screen.height() * 0.85);
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
             .resizable(false)
-            .default_width(460.0)
+            .fixed_size(size)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| self.global_settings(ui));
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.global_settings(ui));
             });
         self.global_settings_open = open;
     }
@@ -196,6 +198,8 @@ impl InkApp {
         // Some(true): register for PDFs, Some(false): unregister.
         let mut pdf_reader = None;
         let standalone = self.standalone.is_some();
+        // Sliders filling their column.
+        ui.spacing_mut().slider_width = 220.0;
         let vsync_now = self.frame_limit.vsync();
         let fps_overridden = self.frame_limit.overridden();
         let s = &mut self.settings;
@@ -272,11 +276,13 @@ impl InkApp {
         });
 
         section(ui, "Pen and input");
-        ui.checkbox(&mut s.predict_pen, "Predict the pen tip (lower perceived latency)");
-        ui.checkbox(&mut s.pressure, "Pressure sensitivity (line width follows the pen pressure)");
-        ui.checkbox(&mut s.side_button_eraser, "Pen side button erases while held")
-            .on_hover_text("The eraser end of the pen always erases");
         rows(ui, "global_pen", |ui| {
+            row(ui, "Prediction", |ui| {
+                ui.checkbox(&mut s.predict_pen, "Predict the pen tip").on_hover_text("Lower perceived latency");
+            });
+            row(ui, "Pressure", |ui| {
+                ui.checkbox(&mut s.pressure, "Line width follows the pen pressure");
+            });
             row(ui, "Pressure strength", |ui| {
                 let slider = Slider::new(&mut s.pressure_strength, 0.1..=1.0)
                     .step_by(0.05)
@@ -284,6 +290,10 @@ impl InkApp {
                 ui.add_enabled(s.pressure, slider)
                     .on_hover_text("How much the pressure thins the line; lower it if the lines come out too thin")
                     .on_disabled_hover_text("Needs pressure sensitivity");
+            });
+            row(ui, "Side button", |ui| {
+                ui.checkbox(&mut s.side_button_eraser, "Erases while held")
+                    .on_hover_text("The eraser end of the pen always erases");
             });
             row(ui, "Eraser size", |ui| {
                 ui.add(Slider::new(&mut s.eraser_radius, 4.0..=60.0));

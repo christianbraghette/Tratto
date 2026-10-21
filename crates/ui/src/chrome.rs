@@ -121,9 +121,10 @@ fn fullscreen_reveal(ctx: &egui::Context, pinned: bool) -> f32 {
 pub struct TitleBarResponse {
     /// The text field of an editable title.
     pub title: Option<egui::Response>,
-    /// Fullscreen: the button where the window buttons usually are was
-    /// clicked (back to the window).
-    pub exit_fullscreen: bool,
+    /// The full screen button was clicked: left of the window buttons (into
+    /// full screen), or in full screen where they usually are (back to the
+    /// window).
+    pub toggle_fullscreen: bool,
 }
 
 /// Shows the top bar in the root `ui`. Call it before any other panel so it
@@ -201,21 +202,25 @@ pub fn title_bar(
             // In their own area spanning exactly the bar: nested in the row
             // above, the right-to-left layout would start one item spacing
             // (8 px) past the right edge, partly outside the window.
-            if (controls && !buttons.right.is_empty()) || state.fullscreen {
-                let layout = Layout::right_to_left(Align::Center);
-                ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.add_space(edge);
-                    if state.fullscreen {
-                        let exit = window_button(ui, buttons.style, icon::CORNERS_IN, false, height);
-                        response.exit_fullscreen = exit.clicked();
-                    } else {
-                        // Right to left: the last button first.
+            // Right to left: the window buttons (the last first), then left of
+            // them the full screen button; in full screen only the button
+            // back, where the window buttons were.
+            let layout = Layout::right_to_left(Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(layout), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(edge);
+                let glyph = if state.fullscreen {
+                    icon::ARROWS_IN_SIMPLE
+                } else {
+                    if controls {
                         window_buttons(ui, buttons.style, buttons.right.iter().rev().copied(), state, height);
                     }
-                    buttons_left = ui.min_rect().left();
-                });
-            }
+                    icon::ARROWS_OUT_SIMPLE
+                };
+                let toggle = window_button(ui, buttons.style, glyph, false, height);
+                response.toggle_fullscreen = toggle.clicked();
+                buttons_left = ui.min_rect().left();
+            });
 
             // Centred title, moved aside (or dropped) when the window is too narrow.
             let (min_x, max_x) = (menus_right + 16.0, buttons_left - 16.0);
@@ -576,7 +581,7 @@ mod tests {
             input.viewports.insert(egui::ViewportId::ROOT, info);
             crate::test_frame(&ctx, input, |ui| {
                 let state = WindowState::of(ui.ctx(), true);
-                exit |= title_bar(ui, state, false, Title::Text("t"), |_| {}).exit_fullscreen;
+                exit |= title_bar(ui, state, false, Title::Text("t"), |_| {}).toggle_fullscreen;
                 egui::CentralPanel::default().show(ui, |_| {});
             });
         };
@@ -612,6 +617,34 @@ mod tests {
         frame(&ctx, &mut open, vec![at(300.0, 300.0), button(300.0, 300.0, true)]);
         frame(&ctx, &mut open, vec![button(300.0, 300.0, false), Event::PointerGone]);
         assert_eq!(shown(&ctx), Some(false), "a press below hides it");
+    }
+
+    #[test]
+    fn a_button_left_of_the_window_buttons_goes_full_screen() {
+        let ctx = egui::Context::default();
+        let mut toggled = false;
+        let mut run = |events: Vec<Event>| {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                time: Some(ctx.input(|i| i.time) + 1.0 / 60.0),
+                events,
+                ..Default::default()
+            };
+            crate::test_frame(&ctx, input, |ui| {
+                let state = WindowState::of(ui.ctx(), true);
+                toggled |= title_bar(ui, state, false, Title::Text("t"), |_| {}).toggle_fullscreen;
+                egui::CentralPanel::default().show(ui, |_| {});
+            });
+        };
+        let buttons = desktop::window_buttons(&ctx);
+        let (width, edge) = button_size(buttons.style);
+        // Right of the window buttons when they are on the left.
+        let x = 800.0 - edge - width * (buttons.right.len() as f32 + 0.5);
+        let y = 16.0;
+        run(vec![at(x, y)]);
+        run(vec![button(x, y, true)]);
+        run(vec![button(x, y, false)]);
+        assert!(toggled);
     }
 
     #[test]
