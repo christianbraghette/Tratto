@@ -13,6 +13,16 @@ pub enum ToolbarPosition {
     Bottom,
 }
 
+/// How the select tool picks what to select.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelectMode {
+    /// A freehand loop around it.
+    #[default]
+    Lasso,
+    /// A box dragged around it.
+    Rectangle,
+}
+
 /// What the left panel of the editor shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeftPanel {
@@ -159,6 +169,8 @@ pub struct ToolStyle {
 #[serde(default)]
 pub struct Settings {
     pub toolbar_position: ToolbarPosition,
+    /// The select tool's lasso or rectangle.
+    pub select_mode: SelectMode,
     pub pen: ToolStyle,
     pub highlighter: ToolStyle,
     /// Text boxes: `width` is the font size (document units).
@@ -323,6 +335,7 @@ impl Default for Settings {
         let blank = Document::default();
         Self {
             toolbar_position: ToolbarPosition::Top,
+            select_mode: SelectMode::Lasso,
             pen: ToolStyle { color: [20, 20, 20], width: 2.5 },
             highlighter: ToolStyle { color: [255, 235, 0], width: 14.0 },
             text: ToolStyle { color: [20, 20, 20], width: 18.0 },

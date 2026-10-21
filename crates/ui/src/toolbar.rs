@@ -18,7 +18,7 @@ use eframe::egui::{self, Align2, Color32, Margin, Order, Pos2, Rect, Sense, Shap
 use egui_phosphor::regular as icon;
 
 use crate::scrollbar;
-use crate::settings::{LeftPanel, Settings, ToolStyle, ToolbarPosition, ZoomMode};
+use crate::settings::{LeftPanel, SelectMode, Settings, ToolStyle, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color, radius, space};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,7 +61,7 @@ impl Tool {
             Tool::Pen => icon::PEN_NIB,
             Tool::Highlighter => icon::HIGHLIGHTER,
             Tool::Eraser => icon::ERASER,
-            Tool::Select => icon::LASSO,
+            Tool::Select => icon::SELECTION_PLUS,
             Tool::Text => icon::TEXT_T,
         }
     }
@@ -517,7 +517,17 @@ fn contents(
             size_slider(ui, &mut settings.eraser_radius, 4.0..=60.0, 2.0, above);
         }
         Tool::Select => {
-            ui.label(theme::muted("Lasso, then drag"));
+            let modes = [
+                (SelectMode::Lasso, icon::LASSO, "Lasso: draw around what to select, then drag it"),
+                (
+                    SelectMode::Rectangle,
+                    icon::SELECTION_ALL,
+                    "Rectangle: drag a box around what to select, then drag it",
+                ),
+            ];
+            for (mode, glyph, tip) in modes {
+                ui.selectable_value(&mut settings.select_mode, mode, theme::icon(glyph)).on_hover_text(tip);
+            }
         }
         Tool::Text => style_controls(ui, &mut settings.text, &PEN_PALETTE, 8.0..=96.0, 2.0, above),
     }

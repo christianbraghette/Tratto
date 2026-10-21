@@ -631,7 +631,12 @@ impl InkApp {
         }
         if let Some(l) = &self.lasso {
             let o = layout.page_origin(l.page).to_vec2();
-            let pts: Vec<Pos2> = l.points.iter().map(|p| view.content_to_screen(*p + o)).collect();
+            let mut pts: Vec<Pos2> = l.outline().iter().map(|p| view.content_to_screen(*p + o)).collect();
+            if l.rect && pts.len() == 4 {
+                // The box, closed and faintly filled, like the selection's.
+                painter.rect_filled(Rect::from_two_pos(pts[0], pts[2]), 0.0, color::accent_alpha(18));
+                pts.push(pts[0]);
+            }
             if pts.len() >= 2 {
                 painter.extend(egui::Shape::dashed_line(&pts, egui::Stroke::new(1.5, blue), 5.0, 4.0));
             }

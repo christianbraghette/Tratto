@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The select tool: lasso, select all on a page, moving and deleting what is
-//! selected (strokes, text boxes and pictures together); a tap on a picture
-//! picks it alone (see `pictures`).
+//! The select tool: lasso or rectangle (`SelectMode`), select all on a page,
+//! moving and deleting what is selected (strokes, text boxes and pictures
+//! together); a tap on a picture picks it alone (see `pictures`).
 
 use std::collections::HashSet;
 
@@ -12,6 +12,7 @@ use eframe::egui::{self, PointerButton, Pos2, Rect, Vec2, pos2};
 use tratto_core::geometry::point_in_polygon;
 use tratto_core::history::Action;
 
+use crate::settings::SelectMode;
 use crate::toolbar::Tool;
 use crate::view::{Layout, View};
 
@@ -63,16 +64,15 @@ impl InkApp {
         Some(Selection { page, ids, texts, images, bounds })
     }
 
-    /// Lasso released: pick the strokes that are mostly inside it, and the
-    /// text boxes and pictures whose middle is. A simple tap selects the
-    /// stroke under the pen instead, else picks the picture, else selects the
-    /// text box.
+    /// Lasso (or rectangle) released: pick the strokes that are mostly inside
+    /// it, and the text boxes and pictures whose middle is. A simple tap
+    /// selects the stroke under the pen instead, else picks the picture, else
+    /// selects the text box.
     fn finish_lasso(&mut self) {
         let Some(l) = self.lasso.take() else { return };
         let (mut ids, mut texts, mut images) = (HashSet::new(), HashSet::new(), HashSet::new());
-        let path_len: f32 = l.points.windows(2).map(|w| w[0].distance(w[1])).sum();
 
-        if l.points.len() < 4 || path_len < 8.0 {
+        if l.is_tap() {
             if let Some(&p) = l.points.first() {
                 if let Some(s) = self.doc.strokes.iter().rev().find(|s| s.page == l.page && s.hit_test(p, 4.0)) {
                     ids.insert(s.id);
@@ -83,18 +83,19 @@ impl InkApp {
                 }
             }
         } else {
-            let poly_bounds = Rect::from_points(&l.points);
+            let outline = l.outline();
+            let poly_bounds = Rect::from_points(&outline);
             for s in self.doc.strokes.iter().filter(|s| s.page == l.page) {
                 let sb = Rect::from_min_max(pos2(s.bounds[0], s.bounds[1]), pos2(s.bounds[2], s.bounds[3]));
                 if !sb.intersects(poly_bounds) {
                     continue;
                 }
-                let inside = s.points.iter().filter(|p| point_in_polygon(p.pos2(), &l.points)).count();
+                let inside = s.points.iter().filter(|p| point_in_polygon(p.pos2(), &outline)).count();
                 if inside * 2 >= s.points.len().max(1) {
                     ids.insert(s.id);
                 }
             }
-            let inside = |r: Rect| point_in_polygon(r.center(), &l.points);
+            let inside = |r: Rect| point_in_polygon(r.center(), &outline);
             texts.extend(self.doc.texts.iter().filter(|t| t.page == l.page && inside(t.rect())).map(|t| t.id));
             images.extend(self.doc.images.iter().filter(|i| i.page == l.page && inside(i.rect())).map(|i| i.id));
         }
@@ -183,7 +184,8 @@ impl InkApp {
                     self.picture = None;
                     if let Some(page) = view.layout.page_at(c) {
                         let p = to_page_point(view, page, pos, 1.0).pos2();
-                        self.lasso = Some(Lasso { page, points: vec![p] });
+                        let rect = self.settings.select_mode == SelectMode::Rectangle;
+                        self.lasso = Some(Lasso { page, points: vec![p], rect });
                     }
                 }
             }
@@ -199,7 +201,11 @@ impl InkApp {
             } else if let Some(l) = self.lasso.as_mut() {
                 for pos in moves {
                     let p = to_page_point(view, l.page, *pos, 1.0).pos2();
-                    if l.points.last().is_none_or(|q| q.distance(p) > 1.5) {
+                    if l.rect {
+                        // The box: from the corner pressed to here.
+                        l.points.truncate(1);
+                        l.points.push(p);
+                    } else if l.points.last().is_none_or(|q| q.distance(p) > 1.5) {
                         l.points.push(p);
                     }
                 }
@@ -214,5 +220,30 @@ impl InkApp {
                 self.finish_lasso();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rectangle_selects_with_its_box() {
+        let rect = |points: Vec<Pos2>| Lasso { page: 0, points, rect: true };
+        // Dragged up and left: the same box, its corners clockwise.
+        let r = rect(vec![pos2(100.0, 80.0), pos2(20.0, 10.0)]);
+        assert_eq!(r.outline(), [pos2(20.0, 10.0), pos2(100.0, 10.0), pos2(100.0, 80.0), pos2(20.0, 80.0)]);
+        assert!(!r.is_tap());
+        // Pressed and let go (almost) in place: a tap.
+        assert!(rect(vec![pos2(5.0, 5.0)]).is_tap());
+        assert!(rect(vec![pos2(5.0, 5.0), pos2(8.0, 7.0)]).is_tap());
+        // A lasso is its loop.
+        let lasso = Lasso {
+            page: 0,
+            points: vec![pos2(0.0, 0.0), pos2(30.0, 0.0), pos2(30.0, 30.0), pos2(0.0, 30.0)],
+            rect: false,
+        };
+        assert_eq!(lasso.outline().len(), 4);
+        assert!(!lasso.is_tap());
     }
 }

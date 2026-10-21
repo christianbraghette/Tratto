@@ -157,7 +157,34 @@ struct Selection {
 /// Freehand lasso being drawn (page space).
 struct Lasso {
     page: u32,
+    /// The loop drawn; a box (`rect`): the corner pressed and where the
+    /// pointer is now.
     points: Vec<Pos2>,
+    /// A rectangle (see `SelectMode`), not a loop.
+    rect: bool,
+}
+
+impl Lasso {
+    /// The outline that selects: the loop, or the box's four corners.
+    fn outline(&self) -> Vec<Pos2> {
+        match (self.rect, self.points.as_slice()) {
+            (true, [a, .., b]) => {
+                let r = Rect::from_two_pos(*a, *b);
+                vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()]
+            }
+            _ => self.points.clone(),
+        }
+    }
+
+    /// It was a tap, not a loop or a box around something.
+    fn is_tap(&self) -> bool {
+        if self.rect {
+            let o = self.outline();
+            return o.len() < 4 || o[0].distance(o[2]) < 8.0;
+        }
+        let path_len: f32 = self.points.windows(2).map(|w| w[0].distance(w[1])).sum();
+        self.points.len() < 4 || path_len < 8.0
+    }
 }
 
 /// Selection being dragged; `delta` is in content space.
