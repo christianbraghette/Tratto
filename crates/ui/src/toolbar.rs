@@ -416,9 +416,10 @@ fn notch(ctx: &egui::Context, id: &str, at: Corner, corner: Pos2, add_contents: 
 fn notch_shape(rect: Rect, at: Corner, fill: Color32) -> Shape {
     let (big, small) = (NOTCH_ROUNDING, NOTCH_FILLET);
     let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
-    // Outline of the top-left notch, clockwise. The edges along the window
-    // border reach 1 px past it, so their anti-aliasing fringe is not visible.
-    let mut pts = vec![pos2(l - 1.0, t - 1.0), pos2(r + small, t - 1.0)];
+    // Outline of the top-left notch, clockwise. The edge along the side of the
+    // window reaches 1 px past it, so its anti-aliasing fringe is not visible;
+    // the attached edge stops at it, not to cover the title bar's buttons.
+    let mut pts = vec![pos2(l - 1.0, t), pos2(r + small, t)];
     arc(&mut pts, pos2(r + small, t + small), small, -90.0, -180.0);
     arc(&mut pts, pos2(r - big, b - big), big, 0.0, 90.0);
     arc(&mut pts, pos2(l + small, b + small), small, -90.0, -180.0);
