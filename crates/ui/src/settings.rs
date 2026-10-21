@@ -171,6 +171,9 @@ pub struct Settings {
     pub touch_fling: f32,
     /// Line width follows the pen pressure.
     pub pressure: bool,
+    /// How much it follows it: `1` all of the pen's range, less keeps the
+    /// lines nearer their full width (a light-pressure Wacom thins them).
+    pub pressure_strength: f32,
     /// The pen side button (or the middle mouse button) erases while held.
     pub side_button_eraser: bool,
     /// Paper of new notes.
@@ -312,6 +315,7 @@ impl Default for Settings {
             touchpad_accel: 1.0,
             touch_fling: 1.0,
             pressure: true,
+            pressure_strength: 0.5,
             side_button_eraser: true,
             new_page_width: blank.page_width,
             new_page_height: blank.page_height,

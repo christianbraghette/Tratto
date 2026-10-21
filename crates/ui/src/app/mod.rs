@@ -173,6 +173,8 @@ struct PenInput {
     eraser: bool,
     /// Pressure of the pen's last sample (1.0 for a mouse).
     pressure: f32,
+    /// Windows: the touch of this frame is the pen's (see `finger`).
+    windows_touch: bool,
 }
 
 /// The window and its title bar (see `menus`).
@@ -259,6 +261,12 @@ pub struct InkApp {
     carry_view: Option<NoteView>,
     /// Pages to turn on the next frame (the reader; negative = back).
     page_turn: i32,
+    /// A finger writes with the pen tool: it was picked by the user (from
+    /// the toolbar, a menu or a shortcut). Otherwise fingers move around.
+    finger_ink: bool,
+    /// The press being held is a finger's that moves around the note
+    /// (see `finger_ink`), until it is released.
+    finger_nav: bool,
     screen: Screen,
     library: Library,
     lib_ui: library_ui::LibraryUi,
@@ -391,6 +399,8 @@ impl InkApp {
             reader: None,
             carry_view: None,
             page_turn: 0,
+            finger_ink: false,
+            finger_nav: false,
             screen: Screen::Library,
             library: Library::default(),
             lib_ui: library_ui::LibraryUi::default(),
@@ -517,11 +527,25 @@ impl InkApp {
         self.reader.is_some()
     }
 
-    /// The canvas moves around instead of writing: the reader, or a note
-    /// with the pointer tool. Drag to scroll, tap to turn pages or follow a
-    /// PDF link.
+    /// The canvas moves around instead of writing: the reader, a note with
+    /// the pointer tool, or a finger on a note (see `finger_ink`). Drag to
+    /// scroll, tap to follow a PDF link.
     fn navigating(&self) -> bool {
-        self.reading() || self.tool == Tool::Pointer
+        self.reading() || self.tool == Tool::Pointer || self.finger_nav
+    }
+
+    /// The pointer is a finger on a touch screen, not the mouse or a pen.
+    /// A Windows pen arrives as a touch too; the native source tells them
+    /// apart. The touch events count, so does the frame a touch ends.
+    pub(super) fn finger(&self, ctx: &egui::Context) -> bool {
+        let touch = ctx.input(|i| i.any_touches() || i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })));
+        touch && !self.pen_input.down && !self.pen_input.windows_touch
+    }
+
+    /// The user picks a tool: fingers write only with the pen picked.
+    pub(super) fn pick_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.finger_ink = tool == Tool::Pen;
     }
 
     /// The pages of the open note, stacked.
@@ -533,6 +557,7 @@ impl InkApp {
     fn editor_screen(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.pdf_nav.begin_frame(ctx);
+        self.pen_input.windows_touch = self.pen_input.windows.as_ref().is_some_and(|p| p.take_touching());
         self.search_step(ctx);
         self.handle_shortcuts(ctx);
 
@@ -621,6 +646,7 @@ impl InkApp {
             Some(ToolbarEvent::NextPage) => self.page_turn += 1,
             Some(ToolbarEvent::GoToPage(i)) => self.scroll_to = Some(self.layout().page_stop(i)),
             Some(ToolbarEvent::Back) => self.go_back(),
+            Some(ToolbarEvent::Tool(t)) => self.pick_tool(t),
             None => {}
         }
 

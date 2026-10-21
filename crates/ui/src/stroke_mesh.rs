@@ -13,6 +13,10 @@
 //!    gives analytic anti-aliasing independent of MSAA.
 //! 3. Round caps (half-discs with the same fringe) close both ends; a
 //!    single-point stroke becomes a full disc.
+//! 4. Where the curve turns sharply between two samples (a quick change of
+//!    direction), a mitered ribbon would end in a point: there the ribbon is
+//!    not mitered and a disc rounds the join instead. Overlaps do not show:
+//!    ink is opaque and highlighters are painted with the darken blend.
 //!
 //! All output positions are `document_units * scale` (no translation), which
 //! lets the cache reuse a mesh while scrolling.
@@ -31,6 +35,8 @@ use crate::stroke_gpu::Batch;
 
 /// Target spacing of generated curve samples, in physical pixels.
 const SAMPLE_STEP_PX: f32 = 2.5;
+/// A sample where the curve turns by more than 15° gets a round join.
+const JOIN_COS: f32 = 0.966;
 
 /// Appends the tessellated stroke to `mesh`.
 ///
@@ -58,7 +64,7 @@ fn whole(mesh: &mut Mesh, dense: &[Sample], solid: Color32, aa: f32) {
         add_arc(mesh, at(dot), vec2(1.0, 0.0), vec2(0.0, 1.0), r - half_aa, r + half_aa, solid, TAU, segs);
         return;
     }
-    ribbon(mesh, dense, 0..dense.len(), None, solid, aa * 0.5);
+    ribbon(mesh, dense, 0..dense.len(), None, false, solid, aa * 0.5);
     caps(mesh, dense, solid, aa);
 }
 
@@ -73,13 +79,25 @@ fn dir(dense: &[Sample], k: usize) -> Vec2 {
 
 /// The ribbon rows of samples `rows` of `dense` (at least two samples): two
 /// solid inner vertices and two transparent outer ones each, one `aa`
-/// apart, and the quads between the rows. With `after`, the first row is
-/// also joined to the row whose vertices start there (one made before).
-fn ribbon(mesh: &mut Mesh, dense: &[Sample], rows: Range<usize>, after: Option<u32>, solid: Color32, half_aa: f32) {
+/// apart, and the quads between the rows, then the round joins of the
+/// sharp turns. With `after`, the first row is also joined to the row whose
+/// vertices start there (one made before). `repeat`: the first row only
+/// starts the ribbon again where another mesh has it, its join too.
+/// Returns where the vertices of the last row start.
+fn ribbon(
+    mesh: &mut Mesh,
+    dense: &[Sample],
+    rows: Range<usize>,
+    after: Option<u32>,
+    repeat: bool,
+    solid: Color32,
+    half_aa: f32,
+) -> u32 {
     let n = dense.len();
     let first = mesh.vertices.len() as u32;
     mesh.reserve_vertices(rows.len() * 4);
     mesh.reserve_triangles(rows.len() * 6);
+    let mut joins = Vec::new();
     for i in rows.clone() {
         let n0 = perp(dir(dense, i.saturating_sub(1)));
         let n1 = perp(dir(dense, i.min(n - 2)));
@@ -87,8 +105,13 @@ fn ribbon(mesh: &mut Mesh, dense: &[Sample], rows: Range<usize>, after: Option<u
         if nrm == Vec2::ZERO {
             nrm = n0; // 180° reversal
         }
-        // Miter scale keeps the width constant around bends (limited to 2x).
-        let s = 1.0 / nrm.dot(n0).clamp(0.5, 1.0);
+        // Miter scale keeps the width constant around gentle bends; a sharp
+        // turn gets a round join instead.
+        let sharp = n0.dot(n1) < JOIN_COS;
+        if sharp && !(repeat && i == rows.start) {
+            joins.push(i);
+        }
+        let s = if sharp { 1.0 } else { 1.0 / nrm.dot(n0).clamp(0.5, 1.0) };
         let r = dense[i].r;
         let r_in = (r - half_aa).max(0.0) * s;
         let r_out = (r + half_aa) * s;
@@ -106,6 +129,12 @@ fn ribbon(mesh: &mut Mesh, dense: &[Sample], rows: Range<usize>, after: Option<u
             mesh.add_triangle(a + 1, c + 1, c);
         }
     }
+    for i in joins {
+        let (c, r) = (at(&dense[i]), dense[i].r);
+        let segs = arc_segments(r, 2.0 * half_aa) * 2;
+        add_arc(mesh, c, vec2(1.0, 0.0), vec2(0.0, 1.0), r - half_aa, r + half_aa, solid, TAU, segs);
+    }
+    first + 4 * (rows.len() as u32).saturating_sub(1)
 }
 
 /// The round caps of the curve `dense` (at least two samples).
@@ -127,10 +156,11 @@ pub struct LiveMesh {
     curve: LiveCurve,
     solid: Color32,
     aa: f32,
-    /// The ribbon rows of the fixed samples made so far (row `r` is
-    /// vertices `4 r ..`).
+    /// The ribbon rows of the fixed samples made so far, with their joins.
     fixed: Batch,
     rows: usize,
+    /// Where the vertices of the last row in `fixed` start.
+    last_row: Option<u32>,
 }
 
 impl LiveMesh {
@@ -142,6 +172,7 @@ impl LiveMesh {
             aa,
             fixed: Batch::default(),
             rows: 0,
+            last_row: None,
         }
     }
 
@@ -163,14 +194,16 @@ impl LiveMesh {
         // all fixed samples but the last are final.
         let last = done.len() - 2;
         if self.rows <= last {
-            let (from, after) = (self.rows, self.rows.checked_sub(1).map(|r| 4 * r as u32));
-            self.fixed.append(|m| ribbon(m, done, from..last + 1, after, solid, aa * 0.5));
+            let (from, after) = (self.rows, self.last_row);
+            let mut row = None;
+            self.fixed.append(|m| row = Some(ribbon(m, done, from..last + 1, after, false, solid, aa * 0.5)));
             self.rows = last + 1;
+            self.last_row = row;
         }
         // The rest of the ribbon from the last kept row on (made again, joining
         // it), with the samples on either side, then the caps.
         let end: Vec<Sample> = done[last - 1..].iter().copied().chain(rest).collect();
-        ribbon(&mut mesh, &end, 1..end.len(), None, solid, aa * 0.5);
+        ribbon(&mut mesh, &end, 1..end.len(), None, true, solid, aa * 0.5);
         let (d0, d1) = (dir(done, 0), dir(&end, end.len() - 2));
         let half_aa = aa * 0.5;
         let (first, tip_end) = (done[0], end[end.len() - 1]);
@@ -268,6 +301,35 @@ mod tests {
         let mut dot = Mesh::default();
         tessellate(&mut dot, StrokeKind::Pen, [0, 0, 0, 255], 3.0, &pts[..1], 1.0, 1.0);
         assert!(!dot.is_empty() && dot.is_valid());
+    }
+
+    /// A quick change of direction is round: no vertex sticks out further
+    /// from the curve than its radius and the fringe (no mitered point).
+    #[test]
+    fn sharp_turns_are_round() {
+        // Down and straight back up, slightly to the right: a narrow V.
+        let pts: Vec<Point> = (0..=20)
+            .map(|i| {
+                let t = i as f32;
+                if i <= 10 {
+                    Point::new(t, t * 8.0, 1.0)
+                } else {
+                    Point::new(10.0 + (t - 10.0) * 0.5, 160.0 - (t - 10.0) * 8.0, 1.0)
+                }
+            })
+            .collect();
+        for kind in [StrokeKind::Pen, StrokeKind::Highlighter] {
+            let mut m = Mesh::default();
+            tessellate(&mut m, kind, [0, 0, 0, 255], 6.0, &pts, 2.0, 1.0);
+            assert!(m.is_valid());
+            let dense = stroke_path::smoothed(kind, 6.0, &pts, 2.0, 0.5, SAMPLE_STEP_PX, 0.05);
+            // Gentle bends (under 15°) are still mitered, a little wider.
+            let reach = dense.iter().map(|s| s.r).fold(0.0, f32::max) * 1.01 + 0.5;
+            for v in &m.vertices {
+                let near = dense.iter().map(|s| (v.pos - at(s)).length()).fold(f32::MAX, f32::min);
+                assert!(near <= reach + 0.01, "a vertex {near} from the curve, the stroke reaches {reach}");
+            }
+        }
     }
 
     /// The triangles of a mesh, as their corners, in a canonical order.

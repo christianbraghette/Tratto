@@ -107,10 +107,15 @@ impl InkApp {
 
     /// Switches to the eraser while it is requested (pen eraser end or a held
     /// side button) and restores the previous tool afterwards.
-    /// Pressure for new points: the pen's, or full when pressure sensitivity
-    /// is off (Settings).
+    /// Pressure for new points: the pen's, brought towards full by the
+    /// pressure strength, or full when pressure sensitivity is off (Settings).
     pub(super) fn pen_pressure(&self) -> f32 {
-        if self.settings.pressure { self.pen_input.pressure } else { 1.0 }
+        if self.settings.pressure {
+            let strength = self.settings.pressure_strength.clamp(0.0, 1.0);
+            1.0 - strength * (1.0 - self.pen_input.pressure)
+        } else {
+            1.0
+        }
     }
 
     pub(super) fn apply_pen_eraser(&mut self, eraser: bool) {

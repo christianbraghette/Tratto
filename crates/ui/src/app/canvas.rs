@@ -256,7 +256,13 @@ impl InkApp {
         self.hbar_visible = hbar;
         self.view_scale = scale;
 
-        // Reading also takes taps (to turn pages); a drag then starts only
+        // A finger pressed on a note moves around it, unless the pen was
+        // picked to write with fingers too.
+        if idle && ui.input(|i| i.pointer.any_pressed()) {
+            self.finger_nav = self.finger(ui.ctx()) && !(self.tool == Tool::Pen && self.finger_ink);
+        }
+
+        // Reading also takes taps (to follow links); a drag then starts only
         // past the click threshold, which is why writing senses drags only.
         let sense = if self.navigating() { Sense::click_and_drag() } else { Sense::drag() };
         let canvas_resp = ui.allocate_rect(canvas, sense);
@@ -339,8 +345,7 @@ impl InkApp {
             click_used = self.text_input(ui.ctx(), &canvas_resp, &v, now);
         }
         // The reader: links, under the pointer, show where they lead
-        // and are followed by a tap; elsewhere a tap on the left or right
-        // quarter of the view turns the page.
+        // and are followed by a tap.
         let mut link_under_pointer = None;
         if self.navigating() {
             let v = View::new(canvas, self.scroll, scale, layout);
@@ -360,19 +365,11 @@ impl InkApp {
                     .show(|ui| ui.label(uri));
                 }
             }
-            if canvas_resp.clicked() && !click_used {
-                match (link, canvas_resp.interact_pointer_pos()) {
-                    (Some((_, action)), _) => self.follow_link(ui.ctx(), action),
-                    (None, Some(p)) => {
-                        let zone = canvas.width() * 0.25;
-                        if p.x < canvas.left() + zone {
-                            self.page_turn -= 1;
-                        } else if p.x > canvas.right() - zone {
-                            self.page_turn += 1;
-                        }
-                    }
-                    (None, None) => {}
-                }
+            if canvas_resp.clicked()
+                && !click_used
+                && let Some((_, action)) = link
+            {
+                self.follow_link(ui.ctx(), action);
             }
         }
         let turn = std::mem::take(&mut self.page_turn);
@@ -493,7 +490,7 @@ impl InkApp {
             ui.ctx().request_repaint();
         }
 
-        if !self.panning && !swallowed && !self.reading() {
+        if !self.panning && !swallowed && !self.navigating() {
             match self.tool {
                 // Moving around is handled above.
                 Tool::Pointer => {}
@@ -502,6 +499,10 @@ impl InkApp {
                 Tool::Text => self.handle_text(&canvas_resp, &view, press, &moves),
                 Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves),
             }
+        }
+
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.finger_nav = false;
         }
 
         // ---- painting

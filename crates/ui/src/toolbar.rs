@@ -24,7 +24,7 @@ use crate::theme::{self, color, radius, space};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     /// Moves around the note like the PDF reader: drag to scroll, tap to
-    /// turn pages or follow a PDF link; writes nothing.
+    /// follow a PDF link; writes nothing.
     Pointer,
     Pen,
     Highlighter,
@@ -48,6 +48,8 @@ pub enum ToolbarEvent {
     GoToPage(u32),
     /// Back to where the view was before following a link.
     Back,
+    /// A tool was clicked (already selected in `tool`).
+    Tool(Tool),
 }
 
 impl Tool {
@@ -489,12 +491,15 @@ fn contents(
 ) -> Option<ToolbarEvent> {
     let mut event = None;
 
+    let mut picked = None;
     for t in Tool::ALL {
         let tip = match t {
             Tool::Pointer => "Pointer: scroll, turn pages, follow links",
             _ => t.label(),
         };
-        ui.selectable_value(tool, t, theme::icon(t.icon())).on_hover_text(tip);
+        if ui.selectable_value(tool, t, theme::icon(t.icon())).on_hover_text(tip).clicked() {
+            picked = Some(ToolbarEvent::Tool(t));
+        }
     }
     ui.separator();
 
@@ -526,7 +531,7 @@ fn contents(
         event = Some(ToolbarEvent::Redo);
     }
     ui.separator();
-    zoom_controls(ui, settings).or(event)
+    zoom_controls(ui, settings).or(event).or(picked)
 }
 
 /// Zoom: out, the presets, in.

@@ -13,6 +13,8 @@
 //! * `PEN_FLAG_INVERTED` / `PEN_FLAG_ERASER` -> eraser end in use
 //! * in range but not touching             -> hover position (the app
 //!   draws its pen cursor there; winit does not report pen hover)
+//! * touching                               -> the touch winit reports is
+//!   the pen, not a finger
 //!
 //! The subclass proc only *observes* the messages and always forwards them
 //! (`DefSubclassProc`), so winit keeps working exactly as before. State is
@@ -52,6 +54,9 @@ mod stub {
         }
         pub fn hover(&self) -> Option<(f32, f32)> {
             None
+        }
+        pub fn take_touching(&self) -> bool {
+            false
         }
     }
 }
@@ -137,6 +142,10 @@ mod imp {
     static HOVERING: AtomicBool = AtomicBool::new(false);
     static HOVER_X: AtomicI32 = AtomicI32::new(0);
     static HOVER_Y: AtomicI32 = AtomicI32::new(0);
+    /// The pen touches the screen now / did since it was last asked (a
+    /// press and release between two frames, the frame of the release).
+    static TOUCHING: AtomicBool = AtomicBool::new(false);
+    static TOUCHED: AtomicBool = AtomicBool::new(false);
     static CTX: OnceLock<egui::Context> = OnceLock::new();
 
     fn debug() -> bool {
@@ -194,6 +203,10 @@ mod imp {
                                 info.pen_flags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER) != 0,
                             );
                             let touching = info.pointer_info.pointer_flags & POINTER_FLAG_INCONTACT != 0;
+                            TOUCHING.store(touching, Ordering::Relaxed);
+                            if touching || msg == WM_POINTERUP {
+                                TOUCHED.store(true, Ordering::Relaxed);
+                            }
                             let mut p = info.pointer_info.pixel_location;
                             let hover = (!touching && ScreenToClient(hwnd, &mut p) != 0).then_some((p.x, p.y));
                             publish_hover(hover);
@@ -206,11 +219,13 @@ mod imp {
                     if GetPointerType(pointer_id, &mut kind) != 0 && kind == PT_PEN {
                         publish(false, false);
                         publish_hover(None);
+                        TOUCHING.store(false, Ordering::Relaxed);
                     }
                 }
                 WM_KILLFOCUS => {
                     publish(false, false);
                     publish_hover(None);
+                    TOUCHING.store(false, Ordering::Relaxed);
                 }
                 _ => {}
             }
@@ -247,6 +262,12 @@ mod imp {
             HOVERING
                 .load(Ordering::Relaxed)
                 .then(|| (HOVER_X.load(Ordering::Relaxed) as f32, HOVER_Y.load(Ordering::Relaxed) as f32))
+        }
+
+        /// The pen touches the screen, or touched it since the last call:
+        /// the touch egui sees this frame is the pen's. Once per frame.
+        pub fn take_touching(&self) -> bool {
+            TOUCHED.swap(false, Ordering::Relaxed) | TOUCHING.load(Ordering::Relaxed)
         }
     }
 

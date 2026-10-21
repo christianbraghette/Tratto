@@ -9,9 +9,9 @@
 //! on the page, except the breaks between words and lines that only exist
 //! in the text.
 //!
-//! Selecting, in the reader and with the pointer tool: the mouse drags over
-//! the text (a drag elsewhere scrolls, a double click takes a word); touch
-//! and pen scroll, and a long press on the text takes the word there, then
+//! Selecting, in the reader and with the pointer tool: mouse and pen drag
+//! over the text (a drag elsewhere scrolls, a double click takes a word); a
+//! finger scrolls, and a long press on the text takes the word there, then
 //! the drag goes on selecting.
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ use crate::view::View;
 
 use super::InkApp;
 
-/// How long touch or pen stay pressed on the text to select (seconds).
+/// How long a finger stays pressed on the text to select (seconds).
 pub(super) const LONG_PRESS: f64 = 0.5;
 /// A press further than this from the text (document units) misses it.
 const SLACK: f32 = 2.0;
@@ -92,10 +92,10 @@ impl TextLayer {
     }
 }
 
-/// A gesture selecting text: the mouse dragging, or touch / pen pressed.
+/// A gesture selecting text: the mouse or pen dragging, or a finger pressed.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum TextGesture {
-    /// Touch or pen pressed at `pos` (screen) at `time`; selects once held
+    /// A finger pressed at `pos` (screen) at `time`; selects once held
     /// still long enough.
     Pressing { pos: Pos2, time: f64 },
     /// Selecting while the pointer moves, until it is released. `still`: a
@@ -103,7 +103,7 @@ pub(super) enum TextGesture {
     Dragging { still: Option<Pos2> },
 }
 
-/// How far touch or pen may move while pressed and still be a long press (points).
+/// How far a finger may move while pressed and still be a long press (points).
 const PRESS_MOVE: f32 = 8.0;
 /// Near the canvas' top or bottom edge (points), a selection being dragged scrolls.
 const SCROLL_EDGE: f32 = 40.0;
@@ -225,9 +225,10 @@ impl InkApp {
 
     /// Selecting text with the pointer on the canvas (`resp`), in the reader
     /// and with the pointer tool. Returns true when this frame's click was
-    /// used (it turns no page and follows no link).
+    /// used (it follows no link).
     pub(super) fn text_input(&mut self, ctx: &egui::Context, resp: &egui::Response, view: &View, now: f64) -> bool {
-        let mouse = !ctx.input(|i| i.any_touches()) && !self.pen_input.down;
+        // The pen selects as the mouse does.
+        let mouse = !self.finger(ctx);
         let (pressed, down, pointer) =
             ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos()));
         let press = ctx.input(|i| i.pointer.press_origin());
@@ -291,7 +292,7 @@ impl InkApp {
             }
         }
 
-        // The text cursor over text (the mouse; touch has none).
+        // The text cursor over text (the mouse; a finger has none).
         let over_text = mouse && resp.hover_pos().is_some_and(|p| self.glyph_under(view, p).is_some());
         if self.selecting_text() || over_text {
             ctx.set_cursor_icon(egui::CursorIcon::Text);

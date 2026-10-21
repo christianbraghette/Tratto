@@ -277,6 +277,14 @@ impl InkApp {
         ui.checkbox(&mut s.side_button_eraser, "Pen side button erases while held")
             .on_hover_text("The eraser end of the pen always erases");
         rows(ui, "global_pen", |ui| {
+            row(ui, "Pressure strength", |ui| {
+                let slider = Slider::new(&mut s.pressure_strength, 0.1..=1.0)
+                    .step_by(0.05)
+                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0));
+                ui.add_enabled(s.pressure, slider)
+                    .on_hover_text("How much the pressure thins the line; lower it if the lines come out too thin")
+                    .on_disabled_hover_text("Needs pressure sensitivity");
+            });
             row(ui, "Eraser size", |ui| {
                 ui.add(Slider::new(&mut s.eraser_radius, 4.0..=60.0));
             });

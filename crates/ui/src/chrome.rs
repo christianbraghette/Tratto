@@ -14,7 +14,7 @@
 //! which side and how they look (Windows, GNOME's Adwaita, KDE's Breeze).
 //!
 //! In fullscreen the bar hides and slides in when the pointer reaches the top
-//! edge, like OneNote. On Windows 11 DWM rounds the corners of the normal
+//! edge, like OneNote, or on a swipe down from the top edge (touch screens). On Windows 11 DWM rounds the corners of the normal
 //! (not maximized) window, see `round_corners`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,6 +40,10 @@ const REVEAL_EDGE: f32 = 2.0;
 const KEEP_BELOW: f32 = 12.0;
 /// Slide in / out time of the fullscreen bar, in seconds.
 const REVEAL_TIME: f32 = 0.15;
+/// Fullscreen: a swipe that reveals the bar starts this close to the top
+/// edge and goes at least this far down.
+const SWIPE_EDGE: f32 = 24.0;
+const SWIPE_DOWN: f32 = 48.0;
 
 /// DWM rounds the corners and draws the window's border (Windows 11).
 static DWM_FRAME: AtomicBool = AtomicBool::new(false);
@@ -81,17 +85,34 @@ pub enum Title<'a> {
 /// Fullscreen: how far the bar is shown (0 hidden, 1 fully in). It slides in
 /// when the pointer touches the top edge and stays while the pointer is on
 /// it or just below, or while `pinned` (a menu is open, the title is edited).
+/// A swipe down from the top edge shows it until a press below it (a finger
+/// leaves no pointer to stay near the bar).
 fn fullscreen_reveal(ctx: &egui::Context, pinned: bool) -> f32 {
     let id = Id::new("title_bar_reveal");
+    let swipe_id = Id::new("title_bar_swiped");
     let shown = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let mut swiped = ctx.data(|d| d.get_temp::<bool>(swipe_id)).unwrap_or(false);
     let top = ctx.viewport_rect().top();
-    let pointer_y = ctx.input(|i| i.pointer.hover_pos()).map(|p| p.y);
-    let near = pointer_y.is_some_and(|y| {
-        let reach = if shown { TITLE_BAR_HEIGHT + KEEP_BELOW } else { REVEAL_EDGE };
-        y <= top + reach
+    let (pointer, origin, down, pressed) = ctx.input(|i| {
+        (i.pointer.hover_pos(), i.pointer.press_origin(), i.pointer.primary_down(), i.pointer.any_pressed())
     });
-    let show = pinned || near;
-    ctx.data_mut(|d| d.insert_temp(id, show));
+    let near = pointer.is_some_and(|p| {
+        let reach = if shown { TITLE_BAR_HEIGHT + KEEP_BELOW } else { REVEAL_EDGE };
+        p.y <= top + reach
+    });
+    if let (Some(o), Some(p), true) = (origin, pointer, down)
+        && o.y <= top + SWIPE_EDGE
+        && p.y - o.y >= SWIPE_DOWN
+    {
+        swiped = true;
+    } else if pressed && origin.is_some_and(|o| o.y > top + TITLE_BAR_HEIGHT + KEEP_BELOW) {
+        swiped = false;
+    }
+    let show = pinned || near || swiped;
+    ctx.data_mut(|d| {
+        d.insert_temp(id, show);
+        d.insert_temp(swipe_id, swiped);
+    });
     ctx.animate_bool_with_time(id, show, REVEAL_TIME)
 }
 
@@ -569,6 +590,28 @@ mod tests {
         run(vec![button(x, y, true)]);
         run(vec![button(x, y, false)]);
         assert!(exit);
+    }
+
+    #[test]
+    fn fullscreen_bar_shows_after_a_swipe_down_until_a_press_below() {
+        let ctx = egui::Context::default();
+        let mut open = false;
+        let shown = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<bool>(Id::new("title_bar_reveal")));
+        frame(&ctx, &mut open, vec![at(300.0, 300.0)]);
+        // A finger lands on the top edge (not at it, as a mouse would be) and swipes down.
+        frame(&ctx, &mut open, vec![at(300.0, 10.0), button(300.0, 10.0, true)]);
+        for y in [30.0, 50.0, 70.0] {
+            frame(&ctx, &mut open, vec![at(300.0, y)]);
+        }
+        frame(&ctx, &mut open, vec![button(300.0, 70.0, false), Event::PointerGone]);
+        for _ in 0..30 {
+            frame(&ctx, &mut open, vec![]);
+        }
+        assert_eq!(shown(&ctx), Some(true), "the swipe shows the bar");
+        // A tap well below the bar hides it.
+        frame(&ctx, &mut open, vec![at(300.0, 300.0), button(300.0, 300.0, true)]);
+        frame(&ctx, &mut open, vec![button(300.0, 300.0, false), Event::PointerGone]);
+        assert_eq!(shown(&ctx), Some(false), "a press below hides it");
     }
 
     #[test]

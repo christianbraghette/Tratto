@@ -744,7 +744,7 @@ impl InkApp {
                 }
                 self.history.exec(&mut self.doc, Action::RemoveText { id });
             }
-            Command::Tool(t) => self.tool = t,
+            Command::Tool(t) => self.pick_tool(t),
             Command::ZoomIn | Command::ZoomOut => {
                 let now = (self.view_scale * 100.0).round() as u32;
                 let next = if cmd == Command::ZoomIn {
