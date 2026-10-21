@@ -25,6 +25,7 @@ use crate::view::{Layout, MARGIN, TOP_PAD_PX, View};
 
 use super::InkApp;
 use super::menus::ContextMenu;
+use super::text::EDIT_MARGIN;
 
 /// Places kept for Back (the oldest is forgotten).
 const NAV_BACK_MAX: usize = 50;
@@ -267,9 +268,17 @@ impl InkApp {
         let sense = if self.navigating() { Sense::click_and_drag() } else { Sense::drag() };
         let canvas_resp = ui.allocate_rect(canvas, sense);
 
-        // A press on the canvas (outside the editor, which sits on top) ends text editing.
+        // A press on the canvas (outside the editor, which sits on top) ends
+        // text editing, but not on its resize handles. Off any text box it
+        // does only that: it opens no new box.
         if self.edit.is_some() && canvas_resp.drag_started() {
-            self.commit_edit(ui.ctx());
+            let v = View::new(canvas, self.scroll, scale, layout);
+            let at = ui.input(|i| i.pointer.press_origin()).or(canvas_resp.interact_pointer_pos());
+            if at.is_none_or(|p| self.edit_handle_at(&v, p).is_none()) {
+                let on_text = at.is_some_and(|p| self.text_at(&layout, v.screen_to_content(p)).is_some());
+                self.commit_edit(ui.ctx());
+                self.swallow_press |= !on_text;
+            }
         }
 
         // ---- scrolling: wheel / touchpad / keys, with momentum
@@ -611,6 +620,7 @@ impl InkApp {
         // Rubber band while dragging out a new text box.
         if let Some(tp) = &self.text_press
             && tp.hit.is_none()
+            && tp.resize.is_none()
             && tp.moved
             && tp.page.is_some()
         {
@@ -626,12 +636,19 @@ impl InkApp {
             // Toolbar size / colour changes apply live.
             e.size = self.settings.text.width;
             e.color = self.settings.text.color;
+        }
+        if let (Some(frame), Some(e)) = (self.edit_frame(&view), self.edit.as_mut()) {
+            painter.rect_filled(frame, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 215));
+            painter.rect_stroke(frame, 3.0, egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
+            // The resize handles, one on either side.
+            for x in [frame.left(), frame.right()] {
+                let size = vec2(6.0, (frame.height() - 8.0).clamp(8.0, 22.0));
+                let handle = Rect::from_center_size(pos2(x, frame.center().y), size);
+                painter.rect(handle, 3.0, Color32::WHITE, egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
+            }
 
-            let origin = view.page_origin_screen(e.page) + vec2(e.x, e.y) * scale;
-            let w = e.width * scale;
-            let shown = Rect::from_min_size(origin, vec2(w, e.last_h.max(e.size * scale * 1.3)));
-            painter.rect_filled(shown.expand(3.0), 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 215));
-            painter.rect_stroke(shown.expand(3.0), 3.0, egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
+            // The editor: the frame without its room for the outline.
+            let editor = frame.shrink(2.0);
 
             let id = Id::new(("text_edit", e.id));
             let color = Color32::from_rgb(e.color[0], e.color[1], e.color[2]);
@@ -639,16 +656,14 @@ impl InkApp {
                 .id(id)
                 .font(FontId::proportional((e.size * scale).max(6.0)))
                 .text_color(color)
-                .desired_width(w)
+                .desired_width(editor.width())
                 .desired_rows(1)
-                // No background, egui's default margin (what the box is laid out for).
-                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
+                // No background; the text wraps at the box's width.
+                .margin(EDIT_MARGIN)
+                .frame(egui::Frame::NONE.inner_margin(EDIT_MARGIN))
                 .lock_focus(true);
-            let resp = ui
-                .scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(origin, vec2(w, 10.0))), |ui| {
-                    ui.add(widget)
-                })
-                .inner;
+            let max_rect = Rect::from_min_size(editor.min, vec2(editor.width(), 10.0));
+            let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(max_rect), |ui| ui.add(widget)).inner;
             e.last_h = resp.rect.height();
 
             if e.focus_pending {

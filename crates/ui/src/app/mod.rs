@@ -122,7 +122,8 @@ struct EditState {
     orig: Option<TextBox>,
 }
 
-/// A press with the text tool: tap = edit / create, drag = move / size.
+/// A press with the text tool: tap = edit / create, drag = move / size, or
+/// resize the box being edited.
 struct TextPress {
     /// Existing text box under the pen.
     hit: Option<u64>,
@@ -130,6 +131,9 @@ struct TextPress {
     now: Pos2,
     page: Option<u32>,
     moved: bool,
+    /// A handle of the box being edited: its side, and the box's `x` and
+    /// width when the press started.
+    resize: Option<(text::Side, f32, f32)>,
 }
 
 /// Strokes picked with the select tool (all on one page).

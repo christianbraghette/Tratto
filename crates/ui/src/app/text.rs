@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Text boxes: picking, editing in place, committing and moving them.
+//! Text boxes: picking, editing in place, committing, moving and resizing
+//! them. The box being edited has a handle on either side: dragging one
+//! changes its width, and the text wraps again as it goes.
 
-use eframe::egui::{self, Color32, FontId, PointerButton, Pos2, Rect, Vec2, pos2, vec2};
+use eframe::egui::{self, Color32, CursorIcon, FontId, Margin, PointerButton, Pos2, Rect, Vec2, pos2, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::model::TextBox;
@@ -12,7 +14,48 @@ use crate::view::{Layout, View};
 
 use super::{EditState, InkApp, TextPress};
 
+/// Margin of the in-place editor around its text (points). The text inside
+/// is where it is painted once committed, wrapped at the box's width.
+pub(super) const EDIT_MARGIN: Margin = Margin::symmetric(4, 2);
+/// How far outside the editor's frame a press still takes a handle (points).
+const HANDLE_REACH: f32 = 10.0;
+/// The narrowest a text box gets (document units).
+const MIN_WIDTH: f32 = 40.0;
+
+/// A side of the box being edited, whose handle resizes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Side {
+    Left,
+    Right,
+}
+
 impl InkApp {
+    /// The frame of the editor of the box being edited, on screen: the text
+    /// with the editor's margin, and a little room for the outline.
+    pub(super) fn edit_frame(&self, view: &View) -> Option<Rect> {
+        let e = self.edit.as_ref()?;
+        let origin = view.page_origin_screen(e.page) + vec2(e.x, e.y) * view.scale;
+        let margin = EDIT_MARGIN.sum();
+        let h = e.last_h.max(e.size * view.scale * 1.3 + margin.y);
+        let editor = Rect::from_min_size(origin - EDIT_MARGIN.left_top(), vec2(e.width * view.scale + margin.x, h));
+        Some(editor.expand(2.0))
+    }
+
+    /// The resize handle of the box being edited at the screen point `pos`.
+    /// Handles reach out from the frame, never over the text (the editor's).
+    pub(super) fn edit_handle_at(&self, view: &View, pos: Pos2) -> Option<Side> {
+        let f = self.edit_frame(view)?;
+        if pos.y < f.top() - 2.0 || pos.y > f.bottom() + 2.0 {
+            None
+        } else if (f.left() - HANDLE_REACH..=f.left() + 2.0).contains(&pos.x) {
+            Some(Side::Left)
+        } else if (f.right() - 2.0..=f.right() + HANDLE_REACH).contains(&pos.x) {
+            Some(Side::Right)
+        } else {
+            None
+        }
+    }
+
     /// Top-most text box under a content-space point.
     pub(super) fn text_at(&self, layout: &Layout, c: Pos2) -> Option<u64> {
         self.doc
@@ -105,12 +148,14 @@ impl InkApp {
         if resp.drag_started_by(PointerButton::Primary) {
             if let Some(pos) = press.or(resp.interact_pointer_pos()) {
                 let c = view.screen_to_content(pos);
+                let resize = self.edit_handle_at(view, pos).zip(self.edit.as_ref()).map(|(s, e)| (s, e.x, e.width));
                 self.text_press = Some(TextPress {
-                    hit: self.text_at(&view.layout, c),
+                    hit: if resize.is_some() { None } else { self.text_at(&view.layout, c) },
                     start: c,
                     now: c,
                     page: view.layout.page_at(c),
                     moved: false,
+                    resize,
                 });
             }
         } else if (resp.dragged() || resp.drag_stopped())
@@ -120,15 +165,51 @@ impl InkApp {
             if (tp.now - tp.start).length() * view.scale > 5.0 {
                 tp.moved = true;
             }
+            // Resizing: the editor wraps the text at the new width at once.
+            if let (Some((side, x0, w0)), Some(e)) = (tp.resize, self.edit.as_mut()) {
+                let dx = tp.now.x - tp.start.x;
+                let room = (view.layout.page_w - x0).max(MIN_WIDTH);
+                match side {
+                    Side::Right => e.width = (w0 + dx).clamp(MIN_WIDTH, room),
+                    Side::Left => {
+                        let right = x0 + w0;
+                        e.x = (x0 + dx).clamp(0.0, (right - MIN_WIDTH).max(0.0));
+                        e.width = right - e.x;
+                    }
+                }
+            }
         }
         if !resp.dragged()
             && let Some(tp) = self.text_press.take()
         {
             self.finish_text_press(tp, view.layout);
         }
+
+        // The cursor tells what a press does: resize, move a box, or type.
+        let icon = match &self.text_press {
+            Some(tp) if tp.resize.is_some() => Some(CursorIcon::ResizeHorizontal),
+            Some(tp) if tp.hit.is_some() && tp.moved => Some(CursorIcon::Move),
+            _ => resp.hover_pos().and_then(|p| {
+                let c = view.screen_to_content(p);
+                if self.edit_handle_at(view, p).is_some() {
+                    Some(CursorIcon::ResizeHorizontal)
+                } else if self.text_at(&view.layout, c).is_some() {
+                    Some(CursorIcon::Move)
+                } else {
+                    view.layout.page_at(c).map(|_| CursorIcon::Text)
+                }
+            }),
+        };
+        if let Some(icon) = icon {
+            resp.ctx.set_cursor_icon(icon);
+        }
     }
 
     fn finish_text_press(&mut self, tp: TextPress, layout: Layout) {
+        if tp.resize.is_some() {
+            // Already applied to the box being edited.
+            return;
+        }
         match (tp.hit, tp.moved) {
             (Some(id), false) => self.begin_edit(id),
             (Some(id), true) => self.commit_text_move(id, tp.now - tp.start, layout),
@@ -146,7 +227,7 @@ impl InkApp {
                 let top = if tp.moved { tp.start.y.min(tp.now.y) } else { tp.start.y };
                 let x = (left - o.x).clamp(0.0, (layout.page_w - 40.0).max(0.0));
                 let y = (top - o.y).clamp(0.0, (layout.page_h - 20.0).max(0.0));
-                let width = width.min(layout.page_w - x).max(40.0);
+                let width = width.min(layout.page_w - x).max(MIN_WIDTH);
                 self.begin_new_edit(page, x, y, width);
             }
         }
