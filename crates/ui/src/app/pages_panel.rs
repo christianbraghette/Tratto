@@ -103,22 +103,33 @@ impl InkApp {
         }
     }
 
-    /// Frame of a left panel view: the strip's surface, content starting
-    /// level with the top button.
-    pub(super) fn view_frame() -> egui::Frame {
-        let top = toolbar::notch_margin(true);
-        egui::Frame::NONE.fill(color::CHROME).inner_margin(egui::Margin {
-            left: space::S as i8,
-            right: space::S as i8,
-            top: top.top,
-            bottom: space::S as i8,
-        })
+    /// Margin of a left panel view: content starting level with the top
+    /// button; `padded` (views of text: search, contents, settings) leaves
+    /// more room around it.
+    fn view_margin(padded: bool) -> egui::Margin {
+        let top = toolbar::notch_margin(true).top;
+        if padded {
+            egui::Margin {
+                left: space::M as i8,
+                right: space::M as i8,
+                top: top + space::S as i8,
+                bottom: space::S as i8,
+            }
+        } else {
+            egui::Margin { left: space::S as i8, right: space::S as i8, top, bottom: space::S as i8 }
+        }
     }
 
-    /// Hairline between the button strip and a left panel view.
-    pub(super) fn view_divider(ui: &egui::Ui) {
+    /// Frame of a left panel view: the strip's surface, with `view_margin`.
+    pub(super) fn view_frame(padded: bool) -> egui::Frame {
+        egui::Frame::NONE.fill(color::CHROME).inner_margin(Self::view_margin(padded))
+    }
+
+    /// Hairline between the button strip and a left panel view (framed with
+    /// the same `padded`).
+    pub(super) fn view_divider(ui: &egui::Ui, padded: bool) {
         let r = ui.max_rect();
-        let x = r.left() - space::S + 0.5;
+        let x = r.left() - f32::from(Self::view_margin(padded).left) + 0.5;
         let y = (r.top() + space::XS)..=(r.bottom() - space::XS);
         ui.painter().vline(x, y, egui::Stroke::new(1.0, color::BORDER));
     }
@@ -157,9 +168,9 @@ impl InkApp {
             .default_size(PAGES_WIDTH)
             .size_range(PAGES_WIDTHS)
             .show_separator_line(false)
-            .frame(Self::view_frame())
+            .frame(Self::view_frame(false))
             .show(ui, |ui| {
-                Self::view_divider(ui);
+                Self::view_divider(ui, false);
 
                 // Page cards, centred; the scroll bar floats over the content,
                 // so the full width is usable.

@@ -165,12 +165,13 @@ impl InkApp {
             .default_size(SEARCH_WIDTH)
             .size_range(SEARCH_WIDTHS)
             .show_separator_line(false)
-            .frame(Self::view_frame())
+            .frame(Self::view_frame(true))
             .show(ui, |ui| {
-                Self::view_divider(ui);
+                Self::view_divider(ui, true);
                 let s = &mut self.search;
                 let field = egui::TextEdit::singleline(&mut s.query)
                     .hint_text(format!("{}  Search the text", icon::MAGNIFYING_GLASS))
+                    .margin(egui::Margin::symmetric(space::S as i8, space::XS as i8 + 2))
                     .desired_width(f32::INFINITY);
                 let resp = ui.add(field);
                 if std::mem::take(&mut s.focus) {

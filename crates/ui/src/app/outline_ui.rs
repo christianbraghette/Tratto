@@ -53,9 +53,9 @@ impl InkApp {
             .default_size(OUTLINE_WIDTH)
             .size_range(OUTLINE_WIDTHS)
             .show_separator_line(false)
-            .frame(Self::view_frame())
+            .frame(Self::view_frame(true))
             .show(ui, |ui| {
-                Self::view_divider(ui);
+                Self::view_divider(ui, true);
                 let Some(file) = file else { return };
                 let entries = match nav.outline(&file) {
                     Read::Reading => {

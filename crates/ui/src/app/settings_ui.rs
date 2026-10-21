@@ -90,9 +90,9 @@ impl InkApp {
             .default_size(NOTE_WIDTH)
             .size_range(NOTE_WIDTHS)
             .show_separator_line(false)
-            .frame(Self::view_frame())
+            .frame(Self::view_frame(true))
             .show(ui, |ui| {
-                Self::view_divider(ui);
+                Self::view_divider(ui, true);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.note_settings(ui));
             });
     }
