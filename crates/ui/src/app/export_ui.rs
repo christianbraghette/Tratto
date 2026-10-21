@@ -746,7 +746,7 @@ fn paint_page(
             }
         }
     }
-    pictures.paint_page(&p, &doc.images, page, origin, f, None);
+    pictures.paint_page(&p, &doc.images, page, origin, f, &[]);
     // Highlighters darken what is under them, as in the PDF.
     if opts.include_highlighter {
         let mut mesh = Mesh::default();

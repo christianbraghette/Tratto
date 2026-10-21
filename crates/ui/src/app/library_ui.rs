@@ -154,6 +154,10 @@ pub(super) enum Act {
     EmptyTrash,
     Duplicate(PathBuf),
     MoveNote(PathBuf, PathBuf),
+    /// Copy (false) or cut (true) a note, to paste it into a folder.
+    Clip(PathBuf, bool),
+    /// Paste the note copied or cut into a folder.
+    Paste(PathBuf),
     Import(PathBuf, String),
     /// A PDF to write on: the folder of the new note, the PDF's path.
     ImportPdf(PathBuf, String),
@@ -826,6 +830,8 @@ impl InkApp {
                 }
                 Err(e) => self.toast(format!("Delete failed: {e}")),
             },
+            Act::Clip(path, cut) => self.copy_note(path, cut),
+            Act::Paste(dir) => self.paste_note(dir),
             Act::Duplicate(path) => match library::duplicate_note(&path) {
                 Ok(_) => self.refresh_library(),
                 Err(e) => self.toast(format!("Duplicate failed: {e}")),
@@ -1319,6 +1325,11 @@ fn notebook_menu(ui: &mut Ui, nb: &NotebookInfo, acts: &mut Vec<Act>) {
         acts.push(Act::Dialog(Dialog::RenameDir { path: nb.path.clone(), text: nb.name.clone() }));
         ui.close();
     }
+    let paste = super::clipboard::note_pastable(ui.ctx());
+    if entry(ui, icon::CLIPBOARD, "Paste note here", "", paste) {
+        acts.push(Act::Paste(nb.path.clone()));
+        ui.close();
+    }
     ui.separator();
     if nb.external {
         if entry(ui, icon::X, "Close", "", true) {
@@ -1374,6 +1385,14 @@ fn note_menu(ui: &mut Ui, note: &NoteInfo, acts: &mut Vec<Act>) {
     }
     if entry(ui, icon::COPY, "Duplicate", "", true) {
         acts.push(Act::Duplicate(note.path.clone()));
+        ui.close();
+    }
+    if entry(ui, icon::COPY_SIMPLE, "Copy", "", true) {
+        acts.push(Act::Clip(note.path.clone(), false));
+        ui.close();
+    }
+    if entry(ui, icon::SCISSORS, "Cut", "", true) {
+        acts.push(Act::Clip(note.path.clone(), true));
         ui.close();
     }
     if entry(ui, icon::ARROW_BEND_UP_RIGHT, "Move to...", "", true) {

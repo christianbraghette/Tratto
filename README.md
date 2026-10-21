@@ -48,7 +48,9 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 **Writing**
 - Pen and highlighter with configurable colors and widths
 - Pressure-sensitive strokes, with smoothing and optional prediction of the pen tip
-- Stroke eraser, and lasso selection to move or delete ink
+- Stroke eraser, and lasso selection to move or delete ink, text boxes and pictures
+- Cut, copy and paste what is selected, within a note or into another one;
+  other apps get the copied text, or a picture of the copied ink
 - Text boxes for typed notes
 - A pointer tool to move around a note as in the PDF reader: drag to scroll,
   tap to turn pages or follow the links of the PDF it is written on
@@ -73,7 +75,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 
 **Organisation**
 - A library of notebooks (with colour covers), sections and quick notes
-- Recent notes; rename, duplicate, move and delete notes
+- Recent notes; rename, duplicate, move, copy and paste, and delete notes
 - Import existing `.ink` files
 - Read PDFs without importing them: page turning, the PDF's table of
   contents and links, recently read PDFs in the library; import one to write on it
@@ -120,7 +122,9 @@ Tratto opens on the library screen. From there you can:
 
 - create a **quick note** (**+ New note**) or a **notebook** (**+ New notebook**)
 - open a notebook to see its **sections** (**+ Section**) and the notes inside them
-- rename, duplicate, move or delete a note from its menu
+- rename, duplicate, move or delete a note from its menu; **Copy** or **Cut**
+  it there, then **Paste note here** on a notebook or section (or `Ctrl+V` in the
+  notebook or section shown)
 - **Import** an existing `.ink` file into the library
 - choose a different **Library folder**, or **Refresh** after an external sync tool changes it
 
@@ -134,9 +138,9 @@ resize.
 | Menu | Contents |
 | --- | --- |
 | **File** | New note, new notebook, import, open a PDF to read, write on a PDF, save, export as PDF, close note, library folder, settings, exit |
-| **Edit** | Undo, redo, select all on page, delete selection, deselect |
+| **Edit** | Undo, redo, cut, copy, paste, select all on page, delete selection, deselect |
 | **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen |
-| **Page** | Insert a page before / after the current one, delete it, paper style, page setup |
+| **Page** | Insert a page before / after the current one, delete it, copy, cut or paste a page, paper style, page setup |
 | **Help** | Keyboard shortcuts, about Tratto |
 
 ### Editor
@@ -161,7 +165,8 @@ dragging their inner edge, and both have a context menu (right-click):
   with **Pages** at the top and **Settings** at the bottom, in the same places
   as their notches. Next to it, the panel shows either the page previews (drag
   to reorder; right-click a page to go to it, insert a page before or after
-  it, or delete it) or the note settings. Click the other button to switch, or the
+  it, copy or cut it, paste copied pages after it, or delete it) or the note
+  settings. Click the other button to switch, or the
   highlighted one to close the panel. Each view keeps its own width. The page
   list follows the page you are on, and the dashed tile at its end adds a page.
 - **Notebook panel** (right): the sections and notes of the open note's
@@ -213,6 +218,8 @@ note and goes back to the library screen.
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
 | `Ctrl+A` | Select everything on the current page |
+| `Ctrl+X` / `Ctrl+C` | Cut / copy the selection (or copy the selected text) |
+| `Ctrl+V` | Paste: at the pointer when it is over a page, else on the current page |
 | `Delete` or `Backspace` | Delete the selection |
 | `Escape` | Clear the selection, or close the context menu |
 | `Ctrl+Plus` / `Ctrl+Minus` | Zoom in / out |

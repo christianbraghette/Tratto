@@ -363,6 +363,21 @@ pub fn duplicate_note(path: &Path) -> Result<PathBuf> {
     Ok(target)
 }
 
+/// A copy of the note `path` in `to_dir` (copy and paste): its own title
+/// there, "(copy)" added in its own folder. Returns the copy's path.
+pub fn copy_note(path: &Path, to_dir: &Path) -> Result<PathBuf> {
+    if path.parent() == Some(to_dir) {
+        return duplicate_note(path);
+    }
+    let (mut meta, doc) = storage::load_note(path)?;
+    meta.created = storage::now_secs();
+    fs::create_dir_all(to_dir)?;
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let target = unique_path(to_dir, &stem, Some(NOTE_EXT));
+    storage::save_note(&target, &mut meta, &doc)?;
+    Ok(target)
+}
+
 pub fn move_note(path: &Path, to_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(to_dir)?;
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -631,6 +646,26 @@ mod tests {
         assert_eq!(renamed.file_name().unwrap(), "work");
         let section = rename_dir(&renamed.join("Section 1"), "Ideas").unwrap();
         assert!(section.is_dir() && !renamed.join("Section 1").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copying_a_note_into_another_folder() {
+        let root = std::env::temp_dir().join("tratto_copy_note_test");
+        let _ = fs::remove_dir_all(&root);
+        let nb = create_notebook(&root, "Work").unwrap();
+        let note = create_note(&root, "Plan").unwrap();
+
+        // Elsewhere: the same title, the original left where it was.
+        let copy = copy_note(&note, &nb).unwrap();
+        assert_eq!((copy.parent(), note.is_file()), (Some(nb.as_path()), true));
+        assert_eq!(storage::read_meta(&copy).unwrap().title, "Plan");
+        // Again there: a name of its own.
+        let again = copy_note(&note, &nb).unwrap();
+        assert_ne!(again, copy);
+        // In its own folder: a duplicate.
+        let dup = copy_note(&note, &root).unwrap();
+        assert_eq!(storage::read_meta(&dup).unwrap().title, "Plan (copy)");
         let _ = fs::remove_dir_all(&root);
     }
 

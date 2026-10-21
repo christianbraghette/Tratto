@@ -179,6 +179,11 @@ impl InkApp {
                                 picks.push(Pick::NewNote(dir.clone()));
                                 ui.close();
                             }
+                            let paste = super::clipboard::note_pastable(ui.ctx());
+                            if entry(ui, icon::CLIPBOARD, "Paste note here", "", paste) {
+                                picks.push(Pick::Act(Act::Paste(dir.clone())));
+                                ui.close();
+                            }
                             if let Some(nb) = &notebook
                                 && entry(ui, icon::FOLDER_SIMPLE_PLUS, "New section...", "", true)
                             {
@@ -444,6 +449,11 @@ fn group_menu(ui: &mut Ui, g: &Group, has_current: bool, picks: &mut Vec<Pick>) 
         picks.push(Pick::NewNote(g.dir.to_path_buf()));
         ui.close();
     }
+    let paste = super::clipboard::note_pastable(ui.ctx());
+    if entry(ui, icon::CLIPBOARD, "Paste note here", "", paste) {
+        picks.push(Pick::Act(Act::Paste(g.dir.to_path_buf())));
+        ui.close();
+    }
     let Some(s) = g.section else { return };
     if entry(ui, icon::PENCIL_SIMPLE, "Rename section...", "", true) {
         let d = Dialog::RenameDir { path: s.path.clone(), text: s.name.clone() };
@@ -624,6 +634,14 @@ fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Ve
         }
         if entry(ui, icon::COPY, "Duplicate", "", true) {
             picks.push(Pick::Act(Act::Duplicate(note.path.clone())));
+            ui.close();
+        }
+        if entry(ui, icon::COPY_SIMPLE, "Copy", "", true) {
+            picks.push(Pick::Act(Act::Clip(note.path.clone(), false)));
+            ui.close();
+        }
+        if entry(ui, icon::SCISSORS, "Cut", "", !is_current) {
+            picks.push(Pick::Act(Act::Clip(note.path.clone(), true)));
             ui.close();
         }
         if entry(ui, icon::ARROW_BEND_UP_RIGHT, "Move to...", "", true) {

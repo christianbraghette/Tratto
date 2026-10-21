@@ -8,7 +8,8 @@
 //! - `notes`          opening, showing, saving and closing notes; PDFs read or dropped
 //! - `canvas`         the editor's canvas: input routing, scrolling, zoom, painting, links
 //! - `ink`            pen and highlighter strokes, the eraser
-//! - `selection`      lasso, select all, moving and deleting strokes
+//! - `selection`      lasso, select all, moving and deleting what is selected
+//! - `clipboard`      copy, cut and paste (note content, pages, library notes)
 //! - `text`           text boxes
 //! - `text_select`    the text of the pages: selecting and copying it
 //! - `search`         searching the text (the left panel's search view)
@@ -54,6 +55,7 @@ use crate::update::{self, Updater};
 use crate::view::{Layout, View};
 
 mod canvas;
+pub(crate) mod clipboard;
 mod export_ui;
 mod ink;
 mod library_panel;
@@ -140,10 +142,14 @@ struct TextPress {
     resize: Option<(text::Side, f32, f32)>,
 }
 
-/// Strokes picked with the select tool (all on one page).
+/// Strokes, text boxes and pictures picked with the select tool (all on one
+/// page).
 struct Selection {
     page: u32,
+    /// The strokes.
     ids: HashSet<u64>,
+    texts: HashSet<u64>,
+    images: HashSet<u64>,
     /// Bounding box in that page's space.
     bounds: Rect,
 }
@@ -233,7 +239,12 @@ pub struct InkApp {
     saved_tool: Option<Tool>,
     /// A drag that started on the grey area is scrolling the view.
     panning: bool,
+    /// Where the pointer last was while an item is dragged: past the window's
+    /// edge egui no longer knows, and the view keeps scrolling that way.
+    drag_pointer: Option<Pos2>,
     selection: Option<Selection>,
+    /// What was copied or cut last.
+    clipboard: clipboard::Clipboard,
     lasso: Option<Lasso>,
     moving: Option<MoveDrag>,
     /// The picture picked with the select tool, and one being dragged.
@@ -398,7 +409,9 @@ impl InkApp {
             frame_limit: FrameLimiter::new(vsync),
             saved_tool: None,
             panning: false,
+            drag_pointer: None,
             selection: None,
+            clipboard: clipboard::Clipboard::default(),
             lasso: None,
             moving: None,
             picture: None,
@@ -788,6 +801,7 @@ impl eframe::App for InkApp {
             crate::win_frame::install(frame);
         }
         self.present_mode(ctx, frame);
+        self.publish_clipboard(ctx);
         // Every frame, so that one pressed elsewhere is not pasted later.
         self.pen_input.paste = self.pen_input.windows.as_ref().is_some_and(|p| p.take_paste());
 

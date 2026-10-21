@@ -29,6 +29,11 @@ use super::text::EDIT_MARGIN;
 
 /// Places kept for Back (the oldest is forgotten).
 const NAV_BACK_MAX: usize = 50;
+/// A dragged item this close to an edge of the canvas (points) scrolls the
+/// view...
+const AUTOSCROLL_EDGE: f32 = 48.0;
+/// ...up to this fast, at the edge and past it (points per second).
+const AUTOSCROLL_SPEED: f32 = 1400.0;
 
 impl InkApp {
     pub(super) fn undo(&mut self) {
@@ -45,6 +50,14 @@ impl InkApp {
             self.ensure_pages();
             self.clear_selection();
         }
+    }
+
+    /// A selection, a picture or a text box is being dragged (moved, or a
+    /// picture resized): the view may scroll meanwhile, unlike while writing.
+    fn dragging_item(&self) -> bool {
+        self.moving.is_some()
+            || self.picture_drag.is_some()
+            || self.text_press.as_ref().is_some_and(|tp| tp.moved && tp.hit.is_some())
     }
 
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -284,11 +297,15 @@ impl InkApp {
         // ---- scrolling: wheel / touchpad / keys, with momentum
         let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(1.0 / 30.0)));
         let max = View::max_scroll(canvas, scale, &layout);
-        if !idle {
+        // An item being dragged may scroll the view (the wheel, the edges):
+        // it stays under the pointer.
+        let dragging = self.dragging_item();
+        if !idle && !dragging {
             // Never move the page under a stroke being drawn.
             self.kinetic.stop();
         }
-        if idle && ui.rect_contains_pointer(full) {
+        // While dragging, wherever the pointer is (often out of the window).
+        if idle && ui.rect_contains_pointer(full) || dragging {
             self.wheel_input(ui, canvas, scale, now);
         }
         // Content height shown below the top pad.
@@ -392,6 +409,16 @@ impl InkApp {
             self.ease_scroll(vec2(base.x, y));
         }
         self.kinetic.step(&mut self.scroll, dt, max, scale);
+        // Dragged near (or past) an edge of the canvas: the view scrolls that
+        // way. Out of the window egui loses the pointer: where it was last.
+        self.drag_pointer = if dragging { ui.input(|i| i.pointer.latest_pos()).or(self.drag_pointer) } else { None };
+        if let Some(p) = self.drag_pointer {
+            let v = autoscroll_velocity(canvas, p);
+            if v != Vec2::ZERO {
+                self.scroll += v * dt / scale;
+                ui.ctx().request_repaint();
+            }
+        }
         self.scroll = vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
 
         let swallowed = std::mem::take(&mut self.swallow_press);
@@ -478,7 +505,8 @@ impl InkApp {
                 .collect()
         });
         if moves.is_empty() {
-            moves.extend(canvas_resp.interact_pointer_pos());
+            // Out of the window (an item dragged there), where the pointer last was.
+            moves.extend(canvas_resp.interact_pointer_pos().or(self.drag_pointer));
         }
         // ---- right click: context menu for what is under the pointer
         let right_click = ui.input(|i| i.pointer.secondary_clicked());
@@ -536,6 +564,8 @@ impl InkApp {
         let ppp = ui.ctx().pixels_per_point();
         let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
         let moved = self.selection.as_ref().map(|s| Moved { ids: &s.ids, page: s.page, offset: move_off });
+        // The text boxes and pictures of a selection being dragged.
+        let (mut text_moves, mut picture_moves) = self.selection_offsets();
         // The stroke being drawn, in its own layer.
         let predict = self.settings.predict_pen;
         let mut live = self.active.as_mut();
@@ -547,25 +577,34 @@ impl InkApp {
             }
         };
         render::paint_rules(&painter, &view, &self.doc);
-        // Pictures, on the paper and under the ink; the one dragged where it is now.
-        let dragged = self.picture_drag.as_ref().map(|d| &d.now);
+        // Pictures, on the paper and under the ink; the ones dragged (alone or
+        // selected) where they are now.
+        picture_moves.extend(self.picture_drag.as_ref().map(|d| d.now.clone()));
         for page in view.visible_pages() {
             let origin = view.page_origin_screen(page);
-            self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scale, dragged);
+            self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scale, &picture_moves);
+        }
+        // Those of a selection carried far (the view scrolled while dragging),
+        // their page out of view: drawn where they are now all the same.
+        for img in picture_moves.iter().filter(|i| !view.visible_pages().contains(&i.page)) {
+            let origin = view.page_origin_screen(img.page);
+            self.picture_textures.paint_page(&painter, std::slice::from_ref(img), img.page, origin, scale, &[]);
         }
         let strokes = &self.doc.strokes;
         render::paint_strokes(&painter, &view, Layer::Highlight, strokes, &mut self.cache, ppp, moved.as_ref());
         paint_live(StrokeKind::Highlighter);
-        let text_move = self
-            .text_press
-            .as_ref()
-            .and_then(|tp| if tp.moved { tp.hit.map(|id| (id, tp.now - tp.start)) } else { None });
+        // A text box dragged with the text tool.
+        text_moves.extend(
+            self.text_press
+                .as_ref()
+                .and_then(|tp| if tp.moved { tp.hit.map(|id| (id, tp.now - tp.start)) } else { None }),
+        );
         render::paint_texts(
             &painter,
             &view,
             &self.doc.texts,
             self.edit.as_ref().map(|e| e.id),
-            text_move,
+            &text_moves,
             self.tool == Tool::Text,
         );
 
@@ -765,7 +804,36 @@ fn hide_pointer(ctx: &egui::Context) {
     ctx.set_cursor_image(Some(image.clone()));
 }
 
+/// The view's speed (points per second) while an item is dragged with the
+/// pointer at `pointer`: towards an edge of `canvas` the pointer is near or
+/// past, faster the closer (see `AUTOSCROLL_EDGE`).
+fn autoscroll_velocity(canvas: Rect, pointer: Pos2) -> Vec2 {
+    // 0 out of reach, 1 at the edge and beyond; eased in.
+    let depth = |d: f32| ((AUTOSCROLL_EDGE - d) / AUTOSCROLL_EDGE).clamp(0.0, 1.0).powi(2);
+    let axis = |p: f32, lo: f32, hi: f32| AUTOSCROLL_SPEED * (depth(hi - p) - depth(p - lo));
+    vec2(axis(pointer.x, canvas.left(), canvas.right()), axis(pointer.y, canvas.top(), canvas.bottom()))
+}
+
 fn is_wheel_notch(unit: MouseWheelUnit, delta: Vec2) -> bool {
     let whole = |v: f32| (v - v.round()).abs() < 1e-3;
     unit == MouseWheelUnit::Line && delta != Vec2::ZERO && whole(delta.x) && whole(delta.y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragging_near_an_edge_scrolls_that_way() {
+        let canvas = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0));
+        // In the middle: still.
+        assert_eq!(autoscroll_velocity(canvas, pos2(400.0, 300.0)), Vec2::ZERO);
+        // Near the bottom: down, slower than at the edge; past it: full speed.
+        let near = autoscroll_velocity(canvas, pos2(400.0, 590.0));
+        assert!(near.x == 0.0 && near.y > 0.0 && near.y < AUTOSCROLL_SPEED);
+        assert_eq!(autoscroll_velocity(canvas, pos2(400.0, 700.0)), vec2(0.0, AUTOSCROLL_SPEED));
+        // In the top-left corner: up and left.
+        let corner = autoscroll_velocity(canvas, pos2(5.0, 5.0));
+        assert!(corner.x < 0.0 && corner.y < 0.0);
+    }
 }

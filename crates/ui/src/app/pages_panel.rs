@@ -146,6 +146,7 @@ impl InkApp {
         let blue = color::ACCENT;
         // A PDF in the reader: its pages are looked at, not changed.
         let editable = !self.reading();
+        let can_paste = self.clipboard.has_pages();
 
         // Disjoint field borrows, released again after `show`.
         let doc = &self.doc;
@@ -164,6 +165,8 @@ impl InkApp {
         let mut add = false;
         let mut insert: Option<u32> = None;
         let mut reorder: Option<(u32, u32)> = None;
+        // Copy, cut or paste pages (see `clipboard`).
+        let mut clip: Option<menus::Command> = None;
 
         // The concave joins with the title bar and the bottom edge are drawn
         // by `toolbar::show_corners`.
@@ -217,7 +220,7 @@ impl InkApp {
                             p.rect_filled(rect, 0.0, render::PAGE_COLOR);
                             let clipped = ui.painter_at(rect);
                             pdf_textures.paint(&clipped, doc, i, rect, false);
-                            pictures.paint_page(&clipped, &doc.images, i, rect.min, scale, None);
+                            pictures.paint_page(&clipped, &doc.images, i, rect.min, scale, &[]);
                             render::paint_page_strokes(&clipped, rect.min.to_vec2(), scale, strokes, i, cache, aa);
                             render::paint_page_texts(&clipped, rect.min.to_vec2(), scale, texts, i);
                             let p = ui.painter();
@@ -277,6 +280,19 @@ impl InkApp {
                             }
                             if menus::entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
                                 insert = Some(i + 1);
+                                ui.close();
+                            }
+                            ui.separator();
+                            if menus::entry(ui, icon::COPY, "Copy page", "", true) {
+                                clip = Some(menus::Command::CopyPage(i));
+                                ui.close();
+                            }
+                            if menus::entry(ui, icon::SCISSORS, "Cut page", "", true) {
+                                clip = Some(menus::Command::CutPage(i));
+                                ui.close();
+                            }
+                            if menus::entry(ui, icon::CLIPBOARD, "Paste page after", "", can_paste) {
+                                clip = Some(menus::Command::PastePages(i + 1));
                                 ui.close();
                             }
                             ui.separator();
@@ -367,5 +383,6 @@ impl InkApp {
             self.insert_page(index);
             self.scroll_to = Some(layout.page_top(index) - MARGIN);
         }
+        self.pending.extend(clip);
     }
 }

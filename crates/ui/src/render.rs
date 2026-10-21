@@ -165,7 +165,7 @@ impl PictureTextures {
     }
 
     /// Paints the pictures of `page`, whose top-left corner is at `origin`
-    /// on screen, `scale` points per document unit. `moved` is a picture
+    /// on screen, `scale` points per document unit. `moved` are pictures
     /// shown at another place (being moved or resized).
     pub fn paint_page(
         &mut self,
@@ -174,11 +174,11 @@ impl PictureTextures {
         page: u32,
         origin: Pos2,
         scale: f32,
-        moved: Option<&Image>,
+        moved: &[Image],
     ) {
         for img in images {
-            // The one moved where it is now, maybe on another page.
-            let img = moved.filter(|m| m.id == img.id).unwrap_or(img);
+            // One moved where it is now, maybe on another page.
+            let img = moved.iter().find(|m| m.id == img.id).unwrap_or(img);
             if img.page != page {
                 continue;
             }
@@ -488,42 +488,35 @@ pub fn paint_page_strokes(
     cache.settle_later(painter);
 }
 
-/// Paints the text boxes of the visible pages with their stored line breaks.
+/// Paints the text boxes in view with their stored line breaks.
 ///
 /// * `skip`    – a box that is being edited (the live editor draws it instead)
-/// * `moved`   – a box shown at an offset (content space) while it is dragged
+/// * `moved`   – boxes shown at an offset (content space) while dragged
 /// * `outline` – draw a faint frame around every box (text tool active)
 pub fn paint_texts(
     painter: &Painter,
     view: &View,
     texts: &[TextBox],
     skip: Option<u64>,
-    moved: Option<(u64, Vec2)>,
+    moved: &[(u64, Vec2)],
     outline: bool,
 ) {
-    for page in view.visible_pages() {
-        let origin = view.page_origin_screen(page);
-        for t in texts.iter().filter(|t| t.page == page && Some(t.id) != skip) {
-            let mut pos = origin + vec2(t.x, t.y) * view.scale;
-            if let Some((id, d)) = moved
-                && id == t.id
-            {
-                pos += d * view.scale;
-            }
-            let rect = Rect::from_min_size(pos, vec2(t.width, t.height()) * view.scale);
-            if !rect.intersects(view.rect) {
-                continue;
-            }
-            let color = Color32::from_rgb(t.color[0], t.color[1], t.color[2]);
-            paint_text_box(painter, pos, view.scale, t, color);
-            if outline {
-                painter.rect_stroke(
-                    rect.expand(2.0),
-                    2.0,
-                    UiStroke::new(1.0, color::accent_alpha(110)),
-                    UiStrokeKind::Middle,
-                );
-            }
+    for t in texts.iter().filter(|t| Some(t.id) != skip) {
+        let d = moved.iter().find(|(id, _)| *id == t.id).map_or(Vec2::ZERO, |(_, d)| *d);
+        let pos = view.page_origin_screen(t.page) + (vec2(t.x, t.y) + d) * view.scale;
+        let rect = Rect::from_min_size(pos, vec2(t.width, t.height()) * view.scale);
+        if !rect.intersects(view.rect) {
+            continue;
+        }
+        let color = Color32::from_rgb(t.color[0], t.color[1], t.color[2]);
+        paint_text_box(painter, pos, view.scale, t, color);
+        if outline {
+            painter.rect_stroke(
+                rect.expand(2.0),
+                2.0,
+                UiStroke::new(1.0, color::accent_alpha(110)),
+                UiStrokeKind::Middle,
+            );
         }
     }
 }

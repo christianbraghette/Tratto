@@ -119,6 +119,14 @@ fn encode(img: DynamicImage, jpeg: bool) -> Result<Arc<ImageData>, ImageError> {
     Ok(Arc::new(ImageData::new(w, h, out)))
 }
 
+/// `rgba` (unmultiplied, row by row) as a PNG file.
+pub fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, ImageError> {
+    let img = RgbaImage::from_raw(width, height, rgba).ok_or_else(|| broken("wrong number of pixels"))?;
+    let mut out = Vec::new();
+    DynamicImage::ImageRgba8(img).write_to(&mut Cursor::new(&mut out), ImageFormat::Png).map_err(broken)?;
+    Ok(out)
+}
+
 /// Where a picture of `data` goes when inserted with its centre at
 /// `center` on a page `page_w` x `page_h` (page space): at its own size,
 /// one pixel a document unit, made smaller to fit in most of the page, and

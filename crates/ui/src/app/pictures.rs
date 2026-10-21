@@ -51,7 +51,7 @@ pub(super) fn is_picture(path: &Path) -> bool {
 
 /// The clipboard's picture: its pixels (a screenshot, a picture copied in a
 /// browser), else the first picture file copied (in the file manager).
-fn clipboard_picture() -> Result<Option<Arc<ImageData>>, String> {
+pub(super) fn clipboard_picture() -> Result<Option<Arc<ImageData>>, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     if let Ok(img) = clipboard.get_image() {
         let (w, h) = (img.width as u32, img.height as u32);
@@ -136,17 +136,6 @@ impl InkApp {
         self.picture = Some(id);
     }
 
-    /// The clipboard's picture onto the note; a `quiet` paste (of text,
-    /// outside a text field) says nothing when there is none.
-    pub(super) fn paste_picture(&mut self, at: Option<(u32, Pos2)>, quiet: bool) {
-        match clipboard_picture() {
-            Ok(Some(data)) => self.insert_picture(data, at),
-            Ok(None) if quiet => {}
-            Ok(None) => self.toast("The clipboard has no picture"),
-            Err(e) => self.toast(format!("Cannot paste the picture: {e}")),
-        }
-    }
-
     /// The picture file `path` onto the note.
     pub(super) fn insert_picture_file(&mut self, path: &Path, at: Option<(u32, Pos2)>) {
         match read_picture(path) {
@@ -170,8 +159,8 @@ impl InkApp {
         }
     }
 
-    /// Pictures pasted (a paste key, not in a text field) or dropped onto
-    /// the canvas, at `pointer` when it is over a page.
+    /// A paste (a paste key, not in a text field; see `clipboard`) and
+    /// pictures dropped onto the canvas, at `pointer` when it is over a page.
     pub(super) fn picture_input(&mut self, ctx: &egui::Context, view: &View, pointer: Option<Pos2>) {
         if self.reading() {
             return;
@@ -187,7 +176,7 @@ impl InkApp {
         let key = std::mem::take(&mut self.pen_input.paste);
         let text = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))));
         if (key || text) && !typing {
-            self.paste_picture(at, !key);
+            self.paste(at, !key);
         }
         let dropped: Vec<PathBuf> = ctx
             .input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| is_picture(p)).collect());

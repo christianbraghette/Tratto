@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The select tool: lasso, select all on a page, moving and deleting the
-//! selected strokes; a tap on a picture picks it (see `pictures`).
+//! The select tool: lasso, select all on a page, moving and deleting what is
+//! selected (strokes, text boxes and pictures together); a tap on a picture
+//! picks it alone (see `pictures`).
 
 use std::collections::HashSet;
 
@@ -25,49 +26,60 @@ impl InkApp {
         self.picture_drag = None;
     }
 
-    /// Selects every stroke on `page` with the select tool.
+    /// Selects everything on `page` with the select tool.
     pub(super) fn select_all_on_page(&mut self, page: u32) {
-        let ids: HashSet<u64> = self.doc.strokes.iter().filter(|s| s.page == page).map(|s| s.id).collect();
-        if ids.is_empty() {
+        let strokes = self.doc.strokes.iter().filter(|s| s.page == page).map(|s| s.id).collect();
+        let texts = self.doc.texts.iter().filter(|t| t.page == page).map(|t| t.id).collect();
+        let images = self.doc.images.iter().filter(|i| i.page == page).map(|i| i.id).collect();
+        let Some(selection) = self.selection_for(page, strokes, texts, images) else {
             self.toast(format!("Nothing to select on page {}", page + 1));
             return;
-        }
+        };
         if self.edit.is_some() {
             self.edit = None;
         }
         self.tool = Tool::Select;
         self.saved_tool = None;
         self.picture = None;
-        self.selection = self.selection_for(page, ids);
+        self.selection = Some(selection);
     }
 
-    fn selection_for(&self, page: u32, ids: HashSet<u64>) -> Option<Selection> {
-        let mut bounds: Option<Rect> = None;
-        for s in self.doc.strokes.iter().filter(|s| ids.contains(&s.id)) {
+    /// The selection of these strokes, text boxes and pictures of `page`;
+    /// `None` if there are none.
+    pub(super) fn selection_for(
+        &self,
+        page: u32,
+        ids: HashSet<u64>,
+        texts: HashSet<u64>,
+        images: HashSet<u64>,
+    ) -> Option<Selection> {
+        let strokes = self.doc.strokes.iter().filter(|s| ids.contains(&s.id)).map(|s| {
             let pad = s.width * 0.5;
-            let r = Rect::from_min_max(
-                pos2(s.bounds[0] - pad, s.bounds[1] - pad),
-                pos2(s.bounds[2] + pad, s.bounds[3] + pad),
-            );
-            bounds = Some(bounds.map_or(r, |b| b.union(r)));
-        }
-        bounds.map(|bounds| Selection { page, ids, bounds })
+            Rect::from_min_max(pos2(s.bounds[0] - pad, s.bounds[1] - pad), pos2(s.bounds[2] + pad, s.bounds[3] + pad))
+        });
+        let text_rects = self.doc.texts.iter().filter(|t| texts.contains(&t.id)).map(|t| t.rect());
+        let image_rects = self.doc.images.iter().filter(|i| images.contains(&i.id)).map(|i| i.rect());
+        let bounds = strokes.chain(text_rects).chain(image_rects).reduce(|a, b| a.union(b))?;
+        Some(Selection { page, ids, texts, images, bounds })
     }
 
-    /// Lasso released: pick the strokes that are mostly inside it. A simple
-    /// tap selects the stroke under the pen instead, or else the picture.
+    /// Lasso released: pick the strokes that are mostly inside it, and the
+    /// text boxes and pictures whose middle is. A simple tap selects the
+    /// stroke under the pen instead, else picks the picture, else selects the
+    /// text box.
     fn finish_lasso(&mut self) {
         let Some(l) = self.lasso.take() else { return };
-        let mut ids = HashSet::new();
+        let (mut ids, mut texts, mut images) = (HashSet::new(), HashSet::new(), HashSet::new());
         let path_len: f32 = l.points.windows(2).map(|w| w[0].distance(w[1])).sum();
 
         if l.points.len() < 4 || path_len < 8.0 {
-            if let Some(p) = l.points.first() {
-                match self.doc.strokes.iter().rev().find(|s| s.page == l.page && s.hit_test(*p, 4.0)) {
-                    Some(s) => {
-                        ids.insert(s.id);
-                    }
-                    None => self.picture = self.picture_at(l.page, *p),
+            if let Some(&p) = l.points.first() {
+                if let Some(s) = self.doc.strokes.iter().rev().find(|s| s.page == l.page && s.hit_test(p, 4.0)) {
+                    ids.insert(s.id);
+                } else if let Some(id) = self.picture_at(l.page, p) {
+                    self.picture = Some(id);
+                } else if let Some(t) = self.doc.texts.iter().rev().find(|t| t.page == l.page && t.rect().contains(p)) {
+                    texts.insert(t.id);
                 }
             }
         } else {
@@ -82,11 +94,15 @@ impl InkApp {
                     ids.insert(s.id);
                 }
             }
+            let inside = |r: Rect| point_in_polygon(r.center(), &l.points);
+            texts.extend(self.doc.texts.iter().filter(|t| t.page == l.page && inside(t.rect())).map(|t| t.id));
+            images.extend(self.doc.images.iter().filter(|i| i.page == l.page && inside(i.rect())).map(|i| i.id));
         }
-        self.selection = self.selection_for(l.page, ids);
+        self.selection = self.selection_for(l.page, ids, texts, images);
     }
 
-    /// Drop the dragged selection: possibly onto another page, kept inside it.
+    /// Drop the dragged selection: onto the page its middle is nearest to
+    /// (possibly another), kept inside it.
     fn commit_move(&mut self, layout: Layout) {
         let Some(m) = self.moving.take() else { return };
         let Some(sel) = self.selection.as_mut() else {
@@ -98,31 +114,29 @@ impl InkApp {
         }
         let src_o = layout.page_origin(sel.page).to_vec2();
         let center = sel.bounds.center() + src_o + d;
-        let dst = layout.page_at(center).unwrap_or(sel.page);
+        let dst = layout.page_nearest_y(center.y);
         let dst_o = layout.page_origin(dst).to_vec2();
 
-        // Delta expressed in the destination page's space.
-        let mut local = d + src_o - dst_o;
-        let nb = sel.bounds.translate(local);
-        if nb.width() <= layout.page_w {
-            if nb.min.x < 0.0 {
-                local.x -= nb.min.x;
-            } else if nb.max.x > layout.page_w {
-                local.x -= nb.max.x - layout.page_w;
-            }
-        }
-        if nb.height() <= layout.page_h {
-            if nb.min.y < 0.0 {
-                local.y -= nb.min.y;
-            } else if nb.max.y > layout.page_h {
-                local.y -= nb.max.y - layout.page_h;
-            }
-        }
+        // Delta expressed in the destination page's space, kept on it.
+        let local = super::clipboard::keep_on_page(sel.bounds, d + src_o - dst_o, layout.page_w, layout.page_h);
 
-        let ids: Vec<u64> = sel.ids.iter().copied().collect();
         sel.bounds = sel.bounds.translate(local);
         sel.page = dst;
-        self.history.exec(&mut self.doc, Action::MoveStrokes { ids, to_page: dst, dx: local.x, dy: local.y });
+        // One undo step for everything moved.
+        let mut actions = Vec::new();
+        if !sel.ids.is_empty() {
+            let ids = sel.ids.iter().copied().collect();
+            actions.push(Action::MoveStrokes { ids, to_page: dst, dx: local.x, dy: local.y });
+        }
+        for t in self.doc.texts.iter().filter(|t| sel.texts.contains(&t.id)) {
+            let text = tratto_core::model::TextBox { page: dst, x: t.x + local.x, y: t.y + local.y, ..t.clone() };
+            actions.push(Action::ReplaceText { text });
+        }
+        for i in self.doc.images.iter().filter(|i| sel.images.contains(&i.id)) {
+            let image = tratto_core::model::Image { page: dst, x: i.x + local.x, y: i.y + local.y, ..i.clone() };
+            actions.push(Action::ReplaceImage { image });
+        }
+        self.history.exec(&mut self.doc, Action::Batch(actions));
     }
 
     pub(super) fn delete_selection(&mut self) {
@@ -135,13 +149,21 @@ impl InkApp {
         };
         self.lasso = None;
         self.moving = None;
-        let mut inverses = Vec::new();
-        for id in sel.ids {
-            inverses.push(Action::RemoveStroke { id }.apply(&mut self.doc));
-        }
-        if !inverses.is_empty() {
-            self.history.push_undo(Action::Batch(inverses.into_iter().rev().collect()));
-        }
+        let removals = (sel.ids.into_iter().map(|id| Action::RemoveStroke { id }))
+            .chain(sel.texts.into_iter().map(|id| Action::RemoveText { id }))
+            .chain(sel.images.into_iter().map(|id| Action::RemoveImage { id }));
+        self.history.exec(&mut self.doc, Action::Batch(removals.collect()));
+    }
+
+    /// The selection being dragged: where its text boxes and pictures are
+    /// shown meanwhile (their page's space, moved by `offset`, content space).
+    pub(super) fn selection_offsets(&self) -> (Vec<(u64, Vec2)>, Vec<tratto_core::model::Image>) {
+        let (Some(sel), Some(m)) = (&self.selection, &self.moving) else { return Default::default() };
+        let texts = sel.texts.iter().map(|id| (*id, m.delta)).collect();
+        let images = (self.doc.images.iter().filter(|i| sel.images.contains(&i.id)))
+            .map(|i| tratto_core::model::Image { x: i.x + m.delta.x, y: i.y + m.delta.y, ..i.clone() })
+            .collect();
+        (texts, images)
     }
 
     pub(super) fn handle_select(&mut self, resp: &egui::Response, view: &View, press: Option<Pos2>, moves: &[Pos2]) {

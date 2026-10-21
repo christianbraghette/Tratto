@@ -28,6 +28,7 @@
 //! - `frame_limit`    frame rate cap when vsync is off
 //! - `power`          whether the computer runs on battery (battery saver)
 //! - `saver`          saves the open note on a background thread
+//! - `snapshot`       a picture of what was copied, for other apps
 //! - `update`         updates from the GitHub releases
 
 // A GUI program on Windows: started from Explorer or a shortcut, no console
@@ -52,6 +53,7 @@ mod render;
 mod saver;
 mod scrollbar;
 mod settings;
+mod snapshot;
 mod stroke_gpu;
 mod stroke_mesh;
 mod theme;

@@ -279,7 +279,8 @@ impl InkApp {
         }
     }
 
-    /// Drop a dragged text box, possibly onto another page, kept inside it.
+    /// Drop a dragged text box onto the page its middle is nearest to
+    /// (possibly another), kept inside it.
     fn commit_text_move(&mut self, id: u64, d: Vec2, layout: Layout) {
         let Some(old) = self.doc.texts.iter().find(|t| t.id == id).cloned() else {
             return;
@@ -289,7 +290,7 @@ impl InkApp {
         }
         let src_o = layout.page_origin(old.page).to_vec2();
         let center = pos2(old.x + old.width * 0.5, old.y + old.height() * 0.5) + src_o + d;
-        let dst = layout.page_at(center).unwrap_or(old.page);
+        let dst = layout.page_nearest_y(center.y);
         let local = d + src_o - layout.page_origin(dst).to_vec2();
         let mut new = old.clone();
         new.page = dst;

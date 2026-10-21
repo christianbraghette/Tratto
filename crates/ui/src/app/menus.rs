@@ -39,8 +39,20 @@ pub(super) enum Command {
     OpenPdf,
     /// The PDF in the reader becomes a note to write on.
     WriteOnPdf,
-    /// Copy the selected text.
-    CopyText,
+    /// Copy the selected text, else what is selected on the note.
+    Copy,
+    /// Cut what is selected on the note.
+    Cut,
+    /// Paste at a page and a point on it (or where the view is): what was
+    /// copied in Tratto, else another app's picture or text.
+    Paste(Option<(u32, Pos2)>),
+    CopyPage(u32),
+    CutPage(u32),
+    /// Insert the copied pages so that the first gets this index.
+    PastePages(u32),
+    /// Paste the copied (or cut) note into the library's open notebook or
+    /// section.
+    PasteNote,
     /// Select all the text of that page.
     SelectAllText(u32),
     /// The search view, its field focused.
@@ -60,8 +72,6 @@ pub(super) enum Command {
     Deselect,
     EditText(u64),
     DeleteText(u64),
-    /// The clipboard's picture, at a page and a point on it (or where the view is).
-    PastePicture(Option<(u32, Pos2)>),
     /// A picture file, chosen in a dialog, at the same.
     InsertPicture(Option<(u32, Pos2)>),
     DeletePicture(u64),
@@ -452,13 +462,13 @@ impl InkApp {
         }
     }
 
-    /// Copying the selected text and selecting all of `page`'s (Edit menu and
-    /// context menu).
+    /// Copying the selected text (the reader; a note has it with the ink
+    /// entries) and selecting all of `page`'s (Edit menu and context menu).
     fn text_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
         let ctx = ui.ctx().clone();
         let cmd = Modifiers::COMMAND;
-        if entry(ui, icon::COPY, "Copy", &shortcut(&ctx, cmd, Key::C), self.text_sel.is_some()) {
-            push(ui, Command::CopyText);
+        if self.reading() && entry(ui, icon::COPY, "Copy", &shortcut(&ctx, cmd, Key::C), self.text_sel.is_some()) {
+            push(ui, Command::Copy);
         }
         let all = if self.reading() { shortcut(&ctx, cmd, Key::A) } else { String::new() };
         if entry(ui, icon::TEXT_AA, "Select all text on page", &all, true) {
@@ -477,6 +487,8 @@ impl InkApp {
             push(ui, Command::Redo);
         }
         ui.separator();
+        self.clipboard_entries(ui, None, push);
+        ui.separator();
         if entry(ui, icon::SELECTION_ALL, "Select all on page", &shortcut(&ctx, cmd, Key::A), true) {
             push(ui, Command::SelectAll(self.current_page));
         }
@@ -488,11 +500,45 @@ impl InkApp {
             push(ui, Command::Deselect);
         }
         ui.separator();
-        if entry(ui, icon::CLIPBOARD, "Paste picture", &shortcut(&ctx, cmd, Key::V), true) {
-            push(ui, Command::PastePicture(None));
-        }
         if entry(ui, icon::IMAGE, "Insert picture...", "", true) {
             push(ui, Command::InsertPicture(None));
+        }
+    }
+
+    /// Cut, copy and paste (Edit menu and context menu); pasted at `at`, a
+    /// page and a point on it, if given.
+    fn clipboard_entries(&self, ui: &mut Ui, at: Option<(u32, Pos2)>, push: &mut dyn FnMut(&mut Ui, Command)) {
+        self.cut_copy_entries(ui, push);
+        let ctx = ui.ctx().clone();
+        let label = if at.is_some() { "Paste here" } else { "Paste" };
+        if entry(ui, icon::CLIPBOARD, label, &shortcut(&ctx, Modifiers::COMMAND, Key::V), true) {
+            push(ui, Command::Paste(at));
+        }
+    }
+
+    /// Cut and copy (the context menu has its own "Paste here").
+    fn cut_copy_entries(&self, ui: &mut Ui, push: &mut dyn FnMut(&mut Ui, Command)) {
+        let ctx = ui.ctx().clone();
+        let cmd = Modifiers::COMMAND;
+        if entry(ui, icon::SCISSORS, "Cut", &shortcut(&ctx, cmd, Key::X), self.can_cut()) {
+            push(ui, Command::Cut);
+        }
+        if entry(ui, icon::COPY, "Copy", &shortcut(&ctx, cmd, Key::C), self.can_copy()) {
+            push(ui, Command::Copy);
+        }
+    }
+
+    /// Copying, cutting and pasting whole pages, by `page` (Page menu and
+    /// context menu).
+    fn page_clipboard_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
+        if entry(ui, icon::COPY, "Copy page", "", true) {
+            push(ui, Command::CopyPage(page));
+        }
+        if entry(ui, icon::SCISSORS, "Cut page", "", true) {
+            push(ui, Command::CutPage(page));
+        }
+        if entry(ui, icon::CLIPBOARD, "Paste page after", "", self.clipboard.has_pages()) {
+            push(ui, Command::PastePages(page + 1));
         }
     }
 
@@ -507,6 +553,8 @@ impl InkApp {
         if entry(ui, icon::TRASH, &format!("Delete page {}", page + 1), "", true) {
             push(ui, Command::DeletePage(page));
         }
+        ui.separator();
+        self.page_clipboard_entries(ui, page, push);
     }
 
     // -------------------------------------------------------- context menu
@@ -533,11 +581,8 @@ impl InkApp {
                         self.text_entries(ui, menu.page.unwrap_or(self.current_page), &mut push);
                         return;
                     }
-                    if self.text_sel.is_some() {
-                        let ctx = ui.ctx().clone();
-                        if entry(ui, icon::COPY, "Copy", &shortcut(&ctx, Modifiers::COMMAND, Key::C), true) {
-                            push(ui, Command::CopyText);
-                        }
+                    if self.text_sel.is_some() || menu.on_selection || menu.picture.is_some() {
+                        self.cut_copy_entries(ui, &mut push);
                         ui.separator();
                     }
                     if let Some(id) = menu.picture {
@@ -599,8 +644,10 @@ impl InkApp {
                             push(ui, Command::SelectAllText(page));
                         }
                         ui.separator();
-                        if entry(ui, icon::CLIPBOARD, "Paste picture here", "", true) {
-                            push(ui, Command::PastePicture(menu.at));
+                        let ctx = ui.ctx().clone();
+                        let paste = shortcut(&ctx, Modifiers::COMMAND, Key::V);
+                        if entry(ui, icon::CLIPBOARD, "Paste here", &paste, true) {
+                            push(ui, Command::Paste(menu.at));
                         }
                         if entry(ui, icon::IMAGE, "Insert picture here...", "", true) {
                             push(ui, Command::InsertPicture(menu.at));
@@ -633,6 +680,9 @@ impl InkApp {
         let standalone = self.standalone.is_some();
         let typing = self.edit.is_some() || ctx.egui_wants_keyboard_input();
         let cmd = Modifiers::COMMAND;
+        let note_paste = self.clipboard.note().is_some();
+        // Windows: the paste key, even without text on the clipboard.
+        let paste_key = !editor && std::mem::take(&mut self.pen_input.paste);
         let found: Vec<Command> = ctx.input_mut(|i| {
             let mut out = Vec::new();
             if i.consume_key(Modifiers::NONE, Key::F11) {
@@ -656,6 +706,12 @@ impl InkApp {
             if i.consume_key(cmd, Key::O) {
                 out.push(Command::OpenPdf);
             }
+            // The library: a note copied or cut is pasted into the open
+            // notebook or section.
+            let paste_event = i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)));
+            if !editor && !typing && note_paste && (paste_key || paste_event) {
+                out.push(Command::PasteNote);
+            }
             if editor {
                 if i.consume_key(cmd, Key::W) {
                     out.push(Command::CloseNote);
@@ -677,10 +733,15 @@ impl InkApp {
                             Command::SelectAll(self.current_page)
                         });
                     }
-                    // egui turns Ctrl+C into a copy event.
+                    // egui turns Ctrl+C / Ctrl+X into copy / cut events. Ctrl+V
+                    // is the canvas's (see `pictures::picture_input`).
                     let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy)) || i.consume_key(cmd, Key::C);
-                    if copy && self.text_sel.is_some() {
-                        out.push(Command::CopyText);
+                    if copy && self.can_copy() {
+                        out.push(Command::Copy);
+                    }
+                    let cut = i.events.iter().any(|e| matches!(e, egui::Event::Cut)) || i.consume_key(cmd, Key::X);
+                    if cut && self.can_cut() {
+                        out.push(Command::Cut);
                     }
                     if self.text_sel.is_some()
                         && self.context_menu.is_none()
@@ -721,7 +782,16 @@ impl InkApp {
             | Command::LibraryFolder
                 if self.standalone.is_some() => {}
             Command::WriteOnPdf => self.import_open_pdf(),
-            Command::CopyText => self.copy_text(ctx),
+            Command::Copy => self.copy(ctx),
+            Command::Cut if editor => self.cut(ctx),
+            Command::Paste(at) if editor => self.paste(at, false),
+            Command::CopyPage(page) if editor => self.copy_page(ctx, page),
+            Command::CutPage(page) if editor => self.cut_page(ctx, page),
+            Command::PastePages(index) if editor => self.paste_pages_here(index),
+            Command::PasteNote if !editor => {
+                let dir = self.library_target_dir();
+                self.paste_note(dir);
+            }
             Command::SelectAllText(page) if editor => self.select_all_text(page),
             Command::Find if editor => self.find(),
             Command::FindNext(forward) if editor => self.find_next(forward),
@@ -770,7 +840,6 @@ impl InkApp {
             Command::Redo => self.redo(),
             Command::SelectAll(page) if editor => self.select_all_on_page(page),
             Command::DeleteSelection => self.delete_selection(),
-            Command::PastePicture(at) if editor => self.paste_picture(at, false),
             Command::InsertPicture(at) if editor => self.ask_picture_file(at),
             Command::DeletePicture(id) => self.delete_picture(id),
             Command::Deselect => {
@@ -906,8 +975,9 @@ impl InkApp {
                             (key(c, Key::A), "Select all on the page"),
                             (key(none, Key::Delete), "Delete the selection"),
                             (key(none, Key::Escape), "Deselect"),
-                            (key(c, Key::C), "Copy the selected text"),
-                            (key(c, Key::V), "Paste a picture"),
+                            (key(c, Key::X), "Cut the selection"),
+                            (key(c, Key::C), "Copy the selection or the selected text"),
+                            (key(c, Key::V), "Paste (at the pointer, over a page)"),
                         ],
                     ),
                     (
