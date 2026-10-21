@@ -40,7 +40,7 @@ pub fn paper_label(w: f32, h: f32) -> String {
 }
 
 /// The paper colour (screen and PDF).
-pub const PAPER_RGB: [u8; 3] = [252, 251, 247];
+pub const PAPER_RGB: [u8; 3] = [255, 255, 255];
 
 /// The opaque colour a highlighter of colour `rgba` (its alpha is the ink's
 /// strength) leaves on a background `under`.
@@ -292,6 +292,12 @@ impl Document {
         self.pdf.as_ref()?.pages.get(page as usize).copied().flatten()
     }
 
+    /// Note page `page` gets the rules (or grid) of the paper: not a page
+    /// written on a PDF page, which is its own paper.
+    pub fn ruled(&self, page: u32) -> bool {
+        self.page.kind != PageKind::Blank && self.pdf_page(page).is_none()
+    }
+
     /// Allocates a document-unique stroke id.
     pub fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
@@ -312,6 +318,18 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_only_on_pages_without_a_pdf_page() {
+        let mut doc = Document::on_pdf(PdfFile::new(Vec::new()), vec![[100.0, 100.0]]);
+        doc.page.kind = PageKind::Ruled;
+        // A page added after the PDF's.
+        doc.page_count = 2;
+        doc.pdf.as_mut().unwrap().pages.push(None);
+        assert!(!doc.ruled(0) && doc.ruled(1));
+        doc.page.kind = PageKind::Blank;
+        assert!(!doc.ruled(1));
+    }
 
     /// Shared points are encoded exactly like the `Vec` the format was
     /// defined with: files do not change.

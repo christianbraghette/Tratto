@@ -965,7 +965,7 @@ mod tests {
         let id = note.alloc_id();
         let red = (0..=50).map(|i| Point::new(100.0 + i as f32 * 10.0, 900.0, 1.0)).collect();
         note.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [220, 0, 0, 255], 20.0, red));
-        let opts = PdfOptions { paper_background: true, ..PdfOptions::default() };
+        let opts = PdfOptions::default();
         pdf_export::export_notes(&[PdfNote { doc: &note, title: "n".into() }], &path, &opts).unwrap();
         let exported = PdfFile::new(std::fs::read(&path).unwrap());
         let _ = std::fs::remove_file(&path);
@@ -985,7 +985,7 @@ mod tests {
         assert!(r > 200 && g > 200 && b < 200, "highlighter on white: {:?}", [r, g, b]);
         let [r, g, b] = px(450, 900);
         assert!(r > 150 && g < 80 && b < 80, "pen ink: {:?}", [r, g, b]);
-        // No paper fill over the PDF page (it would hide it), so white here.
+        // Nothing over the PDF page's white.
         assert!(px(700, 200).iter().all(|&c| c > 250), "{:?}", px(700, 200));
     }
 

@@ -55,7 +55,7 @@ pub mod color {
     pub const DANGER: Color32 = Color32::from_rgb(222, 70, 76);
 
     /// Paper and its rules.
-    pub const PAGE: Color32 = Color32::from_rgb(252, 251, 247);
+    pub const PAGE: Color32 = Color32::WHITE;
     pub const PAGE_RULE: Color32 = Color32::from_rgb(203, 216, 232);
     pub const PAGE_EDGE: Color32 = Color32::from_rgb(20, 21, 23);
 

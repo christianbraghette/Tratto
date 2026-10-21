@@ -533,7 +533,7 @@ impl InkApp {
         let strokes = &self.doc.strokes;
         render::paint_strokes(&painter, &view, Layer::Highlight, strokes, &mut self.cache, ppp, moved.as_ref());
         paint_live(StrokeKind::Highlighter);
-        render::paint_rules(&painter, &view, &self.doc.page);
+        render::paint_rules(&painter, &view, &self.doc);
         let text_move = self
             .text_press
             .as_ref()

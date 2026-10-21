@@ -187,7 +187,6 @@ pub struct Settings {
     pub pdf_text: bool,
     /// Notes written on a PDF: export the PDF's pages under the ink.
     pub pdf_pages: bool,
-    pub pdf_paper_background: bool,
     pub pdf_ink: InkColors,
     /// Output page size in px; `None` = the note's own size.
     pub pdf_page_size: Option<(f32, f32)>,
@@ -323,7 +322,6 @@ impl Default for Settings {
             pdf_highlighter: true,
             pdf_text: true,
             pdf_pages: true,
-            pdf_paper_background: false,
             pdf_ink: InkColors::Original,
             pdf_page_size: None,
             // 10 mm.

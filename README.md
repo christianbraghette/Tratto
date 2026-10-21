@@ -261,8 +261,8 @@ opens the export dialog, with a live preview of the exported pages:
 - **Export**: this note (all pages, the current one, or a range), every note of
   its section, or a selection of the notebook's notes. Several notes go into
   one PDF, in the notebook panel's order, with a bookmark per note
-- **Content**: ruled lines and grid, highlighter strokes, text boxes, and the
-  paper colour as background
+- **Content**: ruled lines and grid (not over a PDF's pages), highlighter
+  strokes, text boxes, and for notes written on a PDF its pages under the ink
 - **Ink colours**: as drawn, black (highlighter in grey) or grayscale
 - **Page size**: the note's own, or a standard size (A4, Letter, ...) with each
   page scaled to fit and centred, with an adjustable margin

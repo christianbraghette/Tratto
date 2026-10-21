@@ -242,7 +242,6 @@ impl InkApp {
             include_highlighter: s.pdf_highlighter,
             include_text: s.pdf_text,
             include_pdf_pages: s.pdf_pages,
-            paper_background: s.pdf_paper_background,
             ink: s.pdf_ink,
             page_size: s.pdf_page_size,
             margin: if s.pdf_page_size.is_some() { s.pdf_margin } else { 0.0 },
@@ -421,7 +420,6 @@ impl InkApp {
         ui.checkbox(&mut s.pdf_rules, "Ruled lines and grid");
         ui.checkbox(&mut s.pdf_highlighter, "Highlighter strokes");
         ui.checkbox(&mut s.pdf_text, "Text boxes");
-        ui.checkbox(&mut s.pdf_paper_background, "Paper colour as background (otherwise white)");
 
         section(ui, "Appearance");
         grid(ui, "export_appearance", |ui| {
@@ -692,8 +690,6 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions,
     let on_pdf = opts.include_pdf_pages && doc.pdf_page(page).is_some();
     if on_pdf {
         textures.paint(&p, doc, page, paper, true);
-    } else if opts.paper_background {
-        p.rect_filled(paper, 0.0, color::PAGE);
     }
     let rgb = |(r, g, b): (f32, f32, f32)| Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
     let paint_strokes = |kind: StrokeKind| {
@@ -726,7 +722,7 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions,
         mesh.translate(origin.to_vec2());
         render::paint_mesh(&p, Layer::Highlight, mesh);
     }
-    if opts.include_rules && doc.page.kind != PageKind::Blank {
+    if opts.include_rules && doc.ruled(page) {
         let spacing = doc.page.spacing.max(8.0);
         if spacing * f >= 2.5 {
             let rule = Stroke::new(0.6, color::PAGE_RULE);

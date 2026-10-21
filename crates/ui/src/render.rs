@@ -17,7 +17,7 @@ use eframe::egui::{
     pos2, vec2,
 };
 
-use tratto_core::model::{self, PageKind, PageStyle, Point, Stroke, StrokeKind, TextBox};
+use tratto_core::model::{self, Document, PageKind, Point, Stroke, StrokeKind, TextBox};
 
 use crate::stroke_gpu::{self, Batch, Blend};
 use crate::stroke_mesh::{self, LiveMesh};
@@ -375,17 +375,19 @@ pub fn paint_paper(painter: &Painter, view: &View) {
     }
 }
 
-/// The rules (or grid) and the edge of every visible page, over the
-/// highlighters.
-pub fn paint_rules(painter: &Painter, view: &View, style: &PageStyle) {
+/// The rules (or grid) of the pages that have them (`Document::ruled`) and
+/// the edge of every visible page, over the highlighters.
+pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
     let l = view.layout;
     let s = view.scale;
+    let style = &doc.page;
     let spacing = style.spacing.max(8.0);
     let rule = UiStroke::new(1.0, color::PAGE_RULE);
 
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
-        if style.kind != PageKind::Blank {
+        let ruled = doc.ruled(page);
+        if ruled {
             // Rules at page-local y = k * spacing; only those in view are drawn.
             let vis_top = ((view.rect.top() - rect.top()) / s).max(0.0);
             let vis_bottom = ((view.rect.bottom() - rect.top()) / s).min(l.page_h);
@@ -400,7 +402,7 @@ pub fn paint_rules(painter: &Painter, view: &View, style: &PageStyle) {
                 k += 1;
             }
         }
-        if style.kind == PageKind::Grid {
+        if ruled && style.kind == PageKind::Grid {
             let (y0, y1) = (rect.top().max(view.rect.top()), rect.bottom().min(view.rect.bottom()));
             let mut x = spacing;
             while x < l.page_w {

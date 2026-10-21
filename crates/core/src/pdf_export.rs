@@ -16,10 +16,11 @@
 //!   on the paper (`model::highlight_on`), with the Darken blend mode: each
 //!   point keeps the darker of the highlighter and what is under it, so
 //!   overlapping highlighters never darken and nothing is covered (as on
-//!   screen). Page order: background, highlighters, rules, text, pen strokes.
+//!   screen). Page order: highlighters, rules, text, pen strokes, on the
+//!   white page.
 //! * Notes written on a PDF: the PDF's pages go under the pages as vector
 //!   form XObjects (`pdf_pages::underlay`, PDFium), so their text stays
-//!   text; such pages get no paper fill.
+//!   text; such pages get no rules.
 
 use std::fs;
 use std::io::{self, Write};
@@ -58,8 +59,6 @@ pub struct PdfOptions {
     pub include_text: bool,
     /// Notes written on a PDF: put the PDF's pages under them.
     pub include_pdf_pages: bool,
-    /// Fill the note's page with the paper colour (otherwise white).
-    pub paper_background: bool,
     pub ink: InkColors,
     /// Output page size in page units (px); the note's page is scaled to fit
     /// inside `margin` and centred. `None` = the note's own size.
@@ -79,7 +78,6 @@ impl Default for PdfOptions {
             include_highlighter: true,
             include_text: true,
             include_pdf_pages: true,
-            paper_background: false,
             ink: InkColors::Original,
             page_size: None,
             margin: 0.0,
@@ -129,11 +127,6 @@ impl PdfOptions {
         }
     }
 
-    /// What the page is printed on: the paper colour, or white.
-    pub fn background(&self) -> [u8; 3] {
-        if self.paper_background { model::PAPER_RGB } else { [255, 255, 255] }
-    }
-
     /// Colour (0..1) a stroke is printed in: the ink colour, and for a
     /// highlighter the opaque colour it leaves on the background.
     pub fn stroke_rgb(&self, s: &Stroke) -> (f32, f32, f32) {
@@ -143,7 +136,7 @@ impl PdfOptions {
             return (r, g, b);
         }
         let byte = |v: f32| (v * 255.0).round() as u8;
-        let [r, g, b] = model::highlight_on([byte(r), byte(g), byte(b), s.color[3]], self.background());
+        let [r, g, b] = model::highlight_on([byte(r), byte(g), byte(b), s.color[3]], model::PAPER_RGB);
         (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
     }
 }
@@ -370,19 +363,6 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
         num((out_h - oy) * PX_TO_PT, 3),
     ));
 
-    // On its PDF page the page needs no paper: the PDF is the paper.
-    if opts.paper_background && pdf_under(doc, page, opts).is_none() {
-        // The paper colour of the screen.
-        let [r, g, b] = model::PAPER_RGB.map(|v| v as f32 / 255.0);
-        c.push_str(&format!(
-            "{} {} {} rg\n0 0 {} {} re f\n",
-            num(r, 3),
-            num(g, 3),
-            num(b, 3),
-            num(doc.page_width, 2),
-            num(doc.page_height, 2)
-        ));
-    }
     // Bottom to top, as on screen: highlighters, rules, text, pen strokes.
     let strokes = |kind: StrokeKind| doc.strokes.iter().filter(move |s| s.page == page && s.kind == kind);
     if opts.include_highlighter {
@@ -390,7 +370,7 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
             write_stroke(&mut c, s, opts);
         }
     }
-    if opts.include_rules && doc.page.kind != PageKind::Blank {
+    if opts.include_rules && doc.ruled(page) {
         write_rules(&mut c, doc);
     }
     if opts.include_text {
@@ -701,7 +681,7 @@ mod tests {
         let opts = PdfOptions::default();
         let hl = Stroke::new(0, 0, StrokeKind::Highlighter, [255, 235, 0, 96], 14.0, Vec::new());
         let (r, g, b) = opts.stroke_rgb(&hl);
-        let [br, bg, bb] = opts.background().map(|v| v as f32 / 255.0);
+        let [br, bg, bb] = model::PAPER_RGB.map(|v| v as f32 / 255.0);
         assert!(r <= br + 1e-3 && b < bb && g < bg, "between the background and the ink");
         let colour = format!("{} {} {} RG", num(r, 3), num(g, 3), num(b, 3));
         let doc = sample_doc();
