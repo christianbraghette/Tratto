@@ -308,14 +308,18 @@ impl InkApp {
                     .on_disabled_hover_text("Set by the TRATTO_VSYNC environment variable");
             });
             row(ui, "Battery saver", |ui| {
-                egui::ComboBox::from_id_salt("battery_saver").selected_text(s.battery_saver.label()).show_ui(
-                    ui,
-                    |ui| {
+                egui::ComboBox::from_id_salt("battery_saver")
+                    .selected_text(s.battery_saver.label())
+                    .show_ui(ui, |ui| {
                         for mode in BatterySaver::ALL {
                             ui.selectable_value(&mut s.battery_saver, mode, mode.label());
                         }
-                    },
-                );
+                    })
+                    .response
+                    .on_hover_text(format!(
+                        "Waits for the display to save power. Low: on battery at {}% or less",
+                        crate::power::LOW_PERCENT
+                    ));
             });
             row(ui, "Frame rate limit", |ui| {
                 ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {

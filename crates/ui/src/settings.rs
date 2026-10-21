@@ -88,18 +88,21 @@ impl UpdateMode {
 /// says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatterySaver {
-    /// While the computer runs on battery.
+    /// While the computer runs on battery at `power::LOW_PERCENT` or less.
     #[default]
+    Low,
+    /// While the computer runs on battery.
     OnBattery,
     Always,
     Off,
 }
 
 impl BatterySaver {
-    pub const ALL: [BatterySaver; 3] = [Self::OnBattery, Self::Always, Self::Off];
+    pub const ALL: [BatterySaver; 4] = [Self::Low, Self::OnBattery, Self::Always, Self::Off];
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Low => "When battery is low",
             Self::OnBattery => "On battery",
             Self::Always => "Always",
             Self::Off => "Off",

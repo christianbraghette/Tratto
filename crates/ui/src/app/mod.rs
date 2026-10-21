@@ -535,6 +535,7 @@ impl InkApp {
         match self.settings.battery_saver {
             BatterySaver::Off => false,
             BatterySaver::Always => true,
+            BatterySaver::Low => crate::power::battery_low(ctx),
             BatterySaver::OnBattery => crate::power::on_battery(ctx),
         }
     }

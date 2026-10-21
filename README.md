@@ -314,9 +314,11 @@ separately by eframe in the platform's application-data folder.
 
 By default Tratto presents frames without waiting for vsync, for the lowest
 latency, capped at 120 fps so the GPU does not render frames that are never
-shown. Both are set in **File > Settings > Display**: the frame rate limit
-applies at once, vsync when Tratto restarts. These environment variables
-override the settings:
+shown. Both are set in **File > Settings > Display**, and apply at once. The
+**battery saver** there turns vsync on to save power: by default when the
+computer runs on battery at 20% or less (or whenever it is on battery,
+always, or never). These environment variables override
+the settings:
 
 | Variable | Effect |
 | --- | --- |
