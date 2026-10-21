@@ -321,6 +321,13 @@ pub fn outline_button(ui: &mut egui::Ui, shown: bool) -> bool {
     ui.add(egui::Button::selectable(shown, theme::icon(icon::LIST_BULLETS))).on_hover_text(tip).clicked()
 }
 
+/// Toggles the search view (searching the text). Returns true when
+/// clicked; `shown` highlights it.
+pub fn search_button(ui: &mut egui::Ui, shown: bool) -> bool {
+    let tip = if shown { "Hide the search" } else { "Search the text (Ctrl+F)" };
+    ui.add(egui::Button::selectable(shown, theme::icon(icon::MAGNIFYING_GLASS))).on_hover_text(tip).clicked()
+}
+
 /// Returns true when clicked; `shown` highlights it.
 pub fn settings_button(ui: &mut egui::Ui, shown: bool) -> bool {
     let tip = if shown { "Hide note settings" } else { "Note settings: paper, pages, export" };

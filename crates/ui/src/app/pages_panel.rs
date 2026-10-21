@@ -85,6 +85,9 @@ impl InkApp {
                         if on_pdf && toolbar::outline_button(ui, view == LeftPanel::Outline) {
                             clicked = Some(LeftPanel::Outline);
                         }
+                        if toolbar::search_button(ui, view == LeftPanel::Search) {
+                            clicked = Some(LeftPanel::Search);
+                        }
                     });
                 });
             });
@@ -92,6 +95,7 @@ impl InkApp {
             LeftPanel::Pages => self.pages_view(ui),
             LeftPanel::Settings => self.note_settings_view(ui),
             LeftPanel::Outline => self.outline_view(ui),
+            LeftPanel::Search => self.search_view(ui),
             LeftPanel::Closed => {}
         }
         if let Some(v) = clicked {

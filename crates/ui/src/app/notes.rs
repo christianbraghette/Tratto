@@ -420,6 +420,10 @@ impl InkApp {
         self.page_drag = None;
         self.edit = None;
         self.text_press = None;
+        self.text_layer.clear();
+        self.text_sel = None;
+        self.text_gesture = None;
+        self.search.reset();
         self.history.clear();
         self.active = None;
         self.erase_session.clear();

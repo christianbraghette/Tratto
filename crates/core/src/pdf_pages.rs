@@ -178,6 +178,25 @@ pub struct PageLink {
     pub action: LinkAction,
 }
 
+/// A character of a page's text, in the order the PDF keeps them (reading
+/// order, as far as the PDF tells).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextChar {
+    pub ch: char,
+    /// `[left, top, right, bottom]` as shares of the page as it is shown,
+    /// like `PageLink::rect`. `None` for the spaces and line breaks PDFium
+    /// puts between words and lines, which are nowhere on the page.
+    pub rect: Option<[f32; 4]>,
+}
+
+/// The answer to `text`.
+pub struct PageText {
+    /// `PdfFile::key` of the document.
+    pub key: u64,
+    pub page: u32,
+    pub chars: Result<Vec<TextChar>, PdfError>,
+}
+
 /// The answer to `outline`.
 pub struct Outline {
     /// `PdfFile::key` of the document.
@@ -207,6 +226,15 @@ pub fn outline(file: &Arc<PdfFile>, reply: Sender<Outline>, wake: Arc<dyn Fn() +
 /// `reply`; `wake` is called after sending it.
 pub fn links(file: &Arc<PdfFile>, page: u32, reply: Sender<PageLinks>, wake: Arc<dyn Fn() + Send + Sync>) {
     let job = Job::Links { file: file.clone(), page, reply, wake };
+    if let Err(mpsc::SendError(job)) = worker().send(job) {
+        fail(job, PdfError::Unavailable("the PDF worker stopped".into()));
+    }
+}
+
+/// Asks for the text of `page` of `file` (for selecting and searching it).
+/// The answer arrives on `reply`; `wake` is called after sending it.
+pub fn text(file: &Arc<PdfFile>, page: u32, reply: Sender<PageText>, wake: Arc<dyn Fn() + Send + Sync>) {
+    let job = Job::Text { file: file.clone(), page, reply, wake };
     if let Err(mpsc::SendError(job)) = worker().send(job) {
         fail(job, PdfError::Unavailable("the PDF worker stopped".into()));
     }
@@ -254,6 +282,12 @@ enum Job {
         file: Arc<PdfFile>,
         page: u32,
         reply: Sender<PageLinks>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    },
+    Text {
+        file: Arc<PdfFile>,
+        page: u32,
+        reply: Sender<PageText>,
         wake: Arc<dyn Fn() + Send + Sync>,
     },
 }
@@ -391,6 +425,10 @@ fn fail(job: Job, err: PdfError) {
             let _ = reply.send(PageLinks { key: file.key, page, links: Err(err) });
             wake();
         }
+        Job::Text { file, page, reply, wake } => {
+            let _ = reply.send(PageText { key: file.key, page, chars: Err(err) });
+            wake();
+        }
     }
 }
 
@@ -415,6 +453,11 @@ fn handle(open: &mut Open, job: Job) {
         Job::Links { file, page, reply, wake } => {
             let links = open.page(&file, page).map(read_links);
             let _ = reply.send(PageLinks { key: file.key, page, links });
+            wake();
+        }
+        Job::Text { file, page, reply, wake } => {
+            let chars = open.page(&file, page).and_then(read_text);
+            let _ = reply.send(PageText { key: file.key, page, chars });
             wake();
         }
     }
@@ -463,18 +506,63 @@ fn target(dest: &PdfDestination) -> Option<Target> {
     Some(Target { page, top })
 }
 
-/// Link rectangles are measured on the page rendered this wide (pixels).
+/// Link and character rectangles are measured on the page rendered this
+/// wide (pixels).
 const LINK_GRID: u32 = 10_000;
 
-fn read_links(page: &PdfPage) -> Vec<PageLink> {
-    let size = [page.width().value, page.height().value];
-    let (w, h) = (LINK_GRID, page_height_px(size, LINK_GRID));
-    let config = PdfRenderConfig::new().set_target_width(w as Pixels);
-    let share = |x: PdfPoints, y: PdfPoints| {
-        page.points_to_pixels(x, y, &config)
+/// `rect` (PDF points, the page's own coordinates) as `[left, top, right,
+/// bottom]` shares of the page as it is shown (rotation applied, y down).
+struct Shares<'a> {
+    page: &'a PdfPage<'a>,
+    config: PdfRenderConfig,
+    size: (u32, u32),
+}
+
+impl<'a> Shares<'a> {
+    fn new(page: &'a PdfPage<'a>) -> Self {
+        let size = [page.width().value, page.height().value];
+        let config = PdfRenderConfig::new().set_target_width(LINK_GRID as Pixels);
+        Self { page, config, size: (LINK_GRID, page_height_px(size, LINK_GRID)) }
+    }
+
+    fn point(&self, x: PdfPoints, y: PdfPoints) -> Option<(f32, f32)> {
+        let (w, h) = self.size;
+        self.page
+            .points_to_pixels(x, y, &self.config)
             .ok()
             .map(|(px, py)| ((px as f32 / w as f32).clamp(0.0, 1.0), (py as f32 / h as f32).clamp(0.0, 1.0)))
-    };
+    }
+
+    /// `None` when empty (or outside the page).
+    fn rect(&self, rect: &PdfRect) -> Option<[f32; 4]> {
+        let q = rect.to_quad_points();
+        // Rotation can swap the corners: sort them.
+        let (a, b) = (self.point(q.left(), q.top())?, self.point(q.right(), q.bottom())?);
+        let rect = [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)];
+        (rect[2] > rect[0] && rect[3] > rect[1]).then_some(rect)
+    }
+}
+
+fn read_text(page: &PdfPage) -> Result<Vec<TextChar>, PdfError> {
+    let text = page.text().map_err(|e| PdfError::Unreadable(e.to_string()))?;
+    let shares = Shares::new(page);
+    let mut out = Vec::new();
+    for c in text.chars().iter() {
+        let Some(ch) = c.unicode_char() else { continue };
+        // PDFium ends lines with "\r\n": one break is enough. Other control
+        // characters are not text.
+        if ch == '\r' || ch.is_control() && ch != '\n' {
+            continue;
+        }
+        let placed = !c.is_generated().unwrap_or(false) && ch != '\n';
+        let rect = placed.then(|| c.loose_bounds().ok().and_then(|r| shares.rect(&r))).flatten();
+        out.push(TextChar { ch, rect });
+    }
+    Ok(out)
+}
+
+fn read_links(page: &PdfPage) -> Vec<PageLink> {
+    let shares = Shares::new(page);
     let mut out = Vec::new();
     for link in page.links().iter() {
         let action = match link.destination() {
@@ -488,12 +576,7 @@ fn read_links(page: &PdfPage) -> Vec<PageLink> {
             },
         };
         let Some(action) = action else { continue };
-        let Ok(rect) = link.rect() else { continue };
-        let q = rect.to_quad_points();
-        // Rotation can swap the corners: sort them.
-        let (Some(a), Some(b)) = (share(q.left(), q.top()), share(q.right(), q.bottom())) else { continue };
-        let rect = [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)];
-        if rect[2] > rect[0] && rect[3] > rect[1] {
+        if let Some(rect) = link.rect().ok().and_then(|r| shares.rect(&r)) {
             out.push(PageLink { rect, action });
         }
     }
@@ -722,6 +805,36 @@ mod tests {
         assert_eq!(third.len(), 1);
         assert!(close(third[0].rect, [0.0, 0.0, 1.0, 0.25]), "{:?}", third[0].rect);
         assert_eq!(third[0].action, LinkAction::GoTo(Target { page: 0, top: None }));
+    }
+
+    #[test]
+    fn text_with_its_place_on_the_page() {
+        if !pdfium_available() {
+            return;
+        }
+        let content = "BT /F1 20 Tf 10 60 Td (Hi you) Tj 0 -30 Td (two) Tj ET";
+        let file = PdfFile::new(pdf_of(&[
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            &format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ]));
+        let (tx, rx) = mpsc::channel();
+        text(&file, 0, tx, Arc::new(|| {}));
+        let answer = rx.recv().unwrap();
+        assert_eq!((answer.key, answer.page), (file.key, 0));
+        let chars = answer.chars.unwrap();
+        let s: String = chars.iter().map(|c| c.ch).collect();
+        assert_eq!(s.split_whitespace().collect::<Vec<_>>(), ["Hi", "you", "two"], "{s:?}");
+        // "H" starts 10 pt in on a 200 pt page; its line sits on 60 pt up a
+        // 100 pt page, 0.4 down.
+        let h = chars[0].rect.unwrap();
+        assert!((h[0] - 0.05).abs() < 0.01 && h[1] < 0.4 && h[3] > 0.35, "{h:?}");
+        // The second line is lower; the break between the lines is nowhere.
+        let t = chars.iter().find(|c| c.ch == 't').unwrap().rect.unwrap();
+        assert!(t[1] > h[1] + 0.2, "{t:?}");
+        assert!(chars.iter().filter(|c| c.ch == '\n').all(|c| c.rect.is_none()));
     }
 
     #[test]

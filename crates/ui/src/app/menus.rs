@@ -39,6 +39,14 @@ pub(super) enum Command {
     OpenPdf,
     /// The PDF in the reader becomes a note to write on.
     WriteOnPdf,
+    /// Copy the selected text.
+    CopyText,
+    /// Select all the text of that page.
+    SelectAllText(u32),
+    /// The search view, its field focused.
+    Find,
+    /// The next (true) or previous search match.
+    FindNext(bool),
     LibraryFolder,
     Save,
     ExportPdf,
@@ -308,8 +316,9 @@ impl InkApp {
             push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
         });
 
-        // The reader changes nothing: no Edit and Page menus there.
-        if editor && !self.reading() {
+        // The reader changes nothing: its Edit menu only copies and finds,
+        // and there is no Page menu.
+        if editor {
             ui.menu_button("Edit", |ui| {
                 open = true;
                 self.edit_entries(ui, &mut |ui, c| push(true, ui, c));
@@ -405,8 +414,37 @@ impl InkApp {
         }
     }
 
-    /// Undo / redo and the selection entries (Edit menu and context menu).
+    /// Undo / redo, the selection entries and the text ones (Edit menu).
     fn edit_entries(&self, ui: &mut Ui, push: &mut dyn FnMut(&mut Ui, Command)) {
+        let ctx = ui.ctx().clone();
+        let cmd = Modifiers::COMMAND;
+        if !self.reading() {
+            self.ink_entries(ui, push);
+            ui.separator();
+        }
+        self.text_entries(ui, self.current_page, push);
+        ui.separator();
+        if entry(ui, icon::MAGNIFYING_GLASS, "Find...", &shortcut(&ctx, cmd, Key::F), true) {
+            push(ui, Command::Find);
+        }
+    }
+
+    /// Copying the selected text and selecting all of `page`'s (Edit menu and
+    /// context menu).
+    fn text_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
+        let ctx = ui.ctx().clone();
+        let cmd = Modifiers::COMMAND;
+        if entry(ui, icon::COPY, "Copy", &shortcut(&ctx, cmd, Key::C), self.text_sel.is_some()) {
+            push(ui, Command::CopyText);
+        }
+        let all = if self.reading() { shortcut(&ctx, cmd, Key::A) } else { String::new() };
+        if entry(ui, icon::TEXT_AA, "Select all text on page", &all, true) {
+            push(ui, Command::SelectAllText(page));
+        }
+    }
+
+    /// Undo / redo and the ink selection entries.
+    fn ink_entries(&self, ui: &mut Ui, push: &mut dyn FnMut(&mut Ui, Command)) {
         let ctx = ui.ctx().clone();
         let cmd = Modifiers::COMMAND;
         if entry(ui, icon::ARROW_U_UP_LEFT, "Undo", &shortcut(&ctx, cmd, Key::Z), self.history.can_undo()) {
@@ -460,6 +498,18 @@ impl InkApp {
                     // Flat rows, like egui's own menus.
                     ui.visuals_mut().button_frame = false;
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    // The reader: only its text; a note: copying a selection first.
+                    if self.reading() {
+                        self.text_entries(ui, menu.page.unwrap_or(self.current_page), &mut push);
+                        return;
+                    }
+                    if self.text_sel.is_some() {
+                        let ctx = ui.ctx().clone();
+                        if entry(ui, icon::COPY, "Copy", &shortcut(&ctx, Modifiers::COMMAND, Key::C), true) {
+                            push(ui, Command::CopyText);
+                        }
+                        ui.separator();
+                    }
                     if let Some(id) = menu.text {
                         if entry(ui, icon::TEXT_T, "Edit text", "", true) {
                             push(ui, Command::EditText(id));
@@ -508,6 +558,9 @@ impl InkApp {
                         ui.separator();
                         if entry(ui, icon::SELECTION_ALL, "Select all on page", "", true) {
                             push(ui, Command::SelectAll(page));
+                        }
+                        if entry(ui, icon::TEXT_AA, "Select all text on page", "", true) {
+                            push(ui, Command::SelectAllText(page));
                         }
                         self.page_entries(ui, page, &mut push);
                     }
@@ -564,9 +617,33 @@ impl InkApp {
                 if i.consume_key(cmd, Key::W) {
                     out.push(Command::CloseNote);
                 }
+                if i.consume_key(cmd, Key::F) {
+                    out.push(Command::Find);
+                }
+                if i.consume_key(Modifiers::SHIFT, Key::F3) {
+                    out.push(Command::FindNext(false));
+                } else if i.consume_key(Modifiers::NONE, Key::F3) {
+                    out.push(Command::FindNext(true));
+                }
                 if !typing {
-                    if !self.reading() && i.consume_key(cmd, Key::A) {
-                        out.push(Command::SelectAll(self.current_page));
+                    // The reader selects text; a note, its ink.
+                    if i.consume_key(cmd, Key::A) {
+                        out.push(if self.reading() {
+                            Command::SelectAllText(self.current_page)
+                        } else {
+                            Command::SelectAll(self.current_page)
+                        });
+                    }
+                    // egui turns Ctrl+C into a copy event.
+                    let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy)) || i.consume_key(cmd, Key::C);
+                    if copy && self.text_sel.is_some() {
+                        out.push(Command::CopyText);
+                    }
+                    if self.text_sel.is_some()
+                        && self.context_menu.is_none()
+                        && i.consume_key(Modifiers::NONE, Key::Escape)
+                    {
+                        out.push(Command::Deselect);
                     }
                     if i.consume_key(cmd, Key::Plus) || i.consume_key(cmd, Key::Equals) {
                         out.push(Command::ZoomIn);
@@ -601,6 +678,10 @@ impl InkApp {
             | Command::LibraryFolder
                 if self.standalone.is_some() => {}
             Command::WriteOnPdf => self.import_open_pdf(),
+            Command::CopyText => self.copy_text(ctx),
+            Command::SelectAllText(page) if editor => self.select_all_text(page),
+            Command::Find if editor => self.find(),
+            Command::FindNext(forward) if editor => self.find_next(forward),
             Command::NewNote => {
                 let dir = match (&self.note_path, editor) {
                     (Some(p), true) => p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.library_root()),
@@ -646,7 +727,10 @@ impl InkApp {
             Command::Redo => self.redo(),
             Command::SelectAll(page) if editor => self.select_all_on_page(page),
             Command::DeleteSelection => self.delete_selection(),
-            Command::Deselect => self.clear_selection(),
+            Command::Deselect => {
+                self.clear_selection();
+                self.text_sel = None;
+            }
             Command::EditText(id) => {
                 if self.edit.is_some() {
                     self.commit_edit(ctx);
@@ -764,6 +848,12 @@ impl InkApp {
                     ("Ctrl + wheel, pinch".to_owned(), "Zoom around the pointer"),
                     ("Page Up / Page Down".to_owned(), "Scroll by one screen (a page in the PDF reader)"),
                     (shortcut(ctx, c, Key::O), "Open a PDF to read"),
+                    (shortcut(ctx, c, Key::C), "Copy the selected text"),
+                    (shortcut(ctx, c, Key::F), "Search the text"),
+                    (
+                        format!("{} / {}", shortcut(ctx, none, Key::F3), shortcut(ctx, Modifiers::SHIFT, Key::F3)),
+                        "Next / previous match",
+                    ),
                     ("Left / Right, Space".to_owned(), "PDF reader: previous / next page"),
                     ("Alt + Left, Backspace".to_owned(), "PDF reader: back after following a link"),
                     ("Home / End".to_owned(), "First / last page"),

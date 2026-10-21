@@ -2,18 +2,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Finding one's way in a note written on a PDF: the PDF's outline (its
-//! table of contents) and the links on its pages.
+//! table of contents), the links on its pages and their text (selecting,
+//! searching).
 //!
-//! Both are read in the background (`tratto_core::pdf_pages`): the outline
-//! once, the links of a page when it is first shown. They are kept while the
-//! note is open; `clear` forgets them when another note is opened.
+//! All are read in the background (`tratto_core::pdf_pages`): the outline
+//! once, the links and the text of a page when they are first wanted. They
+//! are kept while the note is open; `clear` forgets them when another note
+//! is opened.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui;
-use tratto_core::pdf_pages::{self, Outline, OutlineEntry, PageLink, PageLinks, PdfFile};
+use tratto_core::pdf_pages::{self, Outline, OutlineEntry, PageLink, PageLinks, PageText, PdfFile, TextChar};
 
 /// Something read in the background.
 pub enum Read<T> {
@@ -34,6 +36,12 @@ pub struct PdfNav {
     outlines: Receiver<Outline>,
     links_reply: Sender<PageLinks>,
     page_links: Receiver<PageLinks>,
+    /// By PDF page; an unreadable text counts as none.
+    texts: HashMap<u32, Read<Arc<Vec<TextChar>>>>,
+    text_reply: Sender<PageText>,
+    page_texts: Receiver<PageText>,
+    /// Bumped whenever a page's text arrives (for caches built on them).
+    texts_version: u64,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -41,6 +49,7 @@ impl Default for PdfNav {
     fn default() -> Self {
         let (outline_reply, outlines) = mpsc::channel();
         let (links_reply, page_links) = mpsc::channel();
+        let (text_reply, page_texts) = mpsc::channel();
         Self {
             key: None,
             outline: None,
@@ -49,6 +58,10 @@ impl Default for PdfNav {
             outlines,
             links_reply,
             page_links,
+            texts: HashMap::new(),
+            text_reply,
+            page_texts,
+            texts_version: 0,
             wake: None,
         }
     }
@@ -76,6 +89,12 @@ impl PdfNav {
                 self.links.insert(l.page, Read::Ready(l.links.unwrap_or_default()));
             }
         }
+        for t in self.page_texts.try_iter() {
+            if Some(t.key) == self.key {
+                self.texts.insert(t.page, Read::Ready(Arc::new(t.chars.unwrap_or_default())));
+                self.texts_version += 1;
+            }
+        }
     }
 
     /// Forgets everything (another note was opened).
@@ -83,6 +102,8 @@ impl PdfNav {
         self.key = None;
         self.outline = None;
         self.links.clear();
+        self.texts.clear();
+        self.texts_version += 1;
     }
 
     /// Starts over when `file` is not the PDF of what is kept.
@@ -117,5 +138,23 @@ impl PdfNav {
             Read::Ready(links) => links,
             _ => &[],
         }
+    }
+
+    /// The text of page `page` of `file`; `None` until it has been read
+    /// (asked for the first time it is wanted).
+    pub fn text(&mut self, file: &Arc<PdfFile>, page: u32) -> Option<Arc<Vec<TextChar>>> {
+        self.follow(file);
+        if !self.texts.contains_key(&page) {
+            pdf_pages::text(file, page, self.text_reply.clone(), self.wake());
+        }
+        match self.texts.entry(page).or_insert(Read::Reading) {
+            Read::Ready(chars) => Some(chars.clone()),
+            _ => None,
+        }
+    }
+
+    /// Changes whenever a page's text arrives or is forgotten.
+    pub fn texts_version(&self) -> u64 {
+        self.texts_version
     }
 }

@@ -21,6 +21,8 @@ pub enum LeftPanel {
     Settings,
     /// The table of contents of a note written on a PDF.
     Outline,
+    /// Searching the text.
+    Search,
 }
 
 impl LeftPanel {

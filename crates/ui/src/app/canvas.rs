@@ -330,6 +330,13 @@ impl InkApp {
         if let Some(y) = self.scroll_to.take() {
             self.ease_scroll(vec2(self.scroll.x, y));
         }
+        // Selecting text (the reader, the pointer tool), before taps and
+        // links: a click that drops a selection does nothing else.
+        let mut click_used = false;
+        if self.navigating() && !self.busy() {
+            let v = View::new(canvas, self.scroll, scale, layout);
+            click_used = self.text_input(ui.ctx(), &canvas_resp, &v, now);
+        }
         // The reader: links, under the pointer, show where they lead
         // and are followed by a tap; elsewhere a tap on the left or right
         // quarter of the view turns the page.
@@ -352,7 +359,7 @@ impl InkApp {
                     .show(|ui| ui.label(uri));
                 }
             }
-            if canvas_resp.clicked() {
+            if canvas_resp.clicked() && !click_used {
                 match (link, canvas_resp.interact_pointer_pos()) {
                     (Some((_, action)), _) => self.follow_link(ui.ctx(), action),
                     (None, Some(p)) => {
@@ -387,9 +394,10 @@ impl InkApp {
         if idle && !swallowed && canvas_resp.drag_started_by(PointerButton::Primary) {
             let start = press.or(canvas_resp.interact_pointer_pos());
             let v = View::new(canvas, self.scroll, scale, layout);
-            // The reader: everywhere; a note: only off the paper.
-            self.panning =
-                self.navigating() || start.is_some_and(|p| v.layout.page_at(v.screen_to_content(p)).is_none());
+            // The reader: everywhere (but not while selecting text); a note:
+            // only off the paper.
+            self.panning = !self.selecting_text()
+                && (self.navigating() || start.is_some_and(|p| v.layout.page_at(v.screen_to_content(p)).is_none()));
         }
         if self.panning {
             if canvas_resp.dragged() {
@@ -447,6 +455,7 @@ impl InkApp {
         }
 
         let view = View::new(canvas, self.scroll, scale, layout);
+        self.shown_content = (self.scroll.y, self.scroll.y + visible);
 
         // ---- pen / mouse input
         self.update_pressure(ui.ctx());
@@ -465,7 +474,6 @@ impl InkApp {
         // ---- right click: context menu for what is under the pointer
         let right_click = ui.input(|i| i.pointer.secondary_clicked());
         if right_click
-            && !self.reading()
             && !self.busy()
             && self.saved_tool.is_none()
             && ui.rect_contains_pointer(canvas)
@@ -541,6 +549,8 @@ impl InkApp {
 
         render::paint_strokes(&painter, &view, Layer::Ink, strokes, &mut self.cache, ppp, moved.as_ref());
         paint_live(StrokeKind::Pen);
+        // Selected text and search matches, over the pages.
+        self.paint_text_marks(&painter, &view);
 
         if let Some(rect) = link_under_pointer {
             painter.rect_filled(rect.expand(2.0), 2.0, color::accent_alpha(36));

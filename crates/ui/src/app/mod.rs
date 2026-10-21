@@ -10,6 +10,8 @@
 //! - `ink`            pen and highlighter strokes, the eraser
 //! - `selection`      lasso, select all, moving and deleting strokes
 //! - `text`           text boxes
+//! - `text_select`    the text of the pages: selecting and copying it
+//! - `search`         searching the text (the left panel's search view)
 //! - `pen_input`      native pen and drop events, pressure, the pen's eraser
 //! - `pages_panel`    the left panel strip and its pages view
 //! - `outline_ui`     the left panel's outline view (a PDF's contents)
@@ -60,9 +62,11 @@ mod notes;
 mod outline_ui;
 mod pages_panel;
 mod pen_input;
+mod search;
 mod selection;
 mod settings_ui;
 mod text;
+mod text_select;
 mod update_ui;
 
 use menus::{Command, ContextMenu, HelpWindows};
@@ -269,6 +273,13 @@ pub struct InkApp {
     /// Text box being typed into.
     edit: Option<EditState>,
     text_press: Option<TextPress>,
+    /// The text of the pages (PDF and text boxes), for selecting and searching.
+    text_layer: text_select::TextLayer,
+    /// Selected text (the reader, the pointer tool).
+    text_sel: Option<text_select::TextSelection>,
+    /// A press or drag selecting text, if one is going on.
+    text_gesture: Option<text_select::TextGesture>,
+    search: search::Search,
     /// Canvas context menu (right click), if open.
     context_menu: Option<ContextMenu>,
     /// The press that closed the context menu must not reach the canvas.
@@ -290,6 +301,8 @@ pub struct InkApp {
     notebook_focused: bool,
     /// Zoom of the last frame (points per document unit).
     view_scale: f32,
+    /// The content shown in the last frame, from top to bottom (content y).
+    shown_content: (f32, f32),
     /// Zoom factor requested by a menu command, applied around the centre.
     zoom_request: Option<f32>,
     /// New versions from the GitHub releases (checked at startup).
@@ -389,6 +402,10 @@ impl InkApp {
             last_fp: (0, 0, 0, 0, 0),
             edit: None,
             text_press: None,
+            text_layer: text_select::TextLayer::default(),
+            text_sel: None,
+            text_gesture: None,
+            search: search::Search::default(),
             context_menu: None,
             swallow_press: false,
             pending: Vec::new(),
@@ -406,6 +423,7 @@ impl InkApp {
             notebook_buf: String::new(),
             notebook_focused: false,
             view_scale: 1.0,
+            shown_content: (0.0, 0.0),
             zoom_request: None,
             updater: Updater::default(),
             file_picker: FilePicker::default(),
@@ -515,6 +533,7 @@ impl InkApp {
     fn editor_screen(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.pdf_nav.begin_frame(ctx);
+        self.search_step(ctx);
         self.handle_shortcuts(ctx);
 
         // Pen side button = eraser while held. Wayland pens report it through
