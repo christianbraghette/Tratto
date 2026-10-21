@@ -4,7 +4,8 @@
 //! Pictures: inserting them (pasted, from a file, dropped onto the canvas)
 //! and, with the select tool, picking, moving, resizing and deleting them.
 //!
-//! A tap on a picture picks it; dragging it moves it, dragging a corner
+//! A tap on a picture picks it; dragging it moves it, onto another page
+//! too (the one its middle is over, as a text box), dragging a corner
 //! resizes it (its proportions kept). A drag that starts on a picture not
 //! picked draws a lasso, as anywhere else: ink written on a picture can
 //! still be selected.
@@ -12,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
+use eframe::egui::{self, Color32, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::images;
@@ -21,7 +22,7 @@ use tratto_core::model::{Image, ImageData};
 use crate::file_picker::{Pick, Request};
 use crate::theme::color;
 use crate::toolbar::Tool;
-use crate::view::View;
+use crate::view::{Layout, View};
 
 use super::{InkApp, PathField};
 
@@ -78,16 +79,21 @@ fn within(v: f32, size: f32, extent: f32) -> f32 {
     if size <= extent { v.clamp(0.0, extent - size) } else { v.clamp(extent - size, 0.0) }
 }
 
-/// `from` dragged from `start` to `now` (its page's space), on a page of
-/// `size`: moved, kept on the page; or by `corner`, resized with the
-/// opposite corner where it was and its proportions kept.
-fn reshaped(from: &Image, corner: Option<usize>, start: Pos2, now: Pos2, (page_w, page_h): (f32, f32)) -> Image {
+/// `from` moved by `delta` (content space): onto the page its middle is
+/// then nearest to, kept on it.
+fn moved(from: &Image, delta: Vec2, layout: &Layout) -> Image {
+    let src = layout.page_origin(from.page).to_vec2();
+    let center = pos2(from.x + from.width * 0.5, from.y + from.height * 0.5) + src + delta;
+    let page = layout.page_nearest_y(center.y);
+    let local = pos2(from.x, from.y) + src + delta - layout.page_origin(page).to_vec2();
+    let (x, y) = (within(local.x, from.width, layout.page_w), within(local.y, from.height, layout.page_h));
+    Image { page, x, y, ..from.clone() }
+}
+
+/// `from` resized by its corner `k` dragged to `now` (its page's space):
+/// the opposite corner where it was and its proportions kept.
+fn resized(from: &Image, k: usize, now: Pos2) -> Image {
     let f = from;
-    let Some(k) = corner else {
-        let d = now - start;
-        let (x, y) = (within(f.x + d.x, f.width, page_w), within(f.y + d.y, f.height, page_h));
-        return Image { x, y, ..f.clone() };
-    };
     let (left, top) = (k == 0 || k == 3, k <= 1);
     let ax = if left { f.x + f.width } else { f.x };
     let ay = if top { f.y + f.height } else { f.y };
@@ -231,9 +237,14 @@ impl InkApp {
     /// The picture being dragged follows the pointer at `pos`.
     pub(super) fn drag_picture(&mut self, view: &View, pos: Pos2) {
         let Some(d) = self.picture_drag.as_mut() else { return };
-        let origin = view.layout.page_origin(d.from.page).to_vec2();
-        let (start, now) = (d.start - origin, view.screen_to_content(pos) - origin);
-        d.now = reshaped(&d.from, d.corner, start, now, (view.layout.page_w, view.layout.page_h));
+        let now = view.screen_to_content(pos);
+        d.now = match d.corner {
+            None => moved(&d.from, now - d.start, &view.layout),
+            Some(k) => {
+                let origin = view.layout.page_origin(d.from.page).to_vec2();
+                resized(&d.from, k, now - origin)
+            }
+        };
     }
 
     /// Lets go of the dragged picture: where it is now (undoable).
@@ -284,27 +295,42 @@ mod tests {
         Image { id: 1, page: 0, x: 100.0, y: 100.0, width: 200.0, height: 100.0, data }
     }
 
-    const PAGE: (f32, f32) = (800.0, 1000.0);
+    const LAYOUT: Layout = Layout { page_w: 800.0, page_h: 1000.0, count: 3 };
 
     #[test]
     fn moving_keeps_it_on_the_page() {
-        let moved = reshaped(&picture(), None, pos2(150.0, 150.0), pos2(170.0, 140.0), PAGE);
-        assert_eq!((moved.x, moved.y, moved.width), (120.0, 90.0, 200.0));
-        let far = reshaped(&picture(), None, pos2(150.0, 150.0), pos2(2000.0, -500.0), PAGE);
-        assert_eq!((far.x, far.y), (600.0, 0.0));
+        let m = moved(&picture(), vec2(20.0, -10.0), &LAYOUT);
+        assert_eq!((m.page, m.x, m.y, m.width), (0, 120.0, 90.0, 200.0));
+        let far = moved(&picture(), vec2(2000.0, -500.0), &LAYOUT);
+        assert_eq!((far.page, far.x, far.y), (0, 600.0, 0.0));
+    }
+
+    #[test]
+    fn moving_goes_onto_the_page_its_middle_is_over() {
+        let from = picture();
+        let to_page_1 = LAYOUT.page_top(1) - LAYOUT.page_top(0);
+        // Its middle onto page 1: there, at the same place on the page.
+        let m = moved(&from, vec2(0.0, to_page_1), &LAYOUT);
+        assert_eq!((m.page, m.x, m.y), (1, 100.0, 100.0));
+        // Half over the gap, its middle still on page 0: kept on page 0.
+        let low = moved(&from, vec2(0.0, 1000.0 - 150.0 - 10.0), &LAYOUT);
+        assert_eq!((low.page, low.y), (0, 900.0));
+        // Off the last page: on the last page.
+        let off = moved(&from, vec2(0.0, 10.0 * to_page_1), &LAYOUT);
+        assert_eq!((off.page, off.y), (2, 900.0));
     }
 
     #[test]
     fn resizing_keeps_the_opposite_corner_and_the_proportions() {
         // The bottom-right corner, pulled right: twice as wide, as tall.
-        let r = reshaped(&picture(), Some(2), pos2(300.0, 200.0), pos2(500.0, 200.0), PAGE);
+        let r = resized(&picture(), 2, pos2(500.0, 200.0));
         assert_eq!((r.x, r.y, r.width, r.height), (100.0, 100.0, 400.0, 200.0));
         // The top-left corner, pushed in: the bottom-right stays.
-        let r = reshaped(&picture(), Some(0), pos2(100.0, 100.0), pos2(200.0, 150.0), PAGE);
+        let r = resized(&picture(), 0, pos2(200.0, 150.0));
         assert_eq!((r.x + r.width, r.y + r.height), (300.0, 200.0));
         assert!((r.width / r.height - 2.0).abs() < 1e-4);
         // Never smaller than the smallest size.
-        let r = reshaped(&picture(), Some(2), pos2(300.0, 200.0), pos2(100.0, 100.0), PAGE);
+        let r = resized(&picture(), 2, pos2(100.0, 100.0));
         assert!(r.height >= MIN_SIZE - 1e-4);
     }
 

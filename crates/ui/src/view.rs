@@ -95,6 +95,14 @@ impl Layout {
         (((y - MARGIN) / self.stride()).floor().max(0.0) as u32).min(self.count.saturating_sub(1))
     }
 
+    /// The page nearest to the content-space height `y`: in the gap between
+    /// two pages, the closer one.
+    pub fn page_nearest_y(&self, y: f32) -> u32 {
+        let p = self.page_index_at_y(y);
+        let bottom = self.page_top(p) + self.page_h;
+        if y > bottom && p + 1 < self.count && y - bottom > self.page_top(p + 1) - y { p + 1 } else { p }
+    }
+
     /// The scroll offset that shows `page` from its top, margin included.
     pub fn page_stop(&self, page: u32) -> f32 {
         self.page_top(page) - MARGIN

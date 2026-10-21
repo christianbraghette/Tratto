@@ -29,8 +29,22 @@ use crate::stroke_mesh::{self, LiveMesh};
 use crate::theme::color;
 use crate::view::View;
 
-/// Pictures are shown no larger than this (pixels, on the longer side).
-const PICTURE_SIDE: u32 = 2048;
+/// Pictures are decoded at one of these sizes (pixels on the longer side):
+/// the smallest that covers the picture as shown, never larger than the
+/// picture (a page preview needs a fraction of what the page does).
+const PICTURE_LEVELS: [u32; 4] = [256, 512, 1024, 2048];
+/// Seconds a picture's texture may go unpainted before it is dropped. The
+/// smallest is kept while the note is open: shown at once when the picture
+/// comes back into view, until the sharper one is decoded again.
+const PICTURE_TTL: f64 = 30.0;
+
+/// The size to decode a picture `longest` pixels on its longer side, shown
+/// `shown` pixels large: the smallest level that covers it, at most the
+/// picture itself.
+fn picture_level(shown: f32, longest: u32) -> u32 {
+    let level = PICTURE_LEVELS.iter().copied().find(|&l| l as f32 >= shown).unwrap_or(PICTURE_LEVELS[3]);
+    level.min(longest.max(1))
+}
 
 /// A picture as it can be shown now.
 enum Picture {
@@ -41,53 +55,113 @@ enum Picture {
     Unreadable,
 }
 
-/// A decoded picture file (`None`: it cannot be read), by its key.
-type Decoded = (u64, Option<ColorImage>);
+/// A picture file decoded for a level (and maybe the smallest too; `None`:
+/// it cannot be read), by its key and that level.
+type Decoded = ((u64, u32), Option<Vec<(u32, ColorImage)>>);
 
-/// The pictures' textures, by their files' keys. A file is decoded in the
-/// background when first painted (a large photo would hold up the window),
-/// then made a texture; `None` for a file that cannot be read.
+struct PictureTexture {
+    texture: TextureHandle,
+    /// The smallest level of its picture: never dropped.
+    keep: bool,
+    /// When it was last painted (egui's time, seconds).
+    used_at: f64,
+}
+
+/// The pictures' textures, by their files' keys and levels. A file is
+/// decoded in the background when first painted (a large photo would hold up
+/// the window), at the level it is shown at, then made a texture; meanwhile
+/// the sharpest texture of it there is stands in.
 pub struct PictureTextures {
-    textures: HashMap<u64, Option<TextureHandle>>,
+    textures: HashMap<(u64, u32), PictureTexture>,
     /// Being decoded.
-    decoding: HashSet<u64>,
+    decoding: HashSet<(u64, u32)>,
+    unreadable: HashSet<u64>,
     decoded: (Sender<Decoded>, Receiver<Decoded>),
+    /// When unpainted textures were last dropped (egui's time).
+    swept_at: f64,
 }
 
 impl Default for PictureTextures {
     fn default() -> Self {
-        Self { textures: HashMap::new(), decoding: HashSet::new(), decoded: mpsc::channel() }
+        Self {
+            textures: HashMap::new(),
+            decoding: HashSet::new(),
+            unreadable: HashSet::new(),
+            decoded: mpsc::channel(),
+            swept_at: 0.0,
+        }
     }
 }
 
 impl PictureTextures {
-    fn texture(&mut self, ctx: &eframe::egui::Context, data: &Arc<ImageData>) -> Picture {
-        for (key, image) in self.decoded.1.try_iter() {
-            self.decoding.remove(&key);
-            // Mipmaps: smooth when shown small (page previews, zoomed out).
-            let options = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
-            let texture = image.map(|image| ctx.load_texture(format!("picture-{key:x}"), image, options));
-            self.textures.insert(key, texture);
+    /// Makes textures of the decoded pictures, and drops the ones unpainted
+    /// for `PICTURE_TTL` (not painted in this frame, so they can go).
+    fn update(&mut self, ctx: &eframe::egui::Context, now: f64) {
+        for ((key, want), levels) in self.decoded.1.try_iter() {
+            self.decoding.remove(&(key, want));
+            let Some(levels) = levels else {
+                self.unreadable.insert(key);
+                continue;
+            };
+            for (level, image) in levels {
+                // Mipmaps: smooth when shown smaller than decoded.
+                let options = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
+                let texture = ctx.load_texture(format!("picture-{key:x}-{level}"), image, options);
+                // The smallest level of any picture (a picture smaller than it has
+                // only one level).
+                let keep = level <= PICTURE_LEVELS[0];
+                self.textures.insert((key, level), PictureTexture { texture, keep, used_at: now });
+            }
         }
-        match self.textures.get(&data.key) {
-            Some(Some(t)) => return Picture::Ready(t.id()),
-            Some(None) => return Picture::Unreadable,
-            None => {}
+        if now - self.swept_at >= 1.0 {
+            self.swept_at = now;
+            self.textures.retain(|_, t| t.keep || now - t.used_at < PICTURE_TTL);
         }
-        if self.decoding.insert(data.key) {
+    }
+
+    /// The texture to paint `data` with, shown `shown` pixels large.
+    fn texture(&mut self, ctx: &eframe::egui::Context, data: &Arc<ImageData>, shown: f32) -> Picture {
+        let now = ctx.input(|i| i.time);
+        self.update(ctx, now);
+        let key = data.key;
+        if self.unreadable.contains(&key) {
+            return Picture::Unreadable;
+        }
+        let longest = data.width.max(data.height);
+        let want = picture_level(shown, longest);
+        let has = |textures: &HashMap<(u64, u32), PictureTexture>| textures.keys().any(|(k, _)| *k == key);
+        // One decode of a picture at a time: zooming through several levels
+        // decodes the one wanted once the previous is done, not every one.
+        if !self.textures.contains_key(&(key, want)) && !self.decoding.iter().any(|(k, _)| *k == key) {
+            // The first time, the smallest level too (from the same decode).
+            let smallest = picture_level(0.0, longest);
+            let levels: Vec<u32> =
+                if has(&self.textures) || want == smallest { vec![want] } else { vec![want, smallest] };
+            self.decoding.insert((key, want));
             let (data, done, ctx) = (data.clone(), self.decoded.0.clone(), ctx.clone());
             std::thread::spawn(move || {
-                let image = data.decode(PICTURE_SIDE).ok().map(|rgba| {
-                    let size = [rgba.width() as usize, rgba.height() as usize];
-                    ColorImage::from_rgba_unmultiplied(size, rgba.as_raw())
+                let images = data.decode_sizes(&levels).ok().map(|images| {
+                    let made = images.iter().map(|rgba| {
+                        let size = [rgba.width() as usize, rgba.height() as usize];
+                        ColorImage::from_rgba_unmultiplied(size, rgba.as_raw())
+                    });
+                    levels.iter().copied().zip(made).collect()
                 });
                 // The note may have been closed meanwhile: then nobody waits.
-                if done.send((data.key, image)).is_ok() {
+                if done.send(((data.key, want), images)).is_ok() {
                     ctx.request_repaint();
                 }
             });
         }
-        Picture::Decoding
+        // The level wanted, else the sharpest there is meanwhile.
+        let best = self.textures.iter_mut().filter(|((k, _), _)| *k == key).max_by_key(|((_, l), _)| (*l == want, *l));
+        match best {
+            Some((_, t)) => {
+                t.used_at = now;
+                Picture::Ready(t.texture.id())
+            }
+            None => Picture::Decoding,
+        }
     }
 
     /// Paints the pictures of `page`, whose top-left corner is at `origin`
@@ -102,13 +176,18 @@ impl PictureTextures {
         scale: f32,
         moved: Option<&Image>,
     ) {
-        for img in images.iter().filter(|i| i.page == page) {
+        for img in images {
+            // The one moved where it is now, maybe on another page.
             let img = moved.filter(|m| m.id == img.id).unwrap_or(img);
+            if img.page != page {
+                continue;
+            }
             let rect = Rect::from_min_size(origin + vec2(img.x, img.y) * scale, vec2(img.width, img.height) * scale);
             if !rect.intersects(painter.clip_rect()) {
                 continue;
             }
-            match self.texture(painter.ctx(), &img.data) {
+            let shown = rect.width().max(rect.height()) * painter.ctx().pixels_per_point();
+            match self.texture(painter.ctx(), &img.data, shown) {
                 Picture::Ready(tex) => {
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                     painter.image(tex, rect, uv, Color32::WHITE);
@@ -658,6 +737,50 @@ pub fn paint_eraser_cursor(painter: &Painter, center: Pos2, radius_px: f32) {
 mod tests {
     use super::*;
     use tratto_core::model::Point;
+
+    #[test]
+    fn pictures_are_decoded_as_large_as_shown() {
+        assert_eq!(picture_level(100.0, 4000), 256, "a page preview");
+        assert_eq!(picture_level(700.0, 4000), 1024);
+        assert_eq!(picture_level(1024.0, 4000), 1024);
+        assert_eq!(picture_level(5000.0, 4000), 2048, "never past the largest level");
+        assert_eq!(picture_level(700.0, 600), 600, "never larger than the picture");
+        assert_eq!(picture_level(0.0, 100), 100);
+    }
+
+    #[test]
+    fn picture_textures_follow_the_size_shown() {
+        let ctx = eframe::egui::Context::default();
+        let data = ImageData::from_rgba(1000, 500, vec![200; 1000 * 500 * 4]).unwrap();
+        let mut tex = PictureTextures::default();
+        // Waits for the decodes asked for, at `now`.
+        let settle = |tex: &mut PictureTextures, now: f64| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !tex.decoding.is_empty() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+                tex.update(&ctx, now);
+            }
+        };
+        let levels = |tex: &PictureTextures| {
+            let mut l: Vec<u32> = tex.textures.keys().map(|(_, l)| *l).collect();
+            l.sort();
+            l
+        };
+
+        // A page preview: decoded small, nothing shown meanwhile.
+        assert!(matches!(tex.texture(&ctx, &data, 120.0), Picture::Decoding));
+        settle(&mut tex, 0.0);
+        assert_eq!(levels(&tex), [256]);
+
+        // Zoomed in: the small one stands in while the sharp one is decoded.
+        assert!(matches!(tex.texture(&ctx, &data, 900.0), Picture::Ready(_)));
+        settle(&mut tex, 0.0);
+        assert_eq!(levels(&tex), [256, 1000], "never larger than the picture");
+
+        // Unpainted for a while: only the small one stays.
+        tex.update(&ctx, PICTURE_TTL + 1.0);
+        assert_eq!(levels(&tex), [256]);
+    }
 
     fn stroke(id: u64, x: f32, kind: StrokeKind) -> Stroke {
         let pts = (0..12).map(|i| Point::new(x + i as f32 * 3.0, (i as f32).sin() * 5.0, 0.5)).collect();

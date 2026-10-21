@@ -85,6 +85,20 @@ impl ImageData {
         };
         Ok(img.into_rgba8())
     }
+
+    /// Its pixels, RGBA, at each of `max_sides` (as [`Self::decode`]), the
+    /// file decoded once.
+    pub fn decode_sizes(&self, max_sides: &[u32]) -> Result<Vec<RgbaImage>, ImageError> {
+        let img = image::load_from_memory(&self.bytes).map_err(broken)?;
+        let sized = |side: u32| {
+            if img.width().max(img.height()) > side {
+                img.resize(side, side, FilterType::Triangle).into_rgba8()
+            } else {
+                img.to_rgba8()
+            }
+        };
+        Ok(max_sides.iter().map(|&side| sized(side)).collect())
+    }
 }
 
 /// `img`, no larger than [`MAX_SIDE`].
