@@ -250,6 +250,40 @@ impl Settings {
     pub fn forget_pdf(&mut self, path: &str) {
         self.recent_pdfs.retain(|p| p != path);
     }
+
+    /// What a reader-only window saves into the settings as other windows
+    /// left them (`self`): where the `pdfs` it read were left, the PDFs as
+    /// recently opened, and its preferences if they were changed in that
+    /// window (`reader` now, `start` when it opened). The rest (the open
+    /// note, the library) is the other windows'.
+    pub fn merge_reader(&mut self, reader: &Settings, start: &Settings, pdfs: &[String]) {
+        if reader.preferences() != start.preferences() {
+            let state = std::mem::replace(self, reader.clone());
+            self.zoom = state.zoom;
+            self.last_note = state.last_note;
+            self.note_views = state.note_views;
+            self.recent_pdfs = state.recent_pdfs;
+        }
+        for pdf in pdfs {
+            if let Some(view) = reader.note_view(pdf) {
+                self.set_note_view(pdf, view);
+            }
+            self.pdf_opened(pdf);
+        }
+    }
+
+    /// The settings without what changes by itself while reading (the zoom
+    /// of the PDF, the open note, places, recent PDFs), for comparing.
+    fn preferences(&self) -> String {
+        let prefs = Settings {
+            zoom: ZoomMode::Percent(100),
+            last_note: None,
+            note_views: Vec::new(),
+            recent_pdfs: Vec::new(),
+            ..self.clone()
+        };
+        ron::to_string(&prefs).unwrap_or_default()
+    }
 }
 
 impl Default for Settings {
@@ -326,6 +360,36 @@ mod tests {
         }
         assert_eq!(s.note_views.len(), NOTE_VIEWS);
         assert_eq!(s.note_view("b.ink"), None, "the least recent is forgotten");
+    }
+
+    #[test]
+    fn reader_window_saves_only_what_it_changed() {
+        let start = Settings::default();
+        // Meanwhile the full app opened a note and changed a preference.
+        let mut disk = start.clone();
+        disk.last_note = Some("lib/Plan.ink".into());
+        disk.scroll_speed = 2.0;
+
+        // The reader read a PDF, zooming as it went.
+        let mut reader = start.clone();
+        reader.zoom = ZoomMode::FitWidth;
+        reader.set_note_view("a.pdf", view(4.0));
+        reader.pdf_opened("a.pdf");
+        reader.last_note = Some("a.pdf".into());
+        let mut saved = disk.clone();
+        saved.merge_reader(&reader, &start, &["a.pdf".into()]);
+        assert_eq!((saved.last_note.as_deref(), saved.scroll_speed), (Some("lib/Plan.ink"), 2.0));
+        assert_eq!(
+            (saved.note_view("a.pdf"), saved.recent_pdfs.as_slice()),
+            (Some(view(4.0)), ["a.pdf".into()].as_slice())
+        );
+
+        // A preference changed in the reader is kept, the library state too.
+        reader.ui_scale = 1.5;
+        let mut saved = disk.clone();
+        saved.merge_reader(&reader, &start, &["a.pdf".into()]);
+        assert_eq!((saved.ui_scale, saved.last_note.as_deref()), (1.5, Some("lib/Plan.ink")));
+        assert_eq!(saved.note_view("a.pdf"), Some(view(4.0)));
     }
 
     #[test]

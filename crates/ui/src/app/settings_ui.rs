@@ -15,6 +15,7 @@ use tratto_core::model::{PAPERS, PageKind, paper_label};
 
 use super::InkApp;
 use super::library_ui::{Dialog, location, when};
+use crate::file_assoc;
 use crate::settings::ToolbarPosition;
 use crate::theme::{self, color, space};
 
@@ -192,9 +193,30 @@ impl InkApp {
     fn global_settings(&mut self, ui: &mut Ui) {
         let mut change_folder = false;
         let mut reset = false;
+        // Some(true): register for PDFs, Some(false): unregister.
+        let mut pdf_reader = None;
+        let standalone = self.standalone.is_some();
         let vsync_now = self.frame_limit.vsync();
         let fps_overridden = self.frame_limit.overridden();
         let s = &mut self.settings;
+
+        if file_assoc::SUPPORTED {
+            section(ui, "PDF reader");
+            let registered = file_assoc::is_registered();
+            rows(ui, "global_pdf_reader", |ui| {
+                row(ui, "Open PDFs", |ui| {
+                    if registered {
+                        ui.label(format!("{}  With Tratto", icon::CHECK));
+                        if ui.button("Stop").on_hover_text("Tratto no longer opens PDFs").clicked() {
+                            pdf_reader = Some(false);
+                        }
+                    } else if ui.button(format!("{}  Use Tratto", icon::BOOK_OPEN)).clicked() {
+                        pdf_reader = Some(true);
+                    }
+                });
+            });
+            hint(ui, "A PDF opened from the system gets a window of its own, for reading.");
+        }
 
         section(ui, "Appearance");
         rows(ui, "global_appearance", |ui| {
@@ -309,20 +331,24 @@ impl InkApp {
         });
         hint(ui, "Notes are written this long after the last change; a backup copy is kept.");
 
-        section(ui, "Library");
-        rows(ui, "global_library", |ui| {
-            row(ui, "Folder", |ui| {
-                ui.add(egui::Label::new(theme::muted(&s.library_root)).truncate()).on_hover_text(&s.library_root);
+        // A reader-only window has no library.
+        if !standalone {
+            section(ui, "Library");
+            rows(ui, "global_library", |ui| {
+                row(ui, "Folder", |ui| {
+                    ui.add(egui::Label::new(theme::muted(&s.library_root)).truncate()).on_hover_text(&s.library_root);
+                });
+                row(ui, "", |ui| {
+                    if ui.button(format!("{}  Change...", icon::FOLDER_OPEN)).clicked() {
+                        change_folder = true;
+                    }
+                });
+                row(ui, "Recent notes", |ui| {
+                    ui.add(DragValue::new(&mut s.recent_count).range(4..=48))
+                        .on_hover_text("Shown on the library screen");
+                });
             });
-            row(ui, "", |ui| {
-                if ui.button(format!("{}  Change...", icon::FOLDER_OPEN)).clicked() {
-                    change_folder = true;
-                }
-            });
-            row(ui, "Recent notes", |ui| {
-                ui.add(DragValue::new(&mut s.recent_count).range(4..=48)).on_hover_text("Shown on the library screen");
-            });
-        });
+        }
 
         ui.add_space(space::L);
         ui.separator();
@@ -333,6 +359,15 @@ impl InkApp {
             ui.label(RichText::new("Keeps the library folder and the panels.").small().color(color::TEXT_FAINT));
         });
 
+        match pdf_reader.map(|on| (on, if on { file_assoc::register() } else { file_assoc::unregister() })) {
+            Some((true, Ok(()))) => {
+                self.toast(file_assoc::REGISTER_HINT);
+                file_assoc::open_default_apps();
+            }
+            Some((false, Ok(()))) => self.toast("Tratto no longer opens PDFs"),
+            Some((_, Err(e))) => self.toast(e),
+            None => {}
+        }
         if change_folder {
             self.show_dialog(Dialog::Folder(self.settings.library_root.clone()));
         }

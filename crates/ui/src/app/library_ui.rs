@@ -135,6 +135,8 @@ pub(super) enum Act {
     Sort(LibrarySort),
     NewNote(PathBuf),
     OpenNotebook(PathBuf),
+    /// Stop showing an external notebook (its folder is left alone).
+    CloseNotebook(PathBuf),
     Home,
     SelectSection(Option<PathBuf>),
     Dialog(Dialog),
@@ -394,7 +396,12 @@ impl InkApp {
                                     text: nb.name.clone(),
                                 }));
                             }
-                            if ui.button(icon::TRASH).on_hover_text("Delete notebook").clicked() {
+                            if nb.external {
+                                let tip = format!("Close the notebook (the folder stays in {})", parent_name(&nb.path));
+                                if ui.button(icon::X).on_hover_text(tip).clicked() {
+                                    acts.push(Act::CloseNotebook(nb.path.clone()));
+                                }
+                            } else if ui.button(icon::TRASH).on_hover_text("Delete notebook").clicked() {
                                 acts.push(Act::Dialog(Dialog::Trash { path: nb.path.clone(), label: nb.name.clone() }));
                             }
                         }
@@ -733,6 +740,14 @@ impl InkApp {
                 self.lib_ui.section = None;
                 self.lib_ui.search.clear();
             }
+            Act::CloseNotebook(p) => {
+                self.external_notebooks.retain(|e| *e != p);
+                if self.lib_ui.notebook.as_ref() == Some(&p) {
+                    self.lib_ui.notebook = None;
+                    self.lib_ui.section = None;
+                }
+                self.refresh_library();
+            }
             Act::Home => self.apply_act(Act::Show(LibView::Home)),
             Act::Show(view) => {
                 self.lib_ui.view = view;
@@ -775,6 +790,9 @@ impl InkApp {
             Act::RenameDir(path, name) => match library::rename_dir(&path, &name) {
                 Ok(new) => {
                     self.settings.moved(&path, &new);
+                    for nb in self.external_notebooks.iter_mut().filter(|nb| **nb == path) {
+                        nb.clone_from(&new);
+                    }
                     // The open note moved with its notebook / section.
                     if let Some(rel) = self.note_path.as_ref().and_then(|p| p.strip_prefix(&path).ok()) {
                         self.note_path = Some(new.join(rel));
@@ -1299,10 +1317,21 @@ fn notebook_menu(ui: &mut Ui, nb: &NotebookInfo, acts: &mut Vec<Act>) {
         ui.close();
     }
     ui.separator();
-    if entry(ui, icon::TRASH, "Delete...", "", true) {
+    if nb.external {
+        if entry(ui, icon::X, "Close", "", true) {
+            acts.push(Act::CloseNotebook(nb.path.clone()));
+            ui.close();
+        }
+    } else if entry(ui, icon::TRASH, "Delete...", "", true) {
         acts.push(Act::Dialog(Dialog::Trash { path: nb.path.clone(), label: nb.name.clone() }));
         ui.close();
     }
+}
+
+/// The name of the folder that holds `path`, or the whole path of a drive.
+fn parent_name(path: &Path) -> String {
+    let parent = path.parent().unwrap_or(path);
+    parent.file_name().map_or_else(|| parent.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 // ------------------------------------------------------------------ cards
@@ -1504,13 +1533,14 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// "Notebook › Section", or "Quick notes" for notes at the library root.
 pub(super) fn location(root: &Path, note: &Path) -> String {
-    let rel = note.parent().and_then(|p| p.strip_prefix(root).ok());
-    match rel {
-        Some(r) if r.components().count() > 0 => {
-            r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join(" › ")
-        }
-        _ => "Quick notes".to_owned(),
+    let Some(rel) = note.parent().and_then(|p| p.strip_prefix(root).ok()) else {
+        // Outside the library (an external notebook): its folder.
+        return parent_name(note);
+    };
+    if rel.components().count() == 0 {
+        return "Quick notes".to_owned();
     }
+    rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join(" › ")
 }
 
 /// Relative time for recent changes, calendar date (UTC) for older ones.
@@ -1615,5 +1645,6 @@ mod tests {
         let root = Path::new("/lib");
         assert_eq!(location(root, Path::new("/lib/a.ink")), "Quick notes");
         assert_eq!(location(root, Path::new("/lib/Work/Plans/a.ink")), "Work › Plans");
+        assert_eq!(location(root, Path::new("/home/me/Thesis/a.ink")), "Thesis");
     }
 }

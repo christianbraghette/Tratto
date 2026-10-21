@@ -338,6 +338,7 @@ fn window_button(ui: &mut Ui, style: Style, glyph: &str, close: bool, height: f3
 /// Resize borders along the window edges and a 1 px outline. Call it last,
 /// so the borders are on top of the other floating elements.
 pub fn window_frame(ctx: &egui::Context, state: WindowState) {
+    sync_dwm_border(state.fullscreen);
     if !state.frame_controls() || state.maximized {
         return;
     }
@@ -405,39 +406,74 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
 
 /// Windows 11: has DWM round the window's corners (it only does so by itself
 /// for windows with system decorations) and draw its 1 px border in the
-/// outline colour. DWM keeps maximized and fullscreen windows square. Does
+/// outline colour (off in fullscreen, see `sync_dwm_border`). DWM keeps
+/// maximized and fullscreen windows square. Does
 /// nothing elsewhere; on Windows 10 the app keeps drawing its own outline.
 pub fn round_corners(frame: &eframe::Frame) {
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-        // dwmapi.h, declared here so they need no optional windows-sys feature.
-        const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-        const DWMWA_BORDER_COLOR: u32 = 34;
-        const DWMWCP_ROUND: u32 = 2;
-        #[link(name = "dwmapi")]
-        unsafe extern "system" {
-            fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const core::ffi::c_void, size: u32) -> i32;
-        }
-
         let Ok(handle) = frame.window_handle() else { return };
         let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
         let hwnd = h.hwnd.get();
-        let set = |attribute: u32, value: u32| {
-            // SAFETY: a valid HWND of our own window and a u32 value, as the
-            // attributes expect.
-            unsafe { DwmSetWindowAttribute(hwnd, attribute, (&raw const value).cast(), 4) == 0 }
-        };
-        if set(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND) {
-            // COLORREF is 0x00BBGGRR.
-            let [r, g, b, _] = color::BORDER_STRONG.to_array();
-            set(DWMWA_BORDER_COLOR, u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16);
+        if dwm::set(hwnd, dwm::WINDOW_CORNER_PREFERENCE, dwm::CORNER_ROUND) {
+            dwm::HWND.store(hwnd, Ordering::Relaxed);
+            dwm::set(hwnd, dwm::BORDER_COLOR, dwm::outline());
             DWM_FRAME.store(true, Ordering::Relaxed);
         }
     }
     #[cfg(not(windows))]
     let _ = frame;
+}
+
+/// Windows 11: DWM keeps drawing the border colour on the borderless
+/// fullscreen window, so it is turned off there and back on when leaving.
+fn sync_dwm_border(fullscreen: bool) {
+    #[cfg(windows)]
+    {
+        if !DWM_FRAME.load(Ordering::Relaxed) || dwm::FULLSCREEN.swap(fullscreen, Ordering::Relaxed) == fullscreen {
+            return;
+        }
+        let color = if fullscreen { dwm::COLOR_NONE } else { dwm::outline() };
+        dwm::set(dwm::HWND.load(Ordering::Relaxed), dwm::BORDER_COLOR, color);
+    }
+    #[cfg(not(windows))]
+    let _ = fullscreen;
+}
+
+#[cfg(windows)]
+mod dwm {
+    use std::sync::atomic::{AtomicBool, AtomicIsize};
+
+    use crate::theme::color;
+
+    // dwmapi.h, declared here so they need no optional windows-sys feature.
+    pub const WINDOW_CORNER_PREFERENCE: u32 = 33;
+    pub const BORDER_COLOR: u32 = 34;
+    pub const CORNER_ROUND: u32 = 2;
+    pub const COLOR_NONE: u32 = 0xFFFF_FFFE;
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const core::ffi::c_void, size: u32) -> i32;
+    }
+
+    /// Our window, once `round_corners` has run.
+    pub static HWND: AtomicIsize = AtomicIsize::new(0);
+    /// The border colour is currently off for fullscreen.
+    pub static FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+    pub fn set(hwnd: isize, attribute: u32, value: u32) -> bool {
+        // SAFETY: a valid HWND of our own window and a u32 value, as the
+        // attributes expect.
+        unsafe { DwmSetWindowAttribute(hwnd, attribute, (&raw const value).cast(), 4) == 0 }
+    }
+
+    /// The outline colour as a COLORREF (0x00BBGGRR).
+    pub fn outline() -> u32 {
+        let [r, g, b, _] = color::BORDER_STRONG.to_array();
+        u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16
+    }
 }
 
 #[cfg(test)]

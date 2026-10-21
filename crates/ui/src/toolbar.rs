@@ -254,9 +254,9 @@ fn edge_notch_shape(rect: Rect, at: Edge, fill: Color32) -> Shape {
 /// Call with the root `ui` after the side panels: what is left of it is the
 /// canvas area then.
 /// `note_settings`: the settings notch is shown (not for a PDF in the
-/// reader). `bottom_inset` keeps the bottom notch above the horizontal
+/// reader); `library`: the library notch (not in a reader-only window). `bottom_inset` keeps the bottom notch above the horizontal
 /// scrollbar.
-pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool, bottom_inset: f32) {
+pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool, library: bool, bottom_inset: f32) {
     let ctx = ui.ctx();
     let free = ui.available_rect_before_wrap();
 
@@ -267,10 +267,10 @@ pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool,
     // Against the vertical scrollbar, which always occupies the right edge of
     // the canvas (and, being the same surface, joins the library panel).
     let right = pos2(free.right() - scrollbar::THICKNESS, free.top());
-    if settings.library_panel_open {
+    if library && settings.library_panel_open {
         joins.add(fillet(right, -1.0, 1.0, color::CHROME));
         joins.add(fillet(pos2(right.x, free.bottom() - bottom_inset), -1.0, -1.0, color::CHROME));
-    } else {
+    } else if library {
         notch(ctx, "corner_notch_library", Corner::TopRight, right, |ui| {
             library_button(ui, &mut settings.library_panel_open);
         });

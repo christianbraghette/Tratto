@@ -37,6 +37,8 @@ pub(super) enum Command {
     ImportPdf,
     /// A PDF to read (the reader).
     OpenPdf,
+    /// The PDF in the reader becomes a note to write on.
+    WriteOnPdf,
     LibraryFolder,
     Save,
     ExportPdf,
@@ -152,8 +154,13 @@ impl InkApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             }
         }
-        // System decorations off while the custom title bar is used.
-        let decorations = !self.settings.custom_title_bar;
+        // System decorations off while the custom title bar is used. In
+        // fullscreen they are on: the window has no frame there anyway, and
+        // winit's undecorated window starts its client area 1 px below the
+        // screen top (room for the drop shadow), so the top row would miss
+        // the pointer that reveals the bar.
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
+        let decorations = !self.settings.custom_title_bar || fullscreen;
         if self.chrome.decorations != Some(decorations) {
             self.chrome.decorations = Some(decorations);
             ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(decorations));
@@ -265,6 +272,10 @@ impl InkApp {
 
         ui.menu_button("File", |ui| {
             open = true;
+            if self.standalone.is_some() {
+                self.reader_file_menu(ui, &mut |ui, c| push(true, ui, c));
+                return;
+            }
             push(entry(ui, icon::NOTE_PENCIL, "New note", &shortcut(&ctx, cmd, Key::N), true), ui, Command::NewNote);
             push(
                 entry(ui, icon::LIGHTNING, "Quick note", &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::N), true),
@@ -371,6 +382,27 @@ impl InkApp {
             push(entry(ui, icon::INFO, "About Tratto", "", true), ui, Command::About);
         });
         open
+    }
+
+    /// The File menu of a reader-only window: other PDFs, writing on this
+    /// one (the window becomes the full app), closing.
+    fn reader_file_menu(&self, ui: &mut Ui, push: &mut dyn FnMut(&mut Ui, Command)) {
+        let ctx = ui.ctx().clone();
+        let cmd = Modifiers::COMMAND;
+        if entry(ui, icon::BOOK_OPEN, "Open PDF...", &shortcut(&ctx, cmd, Key::O), true) {
+            push(ui, Command::OpenPdf);
+        }
+        if entry(ui, icon::FILE_ARROW_DOWN, "Write on this PDF", "", self.reading()) {
+            push(ui, Command::WriteOnPdf);
+        }
+        ui.separator();
+        if entry(ui, icon::GEAR_SIX, "Settings...", &shortcut(&ctx, cmd, Key::Comma), true) {
+            push(ui, Command::Settings);
+        }
+        ui.separator();
+        if entry(ui, icon::X, "Close", &shortcut(&ctx, cmd, Key::W), true) {
+            push(ui, Command::Quit);
+        }
     }
 
     /// Undo / redo and the selection entries (Edit menu and context menu).
@@ -502,6 +534,7 @@ impl InkApp {
     /// Shortcuts of menu commands that are not handled by the editor itself.
     pub(super) fn menu_shortcuts(&mut self, ctx: &egui::Context) {
         let editor = self.screen == Screen::Editor;
+        let standalone = self.standalone.is_some();
         let typing = self.edit.is_some() || ctx.egui_wants_keyboard_input();
         let cmd = Modifiers::COMMAND;
         let found: Vec<Command> = ctx.input_mut(|i| {
@@ -512,12 +545,14 @@ impl InkApp {
             if i.consume_key(cmd, Key::Q) {
                 out.push(Command::Quit);
             }
-            // Before Ctrl+N, which would also match Ctrl+Shift+N.
-            if i.consume_key(cmd | Modifiers::SHIFT, Key::N) {
-                out.push(Command::QuickNote);
-            }
-            if i.consume_key(cmd, Key::N) {
-                out.push(Command::NewNote);
+            // Before Ctrl+N, which would also match Ctrl+Shift+N. A
+            // reader-only window makes no notes.
+            if !standalone {
+                if i.consume_key(cmd | Modifiers::SHIFT, Key::N) {
+                    out.push(Command::QuickNote);
+                } else if i.consume_key(cmd, Key::N) {
+                    out.push(Command::NewNote);
+                }
             }
             if i.consume_key(cmd, Key::Comma) {
                 out.push(Command::Settings);
@@ -554,6 +589,18 @@ impl InkApp {
     pub(super) fn run_command(&mut self, ctx: &egui::Context, cmd: Command) {
         let editor = self.screen == Screen::Editor;
         match cmd {
+            // A reader-only window: other PDFs open in it, closing closes it,
+            // and nothing of the library is there.
+            Command::OpenPdf if self.standalone.is_some() => self.show_dialog(Dialog::OpenPdf(String::new())),
+            Command::CloseNote if self.standalone.is_some() => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Command::NewNote
+            | Command::QuickNote
+            | Command::NewNotebook
+            | Command::Import
+            | Command::ImportPdf
+            | Command::LibraryFolder
+                if self.standalone.is_some() => {}
+            Command::WriteOnPdf => self.import_open_pdf(),
             Command::NewNote => {
                 let dir = match (&self.note_path, editor) {
                     (Some(p), true) => p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.library_root()),
@@ -674,15 +721,16 @@ impl InkApp {
                     ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::ACCENT));
                     ui.label(theme::title("Tratto"));
                     ui.label(theme::muted(format!("Version {}", crate::update::CURRENT)));
-                    ui.add_space(6.0);
-                    ui.label(env!("CARGO_PKG_DESCRIPTION"));
                     ui.add_space(10.0);
+                    ui.label(env!("CARGO_PKG_DESCRIPTION"));
+                    ui.add_space(20.0);
                     ui.label("Copyright © 2026 Christian Braghette");
-                    ui.label("Free software under the GNU AGPL v3 or later.");
-                    ui.label("Commercial licenses are also available.");
-                    ui.add_space(6.0);
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("Free software under the GNU AGPL v3 or later.").small().color(color::TEXT_MUTED));
+                    ui.label(RichText::new("Commercial licenses are also available.").small().color(color::TEXT_MUTED));
+                    ui.add_space(5.0);
                     ui.hyperlink_to("Source code and license", env!("CARGO_PKG_REPOSITORY"));
-                    ui.add_space(6.0);
+                    ui.add_space(15.0);
                     ui.label(
                         RichText::new("Font: Inter (OFL) · Icons: Phosphor (MIT)").small().color(color::TEXT_FAINT),
                     );

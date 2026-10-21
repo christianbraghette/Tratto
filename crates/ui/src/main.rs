@@ -22,6 +22,7 @@
 //! - `theme`          design system: colours, sizes, fonts, shared components
 //! - `input`          native pen input (Wayland tablet, Windows pen buttons)
 //! - `desktop`        the desktop's window button layout (Linux portal)
+//! - `file_assoc`     Tratto as the system's PDF reader (file associations)
 //! - `file_picker`    the system's file dialogs, off the UI thread
 //! - `frame_limit`    frame rate cap when vsync is off
 //! - `saver`          saves the open note on a background thread
@@ -36,6 +37,7 @@ mod app;
 mod bench;
 mod chrome;
 mod desktop;
+mod file_assoc;
 mod file_picker;
 mod frame_limit;
 mod input;
@@ -78,9 +80,81 @@ fn attach_console() {
     }
 }
 
+const USAGE: &str = "Usage: tratto [--reader] [PATH]
+       tratto --register-pdf | --unregister-pdf
+
+  PATH              a PDF to read, a note (.ink) to open, or a folder to
+                    open as a notebook (a folder outside the library is
+                    shown for this session)
+  --reader          a PDF opens in a window of its own, for reading only
+                    (how the system opens PDFs with Tratto)
+  --register-pdf    makes Tratto the app that opens PDFs, for this user
+  --unregister-pdf  takes Tratto off the apps that open PDFs";
+
+/// What the command line asks for.
+#[derive(Debug, PartialEq)]
+enum Run {
+    /// The app, with the path to open (absolute) and whether a PDF opens in
+    /// the reader-only window.
+    App {
+        open: Option<std::path::PathBuf>,
+        reader: bool,
+    },
+    /// `--register-pdf` (true) / `--unregister-pdf` (false), then quit.
+    RegisterPdf(bool),
+    Help,
+}
+
+/// Reads the arguments (after the program's name); `Err` with the message
+/// to print and quit.
+fn parse_args(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Run, String> {
+    let (mut open, mut reader) = (None, false);
+    for arg in args {
+        match arg.to_str() {
+            Some("-h" | "--help") => return Ok(Run::Help),
+            Some("--register-pdf") => return Ok(Run::RegisterPdf(true)),
+            Some("--unregister-pdf") => return Ok(Run::RegisterPdf(false)),
+            Some("--reader") => reader = true,
+            Some(flag) if flag.starts_with("--") => return Err(format!("tratto: unknown option {flag}\n\n{USAGE}")),
+            _ if open.is_some() => return Err(format!("tratto: only one path can be opened\n\n{USAGE}")),
+            _ => {
+                let path = std::path::absolute(&arg).map_err(|e| format!("tratto: {}: {e}", arg.to_string_lossy()))?;
+                open = Some(path);
+            }
+        }
+    }
+    Ok(Run::App { open, reader })
+}
+
 fn main() -> eframe::Result<()> {
     #[cfg(windows)]
     attach_console();
+    let (open, reader) = match parse_args(std::env::args_os().skip(1)) {
+        Ok(Run::App { open, reader }) => (open, reader),
+        Ok(Run::Help) => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Ok(Run::RegisterPdf(on)) => {
+            let done = if on { file_assoc::register() } else { file_assoc::unregister() };
+            match done {
+                Ok(()) if on => {
+                    println!("Tratto is registered for PDFs. {}", file_assoc::REGISTER_HINT);
+                    file_assoc::open_default_apps();
+                }
+                Ok(()) => println!("Tratto no longer opens PDFs."),
+                Err(e) => {
+                    eprintln!("tratto: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
     update::remove_leftovers();
 
     // Low-latency presentation by default: no vsync wait and at most one frame
@@ -122,7 +196,7 @@ fn main() -> eframe::Result<()> {
             if let Some(render_state) = cc.wgpu_render_state.as_ref() {
                 stroke_gpu::install(render_state, msaa.into());
             }
-            Ok(Box::new(app::InkApp::new(cc, vsync)))
+            Ok(Box::new(app::InkApp::new(cc, vsync, open, reader)))
         }),
     );
     // "Restart now" after an update: the window is closed and saved.
@@ -146,5 +220,19 @@ mod tests {
     fn bundled_icon_decodes() {
         let icon = eframe::icon_data::from_png_bytes(super::ICON_PNG).unwrap();
         assert_eq!((icon.width, icon.height), (256, 256));
+    }
+
+    #[test]
+    fn command_line() {
+        use super::Run;
+        let args =
+            |a: &[&str]| super::parse_args(a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>().into_iter());
+        assert_eq!(args(&[]), Ok(Run::App { open: None, reader: false }));
+        let Ok(Run::App { open: Some(doc), reader: true }) = args(&["--reader", "paper.pdf"]) else { panic!() };
+        assert!(doc.is_absolute() && doc.ends_with("paper.pdf"));
+        assert_eq!(args(&["--help"]), Ok(Run::Help));
+        assert_eq!(args(&["--unregister-pdf"]), Ok(Run::RegisterPdf(false)));
+        assert!(args(&["a.pdf", "b.pdf"]).is_err());
+        assert!(args(&["--nope"]).is_err());
     }
 }

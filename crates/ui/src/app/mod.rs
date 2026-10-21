@@ -299,6 +299,21 @@ pub struct InkApp {
     /// A Browse button was clicked: the dialog to open at the end of the
     /// frame, where the window (its parent) is at hand.
     pick_request: Option<file_picker::Request<PathField>>,
+    /// Folders outside the library shown as notebooks (from the command
+    /// line), for this session.
+    external_notebooks: Vec<PathBuf>,
+    /// A reader-only window (`--reader`, how the system opens PDFs): no
+    /// library, closing the PDF closes the window. `None`: the full app.
+    standalone: Option<Standalone>,
+}
+
+/// A reader-only window. Other Tratto windows may be open and share the
+/// settings file, so it saves only what it changed (see `Settings::merge_reader`).
+struct Standalone {
+    /// The settings as they were when the window opened.
+    start: Settings,
+    /// The PDFs read in this window.
+    pdfs: Vec<String>,
 }
 
 /// Where the path chosen in a file dialog goes.
@@ -316,8 +331,10 @@ enum PathField {
 }
 
 impl InkApp {
-    /// `vsync`: the window presents with vsync.
-    pub fn new(cc: &eframe::CreationContext<'_>, vsync: bool) -> Self {
+    /// `vsync`: the window presents with vsync. `open`: the path given on
+    /// the command line (see `open_path`), instead of the last note; with
+    /// `reader`, a PDF opens in a reader-only window (`Standalone`).
+    pub fn new(cc: &eframe::CreationContext<'_>, vsync: bool, open: Option<PathBuf>, reader: bool) -> Self {
         // We implement zoom ourselves; keep egui's UI from zooming on Ctrl +/-.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         crate::theme::install(&cc.egui_ctx);
@@ -393,11 +410,23 @@ impl InkApp {
             updater: Updater::default(),
             file_picker: FilePicker::default(),
             pick_request: None,
+            external_notebooks: Vec::new(),
+            standalone: None,
         };
+        if let Some(path) = open.as_ref().filter(|p| reader && p.is_file() && is_pdf(p)) {
+            // Just the PDF: no library, no update check from every reader window.
+            app.standalone = Some(Standalone { start: app.settings.clone(), pdfs: Vec::new() });
+            app.open_pdf(&cc.egui_ctx, path);
+            return app;
+        }
         if app.settings.updates != UpdateMode::Off {
             app.updater.check(&cc.egui_ctx, app.settings.updates == UpdateMode::Install);
         }
         app.refresh_library();
+        if let Some(path) = open {
+            app.open_path(&cc.egui_ctx, &path);
+            return app;
+        }
         // Back where the app was closed: the note that was open, if any.
         let last = app.settings.last_note.clone().filter(|_| app.settings.reopen_last_note).map(PathBuf::from);
         if let Some(path) = last.filter(|p| p.is_file()) {
@@ -520,7 +549,10 @@ impl InkApp {
         let bottom_inset = if self.hbar_visible { scrollbar::THICKNESS } else { 0.0 };
         let library_was_open = self.settings.library_panel_open;
         self.left_panel(ui);
-        self.library_panel(ui);
+        // A reader-only window has no library.
+        if self.standalone.is_none() {
+            self.library_panel(ui);
+        }
         if self.screen != Screen::Editor {
             // A note was picked in the library panel and the editor closed.
             return;
@@ -547,7 +579,8 @@ impl InkApp {
         };
         // After the pages panel, so the corner buttons sit next to it.
         let note_settings = !self.reading();
-        toolbar::show_corners(ui, &mut self.settings, note_settings, bottom_inset);
+        let library = self.standalone.is_none();
+        toolbar::show_corners(ui, &mut self.settings, note_settings, library, bottom_inset);
         // Before the canvas, which must not see the press that closes it.
         self.context_menu_ui(ctx);
         // Rename / delete / new section from the notebook panel.
@@ -720,7 +753,15 @@ impl eframe::App for InkApp {
         if self.screen == Screen::Editor {
             self.remember_view();
         }
-        eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+        match &self.standalone {
+            Some(s) => {
+                // The settings as other windows left them, with what this one changed.
+                let mut saved = saved_settings().unwrap_or_else(|| s.start.clone());
+                saved.merge_reader(&self.settings, &s.start, &s.pdfs);
+                eframe::set_value(storage, SETTINGS_KEY, &saved);
+            }
+            None => eframe::set_value(storage, SETTINGS_KEY, &self.settings),
+        }
         // Overwrite the window state saved by earlier versions (eframe's key);
         // an unparsable value makes eframe skip restoring it.
         storage.set_string(WINDOW_STATE_KEY, String::new());

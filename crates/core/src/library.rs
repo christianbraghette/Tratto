@@ -59,6 +59,8 @@ pub struct NotebookInfo {
     pub sections: Vec<SectionInfo>,
     /// Notes directly inside the notebook folder.
     pub loose: Vec<NoteInfo>,
+    /// A folder outside the library, opened as a notebook (`add_notebook`).
+    pub external: bool,
 }
 
 #[derive(Default)]
@@ -110,6 +112,20 @@ impl Library {
         sort_notes(root, &mut lib.quick);
         lib.trash = list_trash(root);
         Ok(lib)
+    }
+
+    /// Shows `path`, a folder outside the library folder, as a notebook.
+    /// A folder of the library is listed already and is left alone.
+    pub fn add_notebook(&mut self, path: &Path) {
+        if path.parent() == Some(self.root.as_path()) || self.notebooks.iter().any(|n| n.path == path) {
+            return;
+        }
+        // A drive's root (D:\) has no name of its own.
+        let name = Some(file_name(path)).filter(|n| !n.is_empty()).unwrap_or_else(|| path.display().to_string());
+        let mut nb = scan_notebook(path, name);
+        nb.external = true;
+        self.notebooks.push(nb);
+        self.notebooks.sort_by_key(|n| n.name.to_lowercase());
     }
 
     /// Every note in the library, newest first.
@@ -176,6 +192,7 @@ fn scan_notebook(path: &Path, name: String) -> NotebookInfo {
         color: read_color(path),
         sections: Vec::new(),
         loose: Vec::new(),
+        external: false,
     };
     if let Ok(rd) = fs::read_dir(path) {
         for entry in rd.flatten() {
@@ -615,6 +632,27 @@ mod tests {
         let section = rename_dir(&renamed.join("Section 1"), "Ideas").unwrap();
         assert!(section.is_dir() && !renamed.join("Section 1").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_notebook() {
+        let base = std::env::temp_dir().join("tratto_external_test");
+        let _ = fs::remove_dir_all(&base);
+        let (root, outside) = (base.join("lib"), base.join("Thesis"));
+        let inside = create_notebook(&root, "Work").unwrap();
+        create_note(&outside.join("Chapter 1"), "Draft").unwrap();
+        create_note(&outside, "Ideas").unwrap();
+
+        let mut lib = Library::scan(&root).unwrap();
+        lib.add_notebook(&outside);
+        lib.add_notebook(&outside);
+        lib.add_notebook(&inside);
+        let names: Vec<_> = lib.notebooks.iter().map(|n| (n.name.as_str(), n.external)).collect();
+        assert_eq!(names, [("Thesis", true), ("Work", false)]);
+        let thesis = &lib.notebooks[0];
+        assert_eq!((thesis.loose.len(), thesis.sections[0].notes.len()), (1, 1));
+        assert_eq!(lib.all_notes().len(), 2);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

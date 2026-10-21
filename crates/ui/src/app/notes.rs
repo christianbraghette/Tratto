@@ -47,6 +47,47 @@ impl InkApp {
                 Library::empty(root)
             }
         };
+        // Gone meanwhile (deleted, renamed elsewhere): no longer shown.
+        self.external_notebooks.retain(|p| p.is_dir());
+        for nb in &self.external_notebooks {
+            self.library.add_notebook(nb);
+        }
+    }
+
+    /// Opens a path given on the command line: a PDF in the reader, a note
+    /// in the editor, or a folder as a notebook in the library. A folder
+    /// outside the library is shown as a notebook for this session.
+    pub(super) fn open_path(&mut self, ctx: &egui::Context, path: &Path) {
+        let is_note = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ink"));
+        if path.is_dir() {
+            self.open_folder(path);
+        } else if path.is_file() && is_pdf(path) {
+            self.open_pdf(ctx, path);
+        } else if path.is_file() && is_note {
+            self.open_note(path);
+        } else if !path.exists() {
+            self.toast(format!("Cannot open \u{201c}{}\u{201d}: it does not exist", path.display()));
+        } else {
+            self.toast(format!("Cannot open \u{201c}{}\u{201d}: not a PDF, a note or a folder", path.display()));
+        }
+    }
+
+    /// Shows a folder in the library: a notebook or section of the library,
+    /// else the folder as an external notebook.
+    fn open_folder(&mut self, path: &Path) {
+        let root = self.library_root();
+        let (notebook, section) = match path.parent() {
+            Some(nb) if nb.parent() == Some(root.as_path()) => (nb.to_path_buf(), Some(path.to_path_buf())),
+            _ => (path.to_path_buf(), None),
+        };
+        // Other folders of the library (the library itself) show its home.
+        if !notebook.starts_with(&root) && !self.external_notebooks.contains(&notebook) {
+            self.external_notebooks.push(notebook.clone());
+        }
+        self.refresh_library();
+        self.lib_ui.notebook = Some(notebook);
+        self.lib_ui.section = section;
+        self.screen = Screen::Library;
     }
 
     fn current_fingerprint(&self) -> Fingerprint {
@@ -158,6 +199,9 @@ impl InkApp {
 
     /// Makes a loaded note the open one, in the editor, where it was left.
     fn show_note(&mut self, path: &Path, meta: NoteMeta, doc: Document, writer: NoteWriter) {
+        // A reader-only window whose PDF is written on (imported) becomes
+        // the full app.
+        self.standalone = None;
         self.doc = doc;
         self.note_meta = meta;
         self.saver.set_writer(writer);
@@ -180,9 +224,12 @@ impl InkApp {
     }
 
     /// Opens a PDF in the reader (read-only), read in the background. The
-    /// open note is saved and closed first; stays put if that fails.
+    /// open note is saved and closed first; stays put if that fails. A
+    /// reader-only window keeps its PDF until the new one is read.
     pub(super) fn open_pdf(&mut self, ctx: &egui::Context, path: &Path) {
-        if self.screen == Screen::Editor {
+        if self.standalone.is_some() {
+            self.remember_view();
+        } else if self.screen == Screen::Editor {
             self.close_note(ctx);
             if self.screen == Screen::Editor {
                 return;
@@ -221,6 +268,10 @@ impl InkApp {
             self.settings.left_panel = LeftPanel::Pages;
         }
         self.settings.pdf_opened(&key);
+        if let Some(s) = &mut self.standalone {
+            s.pdfs.retain(|p| *p != key);
+            s.pdfs.push(key.clone());
+        }
         self.settings.last_note = Some(key);
         self.last_fp = self.current_fingerprint();
         self.dirty = false;
@@ -294,6 +345,10 @@ impl InkApp {
             }
             Ok(Loaded::Pdf(path, doc)) => self.show_pdf(&path, doc),
             Err(e) => {
+                // A reader-only window with nothing to show becomes the full app.
+                if self.screen == Screen::Library {
+                    self.standalone = None;
+                }
                 self.carry_view = None;
                 self.refresh_library();
                 self.toast(e);

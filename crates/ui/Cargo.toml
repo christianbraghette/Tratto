@@ -49,9 +49,10 @@ rustix = { version = "1", features = ["pipe"] }
 # already used by egui's accessibility support.
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
-# Subclasses the window to read the pen's buttons (see input/windows_pen.rs).
+# Subclasses the window to read the pen's buttons (see input/windows_pen.rs);
+# the registry for opening PDFs (see file_assoc.rs).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_UI_Shell"] }
 
 # Embeds the app icon (assets/icon/icon.ico) in the .exe, see build.rs.
 [target.'cfg(windows)'.build-dependencies]
