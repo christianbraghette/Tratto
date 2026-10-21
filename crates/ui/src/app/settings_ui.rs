@@ -16,7 +16,7 @@ use tratto_core::model::{PAPERS, PageKind, paper_label};
 use super::InkApp;
 use super::library_ui::{Dialog, location, when};
 use crate::file_assoc;
-use crate::settings::ToolbarPosition;
+use crate::settings::{BatterySaver, ToolbarPosition};
 use crate::theme::{self, color, space};
 
 /// Note settings in the left panel: default width and resize range.
@@ -199,6 +199,8 @@ impl InkApp {
         // Sliders filling their column.
         ui.spacing_mut().slider_width = 220.0;
         let vsync_now = self.frame_limit.vsync();
+        let vsync_forced = self.frame_limit.vsync_forced();
+        let saving_power = self.saving_power(ui.ctx());
         let fps_overridden = self.frame_limit.overridden();
         let s = &mut self.settings;
 
@@ -301,8 +303,19 @@ impl InkApp {
         section(ui, "Display");
         rows(ui, "global_display", |ui| {
             row(ui, "Vsync", |ui| {
-                ui.checkbox(&mut s.vsync, "Wait for the display")
-                    .on_hover_text("Saves power, but the ink trails the pen a little more");
+                ui.add_enabled(!vsync_forced, egui::Checkbox::new(&mut s.vsync, "Wait for the display"))
+                    .on_hover_text("Saves power, but the ink trails the pen a little more")
+                    .on_disabled_hover_text("Set by the TRATTO_VSYNC environment variable");
+            });
+            row(ui, "Battery saver", |ui| {
+                egui::ComboBox::from_id_salt("battery_saver").selected_text(s.battery_saver.label()).show_ui(
+                    ui,
+                    |ui| {
+                        for mode in BatterySaver::ALL {
+                            ui.selectable_value(&mut s.battery_saver, mode, mode.label());
+                        }
+                    },
+                );
             });
             row(ui, "Frame rate limit", |ui| {
                 ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
@@ -320,8 +333,8 @@ impl InkApp {
                 });
             });
         });
-        if s.vsync != vsync_now {
-            hint(ui, "Vsync changes when Tratto restarts.");
+        if saving_power && !s.vsync {
+            hint(ui, "The battery saver is on: Tratto waits for the display.");
         } else {
             hint(ui, "A lower limit uses less GPU while you write or scroll.");
         }

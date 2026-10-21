@@ -8,8 +8,8 @@
 //! every one of them would be checked, copied and uploaded again on every
 //! frame. Here a page's strokes are a [`Batch`]: its triangles are uploaded
 //! once, again only when they change (just the new ones when strokes were
-//! only added), and drawn each frame at the page's current position, which
-//! is a uniform. They are drawn through paint callbacks, inside egui's render
+//! only added), and drawn each frame at the page's current position and,
+//! while zooming, scaled from the zoom they were made at: both are uniforms. They are drawn through paint callbacks, inside egui's render
 //! pass and in paint order like any other shape, clipped like the painter.
 //!
 //! Two blends:
@@ -47,9 +47,11 @@ const MIN_BUFFER: u64 = 64 * 1024;
 
 const SHADER: &str = r#"
 struct Locals {
-    // The screen in points, and where the batch's (0, 0) is on it.
+    // The screen in points, where the batch's (0, 0) is on it, and how much
+    // larger than made the batch is drawn (zooming).
     screen: vec2<f32>,
     offset: vec2<f32>,
+    scale: f32,
 };
 @group(0) @binding(0) var<uniform> locals: Locals;
 
@@ -60,7 +62,7 @@ struct VOut {
 
 @vertex
 fn vs(@location(0) pos: vec2<f32>, @location(1) color: vec4<f32>) -> VOut {
-    let p = pos + locals.offset;
+    let p = pos * locals.scale + locals.offset;
     var out: VOut;
     out.pos = vec4<f32>(2.0 * p.x / locals.screen.x - 1.0, 1.0 - 2.0 * p.y / locals.screen.y, 0.0, 1.0);
     out.color = color;
@@ -127,7 +129,7 @@ impl Resources {
     }
 }
 
-/// A uniform with the screen size and an offset, and its bind group.
+/// A uniform with the screen size, an offset and a scale, and its bind group.
 struct Locals {
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -137,7 +139,8 @@ impl Locals {
     fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stroke locals"),
-            size: 16,
+            // `Locals` of the shader: 5 floats, rounded up to its alignment.
+            size: 24,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -149,9 +152,10 @@ impl Locals {
         Self { buffer, bind_group }
     }
 
-    fn write(&self, queue: &wgpu::Queue, screen: &ScreenDescriptor, offset: Vec2) {
+    fn write(&self, queue: &wgpu::Queue, screen: &ScreenDescriptor, offset: Vec2, scale: f32) {
         let ppp = screen.pixels_per_point;
-        let data = [screen.size_in_pixels[0] as f32 / ppp, screen.size_in_pixels[1] as f32 / ppp, offset.x, offset.y];
+        let [w, h] = screen.size_in_pixels.map(|v| v as f32 / ppp);
+        let data = [w, h, offset.x, offset.y, scale, 0.0];
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&data));
     }
 }
@@ -348,12 +352,14 @@ impl GpuBatch {
     }
 }
 
-/// Draws a batch, its (0, 0) at `offset` (screen points).
+/// Draws a batch, its (0, 0) at `offset` (screen points), `scale` times
+/// as large as made.
 struct DrawBatch {
     id: u64,
     generation: u64,
     mesh: Arc<Mesh>,
     offset: Vec2,
+    scale: f32,
     blend: Blend,
 }
 
@@ -388,7 +394,7 @@ impl CallbackTrait for DrawBatch {
             }
         };
         gpu.sync(queue, mesh);
-        gpu.locals.write(queue, screen, self.offset);
+        gpu.locals.write(queue, screen, self.offset, self.scale);
         Vec::new()
     }
 
@@ -403,19 +409,23 @@ impl CallbackTrait for DrawBatch {
     }
 }
 
-/// Paints `batch` with its (0, 0) at `offset` (screen points), clipped like
+/// Paints `batch` with its (0, 0) at `offset` (screen points), `scale`
+/// times as large as it was made (`1.0` but while zooming), clipped like
 /// `painter`. Uploads it first if it changed. A batch is drawn once per frame.
-pub fn paint_batch(painter: &Painter, batch: &Batch, offset: Vec2, blend: Blend) {
+pub fn paint_batch(painter: &Painter, batch: &Batch, offset: Vec2, scale: f32, blend: Blend) {
     if batch.mesh.is_empty() {
         return;
     }
     if !INSTALLED.load(Ordering::Relaxed) {
         let mut mesh = (*batch.mesh).clone();
-        mesh.translate(offset);
+        for v in &mut mesh.vertices {
+            v.pos = (v.pos.to_vec2() * scale + offset).to_pos2();
+        }
         painter.add(Shape::mesh(mesh));
         return;
     }
-    let callback = DrawBatch { id: batch.id, generation: batch.generation, mesh: batch.mesh.clone(), offset, blend };
+    let (id, generation, mesh) = (batch.id, batch.generation, batch.mesh.clone());
+    let callback = DrawBatch { id, generation, mesh, offset, scale, blend };
     // The whole screen: the vertex shader maps screen points; the painter's
     // clip rect becomes the scissor.
     painter.add(egui_wgpu::Callback::new_paint_callback(painter.ctx().viewport_rect(), callback));
@@ -451,7 +461,7 @@ impl CallbackTrait for DrawMesh {
             usage: wgpu::BufferUsages::INDEX,
         });
         let locals = Locals::new(device, &res.layout);
-        locals.write(queue, screen, Vec2::ZERO);
+        locals.write(queue, screen, Vec2::ZERO, 1.0);
         *self.gpu.lock().unwrap_or_else(|e| e.into_inner()) = Some((vertices, indices, locals));
         Vec::new()
     }
@@ -663,11 +673,16 @@ mod tests {
             generation: b.generation,
             mesh: b.mesh.clone(),
             offset: vec2(x, 0.0),
+            scale: 1.0,
             blend: Blend::Over,
         };
         let px = gpu.draw(WHITE_BLACK_WHITE_GREY, &[&call(&batch, 1.0)]);
         assert_eq!(px[1], [255, 0, 0], "drawn at its offset");
         assert_eq!(px[0], [255, 255, 255]);
+        // Zooming: drawn larger than made, from its offset.
+        let zoomed = DrawBatch { scale: 2.0, ..call(&batch, 1.0) };
+        let px = gpu.draw(WHITE_BLACK_WHITE_GREY, &[&zoomed]);
+        assert_eq!(px[..3], [[255, 255, 255], [255, 0, 0], [255, 0, 0]], "drawn scaled");
 
         batch.append(|m| quad(m, 1.0, 2.0, blue));
         let px = gpu.draw(WHITE_BLACK_WHITE_GREY, &[&call(&batch, 0.0)]);

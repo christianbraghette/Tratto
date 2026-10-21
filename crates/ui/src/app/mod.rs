@@ -28,6 +28,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Vec2, vec2};
+use eframe::egui_wgpu::wgpu;
 
 use tratto_core::history::{Action, History};
 use tratto_core::library::Library;
@@ -46,7 +47,7 @@ use crate::pdf_view::PdfTextures;
 use crate::render::{LiveStroke, PictureTextures, StrokeCache};
 use crate::saver::Saver;
 use crate::scrollbar;
-use crate::settings::{NoteView, Settings, UpdateMode};
+use crate::settings::{BatterySaver, NoteView, Settings, UpdateMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::update::{self, Updater};
@@ -75,6 +76,8 @@ use menus::{Command, ContextMenu, HelpWindows};
 /// Key under which eframe stores the window state (not public in eframe).
 const WINDOW_STATE_KEY: &str = "window";
 const SETTINGS_KEY: &str = "tratto_settings";
+/// How long a status message (toast) is shown.
+const TOAST_FOR: Duration = Duration::from_millis(3500);
 
 /// The settings saved by the last run, read before the window exists:
 /// `main` needs some of them to create it. Mirrors eframe's file storage
@@ -527,6 +530,29 @@ impl InkApp {
         }
     }
 
+    /// The battery saver is on now (see `Settings::battery_saver`).
+    fn saving_power(&self, ctx: &egui::Context) -> bool {
+        match self.settings.battery_saver {
+            BatterySaver::Off => false,
+            BatterySaver::Always => true,
+            BatterySaver::OnBattery => crate::power::on_battery(ctx),
+        }
+    }
+
+    /// Presents with vsync when the setting, the battery saver or
+    /// TRATTO_VSYNC asks for it. The surface is reconfigured only when that
+    /// changes (plugging in, a setting), never in the middle of writing.
+    fn present_mode(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let vsync = self.settings.vsync || self.frame_limit.vsync_forced() || self.saving_power(ctx);
+        if vsync == self.frame_limit.vsync() || self.busy() {
+            return;
+        }
+        let Some(mut config) = frame.wgpu_surface_config() else { return };
+        config.present_mode = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
+        frame.set_wgpu_surface_config(config);
+        self.frame_limit.set_vsync(vsync);
+    }
+
     /// Closes the window (saving, as usual) and starts the updated app.
     fn restart(&self, ctx: &egui::Context) {
         update::RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -760,6 +786,7 @@ impl eframe::App for InkApp {
             crate::chrome::round_corners(frame);
             crate::win_frame::install(frame);
         }
+        self.present_mode(ctx, frame);
         // Every frame, so that one pressed elsewhere is not pasted later.
         self.pen_input.paste = self.pen_input.windows.as_ref().is_some_and(|p| p.take_paste());
 
@@ -843,13 +870,26 @@ impl eframe::App for InkApp {
         storage.set_string(WINDOW_STATE_KEY, String::new());
         // eframe calls this periodically and on exit. Only write what is already
         // committed; a text box being typed stays open (it is committed on close).
+        // In the background: the window does not wait for the disk every 30 s
+        // (`on_exit` waits for it).
+        if self.screen == Screen::Editor && self.note_path.is_some() {
+            self.sync_dirty();
+            if self.dirty {
+                self.autosave();
+            }
+        }
+    }
+
+    fn on_exit(&mut self) {
+        // Nothing may be left half written when the app exits: what `save`
+        // could not start (a save was being written) and every save started.
         if self.screen == Screen::Editor && self.note_path.is_some() {
             self.sync_dirty();
             if self.dirty {
                 self.save_note(false);
+                return;
             }
         }
-        // Nothing may be left half written when the app exits.
         self.finish_saves();
     }
 }

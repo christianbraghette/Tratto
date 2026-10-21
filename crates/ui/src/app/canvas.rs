@@ -6,7 +6,6 @@
 //! the links and outline of a PDF.
 
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use eframe::egui::{
     self, Color32, Event, FontId, Id, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2, pos2,
@@ -722,12 +721,12 @@ impl InkApp {
         }
 
         // Transient status message (saved / exported / errors).
-        if let Some(t) = self.status_at
-            && t.elapsed() < Duration::from_millis(3500)
+        if let Some(left) = self.status_at.and_then(|t| super::TOAST_FOR.checked_sub(t.elapsed()))
             && !self.status.is_empty()
         {
             theme::paint_toast(&painter, pos2(canvas.center().x, canvas.bottom() - 90.0), &self.status);
-            ui.ctx().request_repaint_after(Duration::from_millis(250));
+            // Once more when it is gone (it does not fade).
+            ui.ctx().request_repaint_after(left);
         }
 
         // Scrollbars on top; the vertical one shows a page indicator while dragged.

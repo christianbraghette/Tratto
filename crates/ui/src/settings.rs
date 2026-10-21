@@ -84,6 +84,29 @@ impl UpdateMode {
     }
 }
 
+/// When Tratto presents with vsync to save power, whatever `Settings::vsync`
+/// says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BatterySaver {
+    /// While the computer runs on battery.
+    #[default]
+    OnBattery,
+    Always,
+    Off,
+}
+
+impl BatterySaver {
+    pub const ALL: [BatterySaver; 3] = [Self::OnBattery, Self::Always, Self::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OnBattery => "On battery",
+            Self::Always => "Always",
+            Self::Off => "Off",
+        }
+    }
+}
+
 /// Notes whose place is remembered, at most (the least recent is forgotten).
 pub const NOTE_VIEWS: usize = 200;
 /// PDFs listed as recently read, at most.
@@ -141,8 +164,10 @@ pub struct Settings {
     pub eraser_radius: f32,
     /// Extrapolate the live stroke slightly ahead of the pen (hides latency).
     pub predict_pen: bool,
-    /// Present with vsync (applied at startup): saves power, adds latency.
+    /// Present with vsync: saves power, adds latency.
     pub vsync: bool,
+    /// When vsync is used anyway, to save power.
+    pub battery_saver: BatterySaver,
     /// Frames per second at most, without vsync (`0`: no limit).
     pub fps_limit: u32,
     pub zoom: ZoomMode,
@@ -301,6 +326,7 @@ impl Default for Settings {
             eraser_radius: 12.0,
             predict_pen: true,
             vsync: false,
+            battery_saver: BatterySaver::default(),
             fps_limit: crate::frame_limit::DEFAULT_FPS,
             zoom: ZoomMode::Percent(100),
             left_panel: LeftPanel::Closed,

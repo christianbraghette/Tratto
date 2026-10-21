@@ -26,6 +26,7 @@
 //! - `file_assoc`     Tratto as the system's PDF reader (file associations)
 //! - `file_picker`    the system's file dialogs, off the UI thread
 //! - `frame_limit`    frame rate cap when vsync is off
+//! - `power`          whether the computer runs on battery (battery saver)
 //! - `saver`          saves the open note on a background thread
 //! - `update`         updates from the GitHub releases
 
@@ -46,6 +47,7 @@ mod kinetic;
 mod markdown;
 mod pdf_nav;
 mod pdf_view;
+mod power;
 mod render;
 mod saver;
 mod scrollbar;
@@ -162,12 +164,24 @@ fn main() -> eframe::Result<()> {
 
     // Low-latency presentation by default: no vsync wait and at most one frame
     // queued, frames capped (File > Settings, see `frame_limit`). Vsync (saves
-    // power, adds latency) is a setting too, read here because the present
-    // mode is fixed when the window is created; TRATTO_VSYNC=1 forces it on.
+    // power, adds latency) is a setting too, read here for the window to start
+    // with it; it changes at runtime (`InkApp::present_mode`, also for the
+    // battery saver). TRATTO_VSYNC=1 forces it on.
     // TRATTO_MSAA=4 additionally enables 4x MSAA (strokes are already
     // anti-aliased analytically, so this is rarely needed).
-    let vsync = std::env::var_os("TRATTO_VSYNC").is_some() || app::saved_settings().is_some_and(|s| s.vsync);
+    let vsync = frame_limit::env_vsync() || app::saved_settings().is_some_and(|s| s.vsync);
     let msaa: u16 = std::env::var("TRATTO_MSAA").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+
+    let mut wgpu_options = egui_wgpu::WgpuConfiguration::default().with_surface_config(egui_wgpu::SurfaceConfig {
+        present_mode: if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync },
+        desired_maximum_frame_latency: Some(1),
+    });
+    // The integrated GPU: pages and strokes are light work for it, and on a
+    // laptop with two GPUs the discrete one would stay powered while Tratto
+    // is open (egui asks for it by default). WGPU_POWER_PREF=high overrides.
+    if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+        setup.power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::LowPower);
+    }
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -176,11 +190,7 @@ fn main() -> eframe::Result<()> {
         // App settings are persisted separately.
         persist_window: false,
         multisampling: msaa,
-        // The default setup already asks for the high-performance GPU.
-        wgpu_options: egui_wgpu::WgpuConfiguration::default().with_surface_config(egui_wgpu::SurfaceConfig {
-            present_mode: if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync },
-            desired_maximum_frame_latency: Some(1),
-        }),
+        wgpu_options,
         viewport: egui::ViewportBuilder::default()
             .with_title("Tratto")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("the bundled icon is a valid PNG"))

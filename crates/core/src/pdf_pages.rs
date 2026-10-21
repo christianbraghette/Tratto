@@ -329,35 +329,48 @@ fn bind() -> Result<Pdfium, PdfError> {
     bindings.map(Pdfium::new).map_err(|e| PdfError::Unavailable(e.to_string()))
 }
 
+/// A document the worker keeps open, read from the bytes of its file (not a
+/// copy of them: a large PDF would be in memory twice).
+struct OpenDocument<'a> {
+    key: u64,
+    /// Before `_file`: closed before its bytes can be released.
+    doc: PdfDocument<'a>,
+    _file: Arc<PdfFile>,
+}
+
 /// The documents and pages the worker keeps open, most recently used last.
 /// A page is always closed before its document.
 struct Open<'a> {
     pdfium: &'a Pdfium,
-    documents: Vec<(u64, PdfDocument<'a>)>,
+    documents: Vec<OpenDocument<'a>>,
     pages: Vec<(u64, u32, PdfPage<'a>)>,
 }
 
 impl<'a> Open<'a> {
-    fn document(&mut self, file: &PdfFile) -> Result<&PdfDocument<'a>, PdfError> {
-        if let Some(i) = self.documents.iter().position(|(k, _)| *k == file.key) {
+    fn document(&mut self, file: &Arc<PdfFile>) -> Result<&PdfDocument<'a>, PdfError> {
+        if let Some(i) = self.documents.iter().position(|d| d.key == file.key) {
             let entry = self.documents.remove(i);
             self.documents.push(entry);
         } else {
-            let doc = self
-                .pdfium
-                .load_pdf_from_byte_vec(file.bytes.clone(), None)
-                .map_err(|e| PdfError::Unreadable(e.to_string()))?;
+            // SAFETY: PDFium reads the document from these bytes while it is
+            // open. They are the heap buffer of `file`, which never changes
+            // (a `PdfFile` is immutable behind its `Arc`) and which the entry
+            // keeps alive: the document is dropped before it (field order),
+            // its pages before the document (`retain` below, `Drop for Open`).
+            let bytes: &'a [u8] = unsafe { std::slice::from_raw_parts(file.bytes.as_ptr(), file.bytes.len()) };
+            let doc =
+                self.pdfium.load_pdf_from_byte_slice(bytes, None).map_err(|e| PdfError::Unreadable(e.to_string()))?;
             if self.documents.len() >= OPEN_DOCUMENTS {
-                let (old, _) = self.documents[0];
+                let old = self.documents[0].key;
                 self.pages.retain(|(k, _, _)| *k != old);
                 self.documents.remove(0);
             }
-            self.documents.push((file.key, doc));
+            self.documents.push(OpenDocument { key: file.key, doc, _file: file.clone() });
         }
-        Ok(&self.documents.last().expect("just opened").1)
+        Ok(&self.documents.last().expect("just opened").doc)
     }
 
-    fn page(&mut self, file: &PdfFile, index: u32) -> Result<&PdfPage<'a>, PdfError> {
+    fn page(&mut self, file: &Arc<PdfFile>, index: u32) -> Result<&PdfPage<'a>, PdfError> {
         if let Some(i) = self.pages.iter().position(|(k, p, _)| *k == file.key && *p == index) {
             let entry = self.pages.remove(i);
             self.pages.push(entry);
@@ -591,7 +604,7 @@ fn underlay_pages(pdfium: &Pdfium, pdf: Vec<u8>, pages: &[Underlay]) -> Result<V
     let mut sources: Vec<(u64, PdfDocument)> = Vec::new();
     for u in pages {
         if !sources.iter().any(|(k, _)| *k == u.file.key) {
-            let doc = pdfium.load_pdf_from_byte_vec(u.file.bytes.clone(), None).map_err(failed)?;
+            let doc = pdfium.load_pdf_from_byte_slice(&u.file.bytes, None).map_err(failed)?;
             sources.push((u.file.key, doc));
         }
     }

@@ -43,9 +43,14 @@ const MAX_LEVEL: f32 = 16384.0;
 const MAX_IN_FLIGHT: usize = 6;
 /// Finished images turned into textures per frame, at most.
 const UPLOADS_PER_FRAME: usize = 6;
-/// Frames an image may stay unused before it is dropped.
-const TTL_WHOLE: u64 = 300;
-const TTL_TILE: u64 = 120;
+/// Seconds an image may stay unused before it is dropped (by time, not
+/// frames: at a high frame rate tiles scrolled past would be rendered again
+/// after a moment).
+const TTL_WHOLE: f64 = 30.0;
+const TTL_TILE: f64 = 10.0;
+/// Bytes of textures kept at most: past it, the images unused the longest
+/// go first (never one shown in the last frame).
+const TEXTURE_BUDGET: usize = 256 << 20;
 /// Frames a retired texture is kept before it is released.
 const RETIRE_FRAMES: u64 = 2;
 /// A new zoom level is used once it has been wanted this long (seconds), so
@@ -72,7 +77,15 @@ struct Entry {
     size: [u32; 2],
     pending: bool,
     failed: bool,
+    /// The frame and the time (egui's, seconds) it was last shown in.
     last_used: u64,
+    used_at: f64,
+}
+
+impl Entry {
+    fn bytes(&self) -> usize {
+        if self.texture.is_some() { self.size[0] as usize * self.size[1] as usize * 4 } else { 0 }
+    }
 }
 
 /// The zoom level of a page shown with tiles.
@@ -95,6 +108,8 @@ pub struct PdfTextures {
     /// Textures no longer shown, with the frame they were retired in.
     retired: Vec<(u64, TextureHandle)>,
     frame: u64,
+    /// The time of this frame (egui's, seconds).
+    now: f64,
     /// Why PDF pages cannot be shown (PDFium missing, unreadable file), for
     /// the app to tell the user: set once per note.
     pub error: Option<PdfError>,
@@ -113,6 +128,7 @@ impl Default for PdfTextures {
             in_flight: 0,
             retired: Vec::new(),
             frame: 0,
+            now: 0.0,
             error: None,
             reported: false,
         }
@@ -143,11 +159,13 @@ fn tiles_over(width: u32, height: u32, x: [f32; 2], y: [f32; 2]) -> Option<(Rang
 
 impl PdfTextures {
     /// Turns finished renders into textures (a few per frame), retires
-    /// images unused for a while and releases the ones retired long enough
-    /// ago. Call at the start of every frame, before anything is painted.
+    /// images unused for a while (or past the budget) and releases the ones
+    /// retired long enough ago. Call at the start of every frame, before
+    /// anything is painted.
     pub fn begin_frame(&mut self, ctx: &egui::Context) {
         self.frame += 1;
-        let frame = self.frame;
+        self.now = ctx.input(|i| i.time);
+        let (frame, now) = (self.frame, self.now);
         self.retired.retain(|(at, _)| frame - at < RETIRE_FRAMES);
 
         for r in self.results.try_iter() {
@@ -186,15 +204,30 @@ impl PdfTextures {
             ctx.request_repaint();
         }
 
-        let unused: Vec<Key> = self
+        let mut unused: Vec<Key> = self
             .entries
             .iter()
             .filter(|(k, e)| {
                 let ttl = if k.part == Part::Whole { TTL_WHOLE } else { TTL_TILE };
-                !e.pending && frame - e.last_used >= ttl
+                !e.pending && now - e.used_at >= ttl
             })
             .map(|(k, _)| *k)
             .collect();
+        // Over the budget (zoomed far into a large PDF): the least recently
+        // shown go too.
+        let mut bytes: usize = self.entries.values().map(Entry::bytes).sum();
+        if bytes > TEXTURE_BUDGET {
+            let mut old: Vec<(&Key, &Entry)> =
+                self.entries.iter().filter(|(_, e)| e.bytes() > 0 && e.last_used + 1 < frame).collect();
+            old.sort_by(|a, b| a.1.used_at.total_cmp(&b.1.used_at));
+            for (k, e) in old {
+                if bytes <= TEXTURE_BUDGET {
+                    break;
+                }
+                bytes -= e.bytes();
+                unused.push(*k);
+            }
+        }
         for k in unused {
             if let Some(t) = self.entries.remove(&k).and_then(|e| e.texture) {
                 self.retired.push((frame, t));
@@ -223,7 +256,7 @@ impl PdfTextures {
     fn whole(&mut self, ctx: &egui::Context, file: &Arc<PdfFile>, page: u32) -> Option<TextureHandle> {
         let key = Key { file: file.key, page, part: Part::Whole };
         let e = self.entries.entry(key).or_default();
-        e.last_used = self.frame;
+        (e.last_used, e.used_at) = (self.frame, self.now);
         if e.texture.is_none() && !e.pending && !e.failed {
             e.pending = true;
             self.request(ctx, file, page, SMALL_PX, None);
@@ -299,7 +332,7 @@ impl PdfTextures {
                         continue;
                     }
                 };
-                e.last_used = self.frame;
+                (e.last_used, e.used_at) = (self.frame, self.now);
                 let origin = rect.min + vec2((tx * TILE) as f32, (ty * TILE) as f32) / k;
                 match &e.texture {
                     Some(t) => {
@@ -461,6 +494,33 @@ mod tests {
         }
         assert!(freed.contains(&first) && freed.contains(&painted), "{freed:?}");
         assert!(tex.retired.is_empty());
+    }
+
+    #[test]
+    fn over_the_budget_the_least_recently_shown_go() {
+        let ctx = egui::Context::default();
+        let mut tex = PdfTextures { frame: 10, ..PdfTextures::default() };
+        // Three tiles of 144 MB each (as far as the budget can tell).
+        let texture = ctx.load_texture("t", ColorImage::filled([1, 1], Color32::WHITE), TextureOptions::LINEAR);
+        let size = [6000, 6000];
+        for (tx, last_used, used_at) in [(0, 1, 1.0), (1, 2, 2.0), (2, 10, 3.0)] {
+            let key = Key { file: 1, page: 0, part: Part::Tile { level: 1024, tx, ty: 0 } };
+            let entry = Entry { texture: Some(texture.clone()), size, last_used, used_at, ..Entry::default() };
+            tex.entries.insert(key, entry);
+        }
+        let at = RawInput { time: Some(5.0), ..RawInput::default() };
+        crate::test_frame(&ctx, at, |ui| tex.begin_frame(ui.ctx()));
+        // The two oldest go; the one shown in the last frame stays.
+        let left: Vec<u32> = tex
+            .entries
+            .keys()
+            .map(|k| match k.part {
+                Part::Tile { tx, .. } => tx,
+                Part::Whole => unreachable!(),
+            })
+            .collect();
+        assert_eq!(left, [2]);
+        assert_eq!(tex.retired.len(), 2);
     }
 
     #[test]

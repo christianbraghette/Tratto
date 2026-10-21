@@ -11,6 +11,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
@@ -29,24 +32,62 @@ use crate::view::View;
 /// Pictures are shown no larger than this (pixels, on the longer side).
 const PICTURE_SIDE: u32 = 2048;
 
-/// The pictures' textures, by their files' keys, made when first painted;
-/// `None` for a file that cannot be read.
-#[derive(Default)]
+/// A picture as it can be shown now.
+enum Picture {
+    /// Its file is being decoded (in the background).
+    Decoding,
+    Ready(TextureId),
+    /// Its file cannot be read.
+    Unreadable,
+}
+
+/// A decoded picture file (`None`: it cannot be read), by its key.
+type Decoded = (u64, Option<ColorImage>);
+
+/// The pictures' textures, by their files' keys. A file is decoded in the
+/// background when first painted (a large photo would hold up the window),
+/// then made a texture; `None` for a file that cannot be read.
 pub struct PictureTextures {
     textures: HashMap<u64, Option<TextureHandle>>,
+    /// Being decoded.
+    decoding: HashSet<u64>,
+    decoded: (Sender<Decoded>, Receiver<Decoded>),
+}
+
+impl Default for PictureTextures {
+    fn default() -> Self {
+        Self { textures: HashMap::new(), decoding: HashSet::new(), decoded: mpsc::channel() }
+    }
 }
 
 impl PictureTextures {
-    fn texture(&mut self, ctx: &eframe::egui::Context, data: &ImageData) -> Option<TextureId> {
-        let made = self.textures.entry(data.key).or_insert_with(|| {
-            let rgba = data.decode(PICTURE_SIDE).ok()?;
-            let size = [rgba.width() as usize, rgba.height() as usize];
-            let image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+    fn texture(&mut self, ctx: &eframe::egui::Context, data: &Arc<ImageData>) -> Picture {
+        for (key, image) in self.decoded.1.try_iter() {
+            self.decoding.remove(&key);
             // Mipmaps: smooth when shown small (page previews, zoomed out).
             let options = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
-            Some(ctx.load_texture(format!("picture-{:x}", data.key), image, options))
-        });
-        made.as_ref().map(TextureHandle::id)
+            let texture = image.map(|image| ctx.load_texture(format!("picture-{key:x}"), image, options));
+            self.textures.insert(key, texture);
+        }
+        match self.textures.get(&data.key) {
+            Some(Some(t)) => return Picture::Ready(t.id()),
+            Some(None) => return Picture::Unreadable,
+            None => {}
+        }
+        if self.decoding.insert(data.key) {
+            let (data, done, ctx) = (data.clone(), self.decoded.0.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let image = data.decode(PICTURE_SIDE).ok().map(|rgba| {
+                    let size = [rgba.width() as usize, rgba.height() as usize];
+                    ColorImage::from_rgba_unmultiplied(size, rgba.as_raw())
+                });
+                // The note may have been closed meanwhile: then nobody waits.
+                if done.send((data.key, image)).is_ok() {
+                    ctx.request_repaint();
+                }
+            });
+        }
+        Picture::Decoding
     }
 
     /// Paints the pictures of `page`, whose top-left corner is at `origin`
@@ -68,21 +109,26 @@ impl PictureTextures {
                 continue;
             }
             match self.texture(painter.ctx(), &img.data) {
-                Some(tex) => {
+                Picture::Ready(tex) => {
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                     painter.image(tex, rect, uv, Color32::WHITE);
                 }
+                // Its place, faintly, until it is there.
+                Picture::Decoding => {
+                    painter.rect_filled(rect, 0.0, Color32::from_gray(242));
+                }
                 // A file that cannot be read: its place, greyed.
-                None => {
+                Picture::Unreadable => {
                     painter.rect_filled(rect, 0.0, Color32::from_gray(225));
                 }
             }
         }
     }
 
-    /// Forgets every texture (another note).
+    /// Forgets every texture (another note). Decodes still running are
+    /// forgotten too: their results are dropped.
     pub fn clear(&mut self) {
-        self.textures.clear();
+        *self = Self::default();
     }
 }
 
@@ -92,6 +138,9 @@ pub const PAGE_COLOR: Color32 = color::PAGE;
 
 /// Cache entries unused for this many frames are dropped (bounds memory).
 const CACHE_TTL_FRAMES: u64 = 512;
+/// While zooming, batches are drawn scaled; they are made again at the new
+/// zoom once it has not changed for this long.
+const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 
 /// The two stroke layers of a page (see the module docs).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -152,6 +201,8 @@ struct Part {
 
 struct PageBatch {
     batch: Batch,
+    /// The zoom it was made at.
+    scale: f32,
     /// The strokes in the batch, in paint order.
     parts: Vec<Part>,
     last_used: u64,
@@ -159,14 +210,17 @@ struct PageBatch {
 
 /// The strokes as batches kept on the GPU (see `stroke_gpu`), at
 /// `page_space * scale` without translation: scrolling and page-size changes
-/// keep them, a change of zoom or pixels-per-point rebuilds them. A batch is
-/// redone when its strokes change: strokes added at the end are just added
-/// (and only they are uploaded); otherwise the triangles of the strokes that
-/// did not change are copied, not made again.
+/// keep them, a change of pixels-per-point rebuilds them. While zooming they
+/// are drawn scaled (nothing is made again at every step) and rebuilt once
+/// the zoom settles. A batch is redone when its strokes change: strokes added
+/// at the end are just added (and only they are uploaded); otherwise the
+/// triangles of the strokes that did not change are copied, not made again.
 #[derive(Default)]
 pub struct StrokeCache {
     batches: HashMap<BatchKey, PageBatch>,
     scale_bits: u32,
+    /// When the zoom last changed (`None`: not since the cache was made).
+    zoomed_at: Option<Instant>,
     ppp_bits: u32,
     frame: u64,
 }
@@ -178,10 +232,13 @@ impl StrokeCache {
 
     pub fn begin_frame(&mut self, scale: f32, ppp: f32) {
         let (s, p) = (scale.to_bits(), ppp.to_bits());
-        if s != self.scale_bits || p != self.ppp_bits {
+        if p != self.ppp_bits {
             self.batches.clear();
-            self.scale_bits = s;
             self.ppp_bits = p;
+        }
+        if s != self.scale_bits {
+            self.scale_bits = s;
+            self.zoomed_at = Some(Instant::now());
         }
         self.frame += 1;
         if self.frame.is_multiple_of(256) {
@@ -190,16 +247,54 @@ impl StrokeCache {
         }
     }
 
-    /// The batch `key` holding exactly `strokes`, in this order.
-    fn batch<'s>(&mut self, key: BatchKey, strokes: impl Iterator<Item = &'s Stroke>, scale: f32, aa: f32) -> &Batch {
+    /// The zoom is changing (it changed less than `ZOOM_SETTLE` ago).
+    fn zooming(&self) -> bool {
+        self.zoomed_at.is_some_and(|t| t.elapsed() < ZOOM_SETTLE)
+    }
+
+    /// While zooming: a frame once the zoom has settled, to make the batches
+    /// drawn scaled again at the new zoom (sharp, with the right edges).
+    fn settle_later(&self, painter: &Painter) {
+        if let Some(left) = self.zoomed_at.and_then(|t| ZOOM_SETTLE.checked_sub(t.elapsed())) {
+            painter.ctx().request_repaint_after(left);
+        }
+    }
+
+    /// The batch `key` holding exactly `strokes`, in this order, and how much
+    /// larger than made to draw it: made at `scale`, or, while zooming, an
+    /// unchanged batch made at another zoom.
+    fn batch<'s>(
+        &mut self,
+        key: BatchKey,
+        strokes: impl Iterator<Item = &'s Stroke>,
+        scale: f32,
+        aa: f32,
+    ) -> (&Batch, f32) {
         let strokes: Vec<&Stroke> = strokes.collect();
+        let same = |p: &Part, s: &&Stroke| p.id == s.id && p.rev == s.rev;
+        let zooming = self.zooming();
+        let other_zoom = self.batches.get(&key).filter(|e| e.scale != scale).map(|e| {
+            zooming && e.parts.len() == strokes.len() && e.parts.iter().zip(&strokes).all(|(p, s)| same(p, s))
+        });
+        match other_zoom {
+            Some(true) => {
+                let entry = self.batches.get_mut(&key).expect("looked up above");
+                entry.last_used = self.frame;
+                return (&entry.batch, scale / entry.scale);
+            }
+            // Settled, or changed meanwhile: made again at this zoom.
+            Some(false) => {
+                self.batches.remove(&key);
+            }
+            None => {}
+        }
         let entry = self.batches.entry(key).or_insert_with(|| PageBatch {
             batch: Batch::default(),
+            scale,
             parts: Vec::new(),
             last_used: 0,
         });
         entry.last_used = self.frame;
-        let same = |p: &Part, s: &&Stroke| p.id == s.id && p.rev == s.rev;
         let kept = entry.parts.iter().zip(&strokes).take_while(|(p, s)| same(p, s)).count();
         if kept == entry.parts.len() {
             // Strokes added at the end, if any.
@@ -226,7 +321,7 @@ impl StrokeCache {
             entry.batch.replace(mesh);
             entry.parts = parts;
         }
-        &entry.batch
+        (&entry.batch, 1.0)
     }
 }
 
@@ -280,16 +375,17 @@ pub fn paint_strokes(
     let is_moved = |id: u64| moved.is_some_and(|m| m.ids.contains(&id));
     for page in view.visible_pages() {
         let in_page = strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer && !is_moved(s.id));
-        let batch = cache.batch(BatchKey { page, layer, moved: false }, in_page, view.scale, aa);
-        stroke_gpu::paint_batch(painter, batch, view.page_origin_screen(page).to_vec2(), layer.blend());
+        let (batch, k) = cache.batch(BatchKey { page, layer, moved: false }, in_page, view.scale, aa);
+        stroke_gpu::paint_batch(painter, batch, view.page_origin_screen(page).to_vec2(), k, layer.blend());
     }
     if let Some(m) = moved {
         let selected =
             strokes.iter().filter(|s| s.page == m.page && Layer::of(s.kind) == layer && m.ids.contains(&s.id));
-        let batch = cache.batch(BatchKey { page: m.page, layer, moved: true }, selected, view.scale, aa);
+        let (batch, k) = cache.batch(BatchKey { page: m.page, layer, moved: true }, selected, view.scale, aa);
         let offset = view.page_origin_screen(m.page).to_vec2() + m.offset * view.scale;
-        stroke_gpu::paint_batch(painter, batch, offset, layer.blend());
+        stroke_gpu::paint_batch(painter, batch, offset, k, layer.blend());
     }
+    cache.settle_later(painter);
 }
 
 /// Paints one page's strokes at an arbitrary scale (page previews). The
@@ -307,9 +403,10 @@ pub fn paint_page_strokes(
     // Highlighters first, as on the page.
     for layer in [Layer::Highlight, Layer::Ink] {
         let in_page = strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer);
-        let batch = cache.batch(BatchKey { page, layer, moved: false }, in_page, scale, aa);
-        stroke_gpu::paint_batch(painter, batch, offset, layer.blend());
+        let (batch, k) = cache.batch(BatchKey { page, layer, moved: false }, in_page, scale, aa);
+        stroke_gpu::paint_batch(painter, batch, offset, k, layer.blend());
     }
+    cache.settle_later(painter);
 }
 
 /// Paints the text boxes of the visible pages with their stored line breaks.
@@ -478,7 +575,7 @@ impl LiveStroke {
         let mut end = live.update(fixed, tip);
         let offset = view.page_origin_screen(page).to_vec2();
         let layer = Layer::of(kind);
-        stroke_gpu::paint_batch(painter, live.fixed(), offset, layer.blend());
+        stroke_gpu::paint_batch(painter, live.fixed(), offset, 1.0, layer.blend());
         end.translate(offset);
         paint_mesh(painter, layer, end);
     }
@@ -583,7 +680,7 @@ mod tests {
         let mut cache = StrokeCache::default();
         let check = |strokes: &[Stroke], cache: &mut StrokeCache| {
             cache.begin_frame(1.5, 1.0);
-            let mesh = cache.batch(key, strokes.iter(), 1.5, 1.0).mesh().clone();
+            let mesh = cache.batch(key, strokes.iter(), 1.5, 1.0).0.mesh().clone();
             let expected = fresh(&strokes.iter().collect::<Vec<_>>(), 1.5);
             assert_eq!((mesh.vertices, mesh.indices), (expected.vertices, expected.indices));
         };
@@ -599,5 +696,25 @@ mod tests {
         check(&strokes, &mut cache);
         // Everything gone.
         check(&[], &mut cache);
+    }
+
+    #[test]
+    fn zooming_draws_batches_scaled_until_it_settles() {
+        let key = BatchKey { page: 0, layer: Layer::Ink, moved: false };
+        let strokes: Vec<Stroke> = (0..3).map(|i| stroke(i, i as f32 * 40.0, StrokeKind::Pen)).collect();
+        let mut cache = StrokeCache::default();
+        cache.begin_frame(1.0, 1.0);
+        let made = cache.batch(key, strokes.iter(), 1.0, 1.0).0.mesh().clone();
+
+        // Zooming: the same triangles, drawn twice as large.
+        cache.begin_frame(2.0, 1.0);
+        let (batch, k) = cache.batch(key, strokes.iter(), 2.0, 1.0);
+        assert_eq!((batch.mesh().vertices.len(), k), (made.vertices.len(), 2.0));
+
+        // Settled: made again at the new zoom.
+        cache.zoomed_at = Some(Instant::now() - ZOOM_SETTLE);
+        let (batch, k) = cache.batch(key, strokes.iter(), 2.0, 1.0);
+        let expected = fresh(&strokes.iter().collect::<Vec<_>>(), 2.0);
+        assert_eq!((&batch.mesh().vertices, k), (&expected.vertices, 1.0));
     }
 }

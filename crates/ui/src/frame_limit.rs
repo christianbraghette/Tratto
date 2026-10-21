@@ -11,19 +11,19 @@
 //!
 //! The cap is `Settings::fps_limit` (File > Settings); `TRATTO_FPS=<n>`
 //! overrides it, `0` removes it. With vsync the display paces the frames and
-//! there is no cap.
+//! there is no cap. Vsync can change at any time (the setting, the battery
+//! saver, see `InkApp::present_mode`); `TRATTO_VSYNC=1` forces it on.
 
 use std::time::{Duration, Instant};
 
 /// The default of `Settings::fps_limit`.
 pub const DEFAULT_FPS: u32 = 120;
 
-/// The OS sleep can overshoot by about this much; the rest is spun.
-const SPIN: Duration = Duration::from_micros(1500);
-
 pub struct FrameLimiter {
-    /// The window presents with vsync (set at startup): no cap.
+    /// The window presents with vsync: no cap.
     vsync: bool,
+    /// `TRATTO_VSYNC` is set: always vsync.
+    env_vsync: bool,
     /// `TRATTO_FPS`, which wins over the setting.
     env_fps: Option<u32>,
     /// When the next frame may start.
@@ -31,14 +31,25 @@ pub struct FrameLimiter {
 }
 
 impl FrameLimiter {
+    /// `vsync`: how the window was created.
     pub fn new(vsync: bool) -> Self {
         let env_fps = std::env::var("TRATTO_FPS").ok().and_then(|v| v.trim().parse().ok());
-        Self { vsync, env_fps, next: None }
+        Self { vsync, env_vsync: env_vsync(), env_fps, next: None }
     }
 
     /// The window presents with vsync.
     pub fn vsync(&self) -> bool {
         self.vsync
+    }
+
+    /// The window now presents with vsync, or no longer does.
+    pub fn set_vsync(&mut self, vsync: bool) {
+        self.vsync = vsync;
+    }
+
+    /// `TRATTO_VSYNC` is set: vsync whatever the settings say.
+    pub fn vsync_forced(&self) -> bool {
+        self.env_vsync
     }
 
     /// `TRATTO_FPS` is set: the setting has no effect.
@@ -55,14 +66,11 @@ impl FrameLimiter {
             return;
         }
         let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
-        if let Some(next) = self.next {
-            let now = Instant::now();
-            if now + SPIN < next {
-                std::thread::sleep(next - now - SPIN);
-            }
-            while Instant::now() < next {
-                std::hint::spin_loop();
-            }
+        // Slept, not spun: a spin kept a core busy for part of every frame.
+        // The sleep is precise to a fraction of a millisecond (high-resolution
+        // timers on Windows too), and an overshoot does not shift the cadence.
+        if let Some(wait) = self.next.and_then(|next| next.checked_duration_since(Instant::now())) {
+            std::thread::sleep(wait);
         }
         let start = Instant::now();
         // Keep a steady cadence; after an idle pause or a slow frame, restart
@@ -74,12 +82,17 @@ impl FrameLimiter {
     }
 }
 
+/// `TRATTO_VSYNC` is set.
+pub fn env_vsync() -> bool {
+    std::env::var_os("TRATTO_VSYNC").is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn limiter(vsync: bool) -> FrameLimiter {
-        FrameLimiter { vsync, env_fps: None, next: None }
+        FrameLimiter { vsync, env_vsync: false, env_fps: None, next: None }
     }
 
     #[test]

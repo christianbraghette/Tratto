@@ -87,6 +87,56 @@ fn bench_paint_page() {
     );
 }
 
+/// Paints `frames` frames of `doc`'s first page, the zoom of each frame from
+/// `scale`; the milliseconds of `paint_strokes` per frame.
+fn paint_frames(doc: &Document, frames: usize, scale: impl Fn(usize) -> f32) -> f64 {
+    crate::stroke_gpu::pretend_installed();
+    let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: doc.page_count };
+    let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0));
+    let ctx = egui::Context::default();
+    let mut cache = StrokeCache::default();
+    let mut total = 0.0;
+    for frame in 0..frames + 5 {
+        let view = View::new(rect, Vec2::new(0.0, 200.0 + frame as f32), scale(frame), layout);
+        let mut out = 0.0;
+        let mut shapes = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let t = Instant::now();
+            render::paint_strokes(&painter, &view, Layer::Highlight, &doc.strokes, &mut cache, 1.0, None);
+            render::paint_strokes(&painter, &view, Layer::Ink, &doc.strokes, &mut cache, 1.0, None);
+            out = t.elapsed().as_secs_f64() * 1000.0;
+        });
+        shapes.textures_delta.clear();
+        if frame >= 5 {
+            total += out;
+        }
+    }
+    total / frames as f64
+}
+
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn bench_large_note() {
+    // Every page as full as the one of `bench_paint_page`; one is shown.
+    let mut doc = Document::default();
+    for page in 0..50 {
+        written_page(&mut doc, page);
+    }
+    doc.page_count = 50;
+    let ms = paint_frames(&doc, 60, |_| 1.83);
+    println!("paint one page of a {}-stroke note: {ms:.3} ms per frame", doc.strokes.len());
+}
+
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn bench_zoom() {
+    // A pinch: a new zoom on every frame.
+    let mut doc = Document::default();
+    written_page(&mut doc, 0);
+    let ms = paint_frames(&doc, 60, |frame| 1.5 + frame as f32 * 0.01);
+    println!("zooming a full page: {ms:.3} ms per frame");
+}
+
 #[test]
 #[ignore = "benchmark: run with --release -- --ignored --nocapture"]
 fn bench_live_stroke() {

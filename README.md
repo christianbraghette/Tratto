@@ -323,6 +323,7 @@ override the settings:
 | `TRATTO_FPS=144` | Frame rate cap without vsync, instead of the setting (`0` removes the cap) |
 | `TRATTO_VSYNC=1` | Force vsync on: may save power, but adds latency |
 | `TRATTO_MSAA=4` | Enable 4× MSAA (default `1`, off). Strokes are already anti-aliased, so this is rarely needed. |
+| `WGPU_POWER_PREF=high` | Use the discrete GPU on a laptop with two. By default Tratto uses the integrated one, which saves battery. |
 
 ```sh
 # Linux / macOS

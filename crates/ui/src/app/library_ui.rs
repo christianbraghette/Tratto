@@ -10,22 +10,24 @@
 //! This is a child module of `app`, so it can use the editor state directly
 //! (opening a note, toasts, settings) without extra plumbing.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use eframe::egui::{
-    self, Align2, Color32, CursorIcon, Frame, Id, Margin, Rect, RichText, Sense, Shape, Stroke, TextEdit, Ui, pos2,
-    vec2,
+    self, Align2, Color32, CursorIcon, Frame, Id, Margin, Rect, RichText, Sense, Stroke, TextEdit, Ui, pos2, vec2,
 };
 use egui_phosphor::regular as icon;
 
 use tratto_core::library::{self, NoteInfo, NotebookInfo};
+use tratto_core::model::{Point, StrokeKind};
 use tratto_core::storage::{Preview, now_secs};
 
 use super::menus::{button_menu, entry};
 use super::{InkApp, PathField};
 use crate::file_picker::{self, Pick, Request};
 use crate::settings::LibrarySort;
+use crate::stroke_gpu::{self, Batch, Blend};
 use crate::theme::{self, color, radius, size, space};
 
 const CARD_W: f32 = 168.0;
@@ -462,13 +464,14 @@ impl InkApp {
     }
 
     fn draw_toast(&self, ctx: &egui::Context) {
-        let Some(t) = self.status_at else { return };
-        if self.status.is_empty() || t.elapsed() >= Duration::from_millis(3500) {
+        let Some(left) = self.status_at.and_then(|t| super::TOAST_FOR.checked_sub(t.elapsed())) else { return };
+        if self.status.is_empty() {
             return;
         }
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("lib_toast")));
         theme::paint_toast(&painter, ctx.viewport_rect().center_bottom() - vec2(0.0, 48.0), &self.status);
-        ctx.request_repaint_after(Duration::from_millis(250));
+        // Once more when it is gone (it does not fade).
+        ctx.request_repaint_after(left);
     }
 
     // ------------------------------------------------------------ dialogs
@@ -1396,7 +1399,7 @@ fn note_card(ui: &mut Ui, note: &NoteInfo, root: &Path, show_location: bool, act
         let (rect, resp) = ui.allocate_exact_size(vec2(CARD_W, thumb_h), Sense::click_and_drag());
         let p = ui.painter();
         p.add(theme::card_shadow().as_shape(rect, egui::CornerRadius::from(radius::SMALL)));
-        paint_preview(&ui.painter_at(rect), rect, &note.meta.preview);
+        paint_preview(&ui.painter_at(rect), rect, note);
         let menu = Id::new(("note_card_menu", &note.path));
         let menu_open = egui::Popup::is_id_open(ui.ctx(), menu);
         let hovered = ui.rect_contains_pointer(rect);
@@ -1495,24 +1498,69 @@ fn count(n: usize, noun: &str) -> String {
     if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
 }
 
+/// Cards' previews unused for this many frames are forgotten.
+const PREVIEW_TTL_FRAMES: u64 = 600;
+
+/// The cards' previews as triangles kept on the GPU (see `stroke_gpu`):
+/// made once, not again on every frame the library is shown (each hover
+/// repaints it). By note and how many times it was already shown in this
+/// frame (a note can be on two cards: a batch is drawn once per frame).
+#[derive(Default)]
+struct PreviewCache {
+    batches: HashMap<(PathBuf, u32), PreviewBatch>,
+    /// Cards shown per note in `frame`.
+    shown: HashMap<PathBuf, u32>,
+    frame: u64,
+}
+
+struct PreviewBatch {
+    /// What it was made from: the note's modified time and strokes, the
+    /// card's scale and the pixels per point.
+    made_for: (u64, usize, u32, u32),
+    batch: Batch,
+    last_used: u64,
+}
+
 /// Page 1 as stored in the note header (no document loading).
-fn paint_preview(painter: &egui::Painter, rect: Rect, pv: &Preview) {
+fn paint_preview(painter: &egui::Painter, rect: Rect, note: &NoteInfo) {
+    let pv: &Preview = &note.meta.preview;
     painter.rect_filled(rect, radius::SMALL, color::PAGE);
     if pv.page_w <= 0.0 {
         return;
     }
     let scale = rect.width() / pv.page_w;
     let at = |x: f32, y: f32| pos2(rect.min.x + x * scale, rect.min.y + y * scale);
-    for s in &pv.strokes {
-        let color = Color32::from_rgba_unmultiplied(s.color[0], s.color[1], s.color[2], s.color[3]);
-        let w = (s.width * scale).max(0.8);
-        let pts: Vec<egui::Pos2> = s.pts.iter().map(|p| at(p[0], p[1])).collect();
-        if pts.len() == 1 {
-            painter.circle_filled(pts[0], w * 0.5, color);
-        } else {
-            painter.add(Shape::line(pts, Stroke::new(w, color)));
-        }
+    let ctx = painter.ctx();
+    let (frame, ppp) = (ctx.cumulative_frame_nr(), ctx.pixels_per_point());
+    let cache =
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<PreviewCache>>>(Id::new("note_previews")).clone());
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.frame != frame {
+        cache.frame = frame;
+        cache.shown.clear();
+        cache.batches.retain(|_, b| frame - b.last_used < PREVIEW_TTL_FRAMES);
     }
+    let shown = cache.shown.entry(note.path.clone()).or_default();
+    let key = (note.path.clone(), *shown);
+    *shown += 1;
+    let made_for = (note.meta.modified, pv.strokes.len(), scale.to_bits(), ppp.to_bits());
+    let entry = cache.batches.entry(key).or_insert_with(|| PreviewBatch {
+        made_for: (0, 0, 0, 0),
+        batch: Batch::default(),
+        last_used: frame,
+    });
+    entry.last_used = frame;
+    if entry.made_for != made_for {
+        let mut mesh = egui::epaint::Mesh::default();
+        for s in &pv.strokes {
+            // Full pressure: the stroke's own width.
+            let pts: Vec<Point> = s.pts.iter().map(|p| Point::new(p[0], p[1], 1.0)).collect();
+            crate::stroke_mesh::tessellate(&mut mesh, StrokeKind::Pen, s.color, s.width, &pts, scale, 1.0 / ppp);
+        }
+        entry.batch.replace(mesh);
+        entry.made_for = made_for;
+    }
+    stroke_gpu::paint_batch(painter, &entry.batch, rect.min.to_vec2(), 1.0, Blend::Over);
     for b in &pv.bars {
         let r = Rect::from_min_size(at(b[0], b[1]), vec2(b[2] * scale, (b[3] * scale).max(1.0)));
         painter.rect_filled(r, 0.5, Color32::from_black_alpha(140));
