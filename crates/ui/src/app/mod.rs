@@ -707,6 +707,7 @@ impl eframe::App for InkApp {
             self.pen_input.drop = WaylandDrop::start(ctx, frame);
             self.pen_input.windows = WindowsPen::start(ctx, frame);
             crate::chrome::round_corners(frame);
+            crate::win_frame::install(frame);
         }
 
         // Closing the window while editing: finish the text box and write the note.
@@ -723,6 +724,9 @@ impl eframe::App for InkApp {
             self.finish_saves();
         }
 
+        // The cursor image stays until changed: only the canvas sets it, for
+        // this frame (see `canvas::hide_pointer`).
+        ctx.set_cursor_image(None);
         let scale = self.settings.ui_scale.clamp(0.5, 2.0);
         if (ctx.zoom_factor() - scale).abs() > 1e-3 && !ctx.input(|i| i.pointer.any_down()) {
             ctx.set_zoom_factor(scale);

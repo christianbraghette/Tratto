@@ -5,6 +5,7 @@
 //! painting the pages, undo / redo and the editor shortcuts, and following
 //! the links and outline of a PDF.
 
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use eframe::egui::{
@@ -595,10 +596,10 @@ impl InkApp {
         let grabbing = self.panning || self.vbar_grab.is_some() || self.hbar_grab.is_some();
         if let (Some(pos), false, false) = (tip_pos, self.navigating(), grabbing) {
             if self.tool == Tool::Eraser {
-                ctx.set_cursor_icon(egui::CursorIcon::None);
+                hide_pointer(&ctx);
                 render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * scale);
             } else if let Some((kind, rgba, width)) = self.stroke_params() {
-                ctx.set_cursor_icon(egui::CursorIcon::None);
+                hide_pointer(&ctx);
                 // While drawing, the stroke's own end is the tip.
                 if self.active.is_none() {
                     render::paint_pen_cursor(&painter, pos, kind, rgba, width * scale);
@@ -706,6 +707,25 @@ impl InkApp {
 /// arrive as lines on Windows: a notch is whole lines, a touchpad sends
 /// fractions (so does a high-resolution wheel, which then counts as a
 /// touchpad). Pixel deltas come from touchpads.
+/// Hides the system pointer this frame (the tool paints its own cursor).
+///
+/// With a transparent cursor image, not a hidden cursor: winit hides it with
+/// Windows' cursor display count and only updates that on a change of its
+/// own state, which goes out of step when Windows moves or resizes the
+/// window (the pointer then stayed visible next to the pen's dot). An image
+/// is set again on every cursor update. `InkApp::ui` clears it each frame.
+fn hide_pointer(ctx: &egui::Context) {
+    static TRANSPARENT: OnceLock<egui::CustomCursorImage> = OnceLock::new();
+    let image = TRANSPARENT.get_or_init(|| egui::CustomCursorImage {
+        rgba: Arc::from(vec![0u8; 4 * 4 * 4]),
+        size: [4, 4],
+        hotspot: [0, 0],
+    });
+    // Integrations without bitmap cursors fall back to this.
+    ctx.set_cursor_icon(egui::CursorIcon::None);
+    ctx.set_cursor_image(Some(image.clone()));
+}
+
 fn is_wheel_notch(unit: MouseWheelUnit, delta: Vec2) -> bool {
     let whole = |v: f32| (v - v.round()).abs() < 1e-3;
     unit == MouseWheelUnit::Line && delta != Vec2::ZERO && whole(delta.x) && whole(delta.y)

@@ -27,6 +27,7 @@ use egui_phosphor::regular as icon;
 
 use crate::desktop::{self, Button, Style};
 use crate::theme::{self, color, size, space};
+use crate::win_frame;
 
 /// Height of the custom title bar.
 pub const TITLE_BAR_HEIGHT: f32 = 32.0;
@@ -140,8 +141,9 @@ pub fn title_bar(
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(bar));
             ui.set_clip_rect(panel.intersect(ui.clip_rect()));
             let ui = &mut ui;
-            // The background first, so every widget added later wins the hit test.
-            if controls {
+            // The background first, so every widget added later wins the hit
+            // test. On Windows the system moves the window (`win_frame`).
+            if controls && !win_frame::active() {
                 let resp = ui.interact(bar, Id::new("title_bar_drag"), Sense::click_and_drag());
                 if resp.double_clicked() {
                     ctx.send_viewport_cmd(ViewportCommand::Maximized(!state.maximized));
@@ -210,6 +212,16 @@ pub fn title_bar(
                     response.title = editable_title(ui, bar, text, hint, &place);
                 }
             }
+
+            // Windows: the bar is grabbed outside its widgets; not while a
+            // menu is open or the title edited (a click there closes them).
+            let mut holes = vec![
+                Rect::from_min_max(bar.min, pos2(menus_right, bar.bottom())),
+                Rect::from_min_max(pos2(buttons_left, bar.top()), bar.max),
+            ];
+            holes.extend(response.title.as_ref().map(|r| r.rect));
+            let grab = controls && !pinned;
+            win_frame::publish_caption(ctx, win_frame::Caption { bar: grab.then_some(bar), holes });
         });
     response
 }
@@ -339,7 +351,14 @@ fn window_button(ui: &mut Ui, style: Style, glyph: &str, close: bool, height: f3
 /// so the borders are on top of the other floating elements.
 pub fn window_frame(ctx: &egui::Context, state: WindowState) {
     sync_dwm_border(state.fullscreen);
-    if !state.frame_controls() || state.maximized {
+    let resizable = state.frame_controls() && !state.maximized;
+    win_frame::publish_border(ctx, resizable.then_some(RESIZE_BORDER));
+    if !resizable {
+        return;
+    }
+    // Windows resizes the window itself (`win_frame`); only the outline is ours.
+    if win_frame::active() {
+        paint_outline(ctx);
         return;
     }
     let r = ctx.viewport_rect();
@@ -397,9 +416,14 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
                 }
             });
     }
-    // DWM draws the (rounded) border itself when it can.
+    paint_outline(ctx);
+}
+
+/// The window's 1 px outline, unless DWM draws the (rounded) border itself.
+fn paint_outline(ctx: &egui::Context) {
     if !DWM_FRAME.load(Ordering::Relaxed) {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("window_outline")));
+        let r = ctx.viewport_rect();
         painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, color::BORDER_STRONG), StrokeKind::Middle);
     }
 }

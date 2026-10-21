@@ -10,6 +10,7 @@
 //! - `app`            application state and per-frame orchestration
 //! - `chrome`         custom title bar, window buttons and resize borders
 //! - `view`           page layout + page/content/screen coordinate transforms
+//! - `win_frame`      Windows: moving and resizing the window with any input
 //! - `render`         painting of page background and strokes
 //! - `pdf_view`       the PDF pages under the ink (background-rendered textures)
 //! - `pdf_nav`        a PDF's outline and links
@@ -54,6 +55,7 @@ mod theme;
 mod toolbar;
 mod update;
 mod view;
+mod win_frame;
 
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
