@@ -16,6 +16,10 @@
 //! * touching                               -> the touch winit reports is
 //!   the pen, not a finger
 //!
+//! It also notes the paste keys (Ctrl+V, Shift+Insert): egui reports a paste
+//! only when the clipboard has text, and never the keys, so a picture on the
+//! clipboard would not be pasted.
+//!
 //! The subclass proc only *observes* the messages and always forwards them
 //! (`DefSubclassProc`), so winit keeps working exactly as before. State is
 //! published through atomics and the UI is woken with `request_repaint`.
@@ -58,6 +62,9 @@ mod stub {
         pub fn take_touching(&self) -> bool {
             false
         }
+        pub fn take_paste(&self) -> bool {
+            false
+        }
     }
 }
 
@@ -76,6 +83,11 @@ mod imp {
     // Message / flag values from winuser.h (defined here so they do not depend
     // on optional windows-sys feature flags).
     const WM_KILLFOCUS: u32 = 0x0008;
+    const WM_KEYDOWN: u32 = 0x0100;
+    const VK_SHIFT: i32 = 0x10;
+    const VK_CONTROL: i32 = 0x11;
+    const VK_INSERT: usize = 0x2D;
+    const VK_V: usize = 0x56;
     const WM_POINTERUPDATE: u32 = 0x0245;
     const WM_POINTERDOWN: u32 = 0x0246;
     const WM_POINTERUP: u32 = 0x0247;
@@ -132,6 +144,7 @@ mod imp {
         fn GetPointerType(pointer_id: u32, pointer_type: *mut i32) -> i32;
         fn GetPointerPenInfo(pointer_id: u32, pen_info: *mut PointerPenInfo) -> i32;
         fn ScreenToClient(hwnd: HWND, point: *mut Point) -> i32;
+        fn GetKeyState(key: i32) -> i16;
     }
 
     const SUBCLASS_ID: usize = 0x494E_4B31; // "INK1"
@@ -146,6 +159,8 @@ mod imp {
     /// press and release between two frames, the frame of the release).
     static TOUCHING: AtomicBool = AtomicBool::new(false);
     static TOUCHED: AtomicBool = AtomicBool::new(false);
+    /// A paste key was pressed since it was last asked.
+    static PASTE: AtomicBool = AtomicBool::new(false);
     static CTX: OnceLock<egui::Context> = OnceLock::new();
 
     fn debug() -> bool {
@@ -222,6 +237,12 @@ mod imp {
                         TOUCHING.store(false, Ordering::Relaxed);
                     }
                 }
+                WM_KEYDOWN => {
+                    let held = |key| GetKeyState(key) < 0;
+                    if (wparam == VK_V && held(VK_CONTROL)) || (wparam == VK_INSERT && held(VK_SHIFT)) {
+                        PASTE.store(true, Ordering::Relaxed);
+                    }
+                }
                 WM_KILLFOCUS => {
                     publish(false, false);
                     publish_hover(None);
@@ -268,6 +289,11 @@ mod imp {
         /// the touch egui sees this frame is the pen's. Once per frame.
         pub fn take_touching(&self) -> bool {
             TOUCHED.swap(false, Ordering::Relaxed) | TOUCHING.load(Ordering::Relaxed)
+        }
+
+        /// A paste key was pressed since the last call.
+        pub fn take_paste(&self) -> bool {
+            PASTE.swap(false, Ordering::Relaxed)
         }
     }
 

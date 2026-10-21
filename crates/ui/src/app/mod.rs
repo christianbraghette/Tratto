@@ -43,7 +43,7 @@ use crate::input::windows_pen::WindowsPen;
 use crate::kinetic::Kinetic;
 use crate::pdf_nav::PdfNav;
 use crate::pdf_view::PdfTextures;
-use crate::render::{LiveStroke, StrokeCache};
+use crate::render::{LiveStroke, PictureTextures, StrokeCache};
 use crate::saver::Saver;
 use crate::scrollbar;
 use crate::settings::{NoteView, Settings, UpdateMode};
@@ -62,6 +62,7 @@ mod notes;
 mod outline_ui;
 mod pages_panel;
 mod pen_input;
+mod pictures;
 mod search;
 mod selection;
 mod settings_ui;
@@ -179,6 +180,8 @@ struct PenInput {
     pressure: f32,
     /// Windows: the touch of this frame is the pen's (see `finger`).
     windows_touch: bool,
+    /// Windows: a paste key was pressed this frame (see `picture_input`).
+    paste: bool,
 }
 
 /// The window and its title bar (see `menus`).
@@ -230,6 +233,11 @@ pub struct InkApp {
     selection: Option<Selection>,
     lasso: Option<Lasso>,
     moving: Option<MoveDrag>,
+    /// The picture picked with the select tool, and one being dragged.
+    picture: Option<u64>,
+    picture_drag: Option<pictures::PictureDrag>,
+    /// The pictures' textures (canvas, page previews, export preview).
+    picture_textures: PictureTextures,
     /// Cached anti-aliased meshes of finished strokes.
     cache: StrokeCache,
     /// Same, at page-preview scale.
@@ -353,6 +361,8 @@ enum PathField {
     /// Used at once (`file_picker::DIRECT`): the Export PDF dialog exports
     /// to it.
     ExportTo,
+    /// A picture to insert, at a page and a point on it (or where the view is).
+    Picture { at: Option<(u32, Pos2)> },
 }
 
 impl InkApp {
@@ -388,6 +398,9 @@ impl InkApp {
             selection: None,
             lasso: None,
             moving: None,
+            picture: None,
+            picture_drag: None,
+            picture_textures: PictureTextures::default(),
             cache: StrokeCache::default(),
             thumb_cache: StrokeCache::default(),
             pdf_textures: PdfTextures::default(),
@@ -510,6 +523,7 @@ impl InkApp {
                     self.apply_act(act);
                 }
             }
+            PathField::Picture { at } => self.insert_picture_file(Path::new(&path), at),
         }
     }
 
@@ -523,7 +537,11 @@ impl InkApp {
 
     /// True while a stroke, erase drag, lasso or selection drag is in progress.
     fn busy(&self) -> bool {
-        self.active.is_some() || !self.erase_session.is_empty() || self.lasso.is_some() || self.moving.is_some()
+        self.active.is_some()
+            || !self.erase_session.is_empty()
+            || self.lasso.is_some()
+            || self.moving.is_some()
+            || self.picture_drag.is_some()
     }
 
     /// A PDF is open in the reader (not a note).
@@ -742,6 +760,8 @@ impl eframe::App for InkApp {
             crate::chrome::round_corners(frame);
             crate::win_frame::install(frame);
         }
+        // Every frame, so that one pressed elsewhere is not pasted later.
+        self.pen_input.paste = self.pen_input.windows.as_ref().is_some_and(|p| p.take_paste());
 
         // Closing the window while editing: finish the text box and write the note.
         if ctx.input(|i| i.viewport().close_requested()) && self.screen == Screen::Editor {

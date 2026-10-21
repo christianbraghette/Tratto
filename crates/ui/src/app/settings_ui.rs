@@ -21,7 +21,6 @@ use crate::theme::{self, color, space};
 
 /// Note settings in the left panel: default width and resize range.
 const NOTE_WIDTH: f32 = 340.0;
-const NOTE_WIDTHS: std::ops::RangeInclusive<f32> = 280.0..=520.0;
 
 // ------------------------------------------------------------- helpers
 
@@ -86,9 +85,8 @@ impl InkApp {
     /// The note settings view of the left panel.
     pub(super) fn note_settings_view(&mut self, ui: &mut egui::Ui) {
         egui::Panel::left("left_panel_settings")
-            .resizable(true)
-            .default_size(NOTE_WIDTH)
-            .size_range(NOTE_WIDTHS)
+            .resizable(false)
+            .exact_size(NOTE_WIDTH)
             .show_separator_line(false)
             .frame(Self::view_frame(true))
             .show(ui, |ui| {

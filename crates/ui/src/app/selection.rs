@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The select tool: lasso, select all on a page, moving and deleting the
-//! selected strokes.
+//! selected strokes; a tap on a picture picks it (see `pictures`).
 
 use std::collections::HashSet;
 
@@ -21,6 +21,8 @@ impl InkApp {
         self.selection = None;
         self.lasso = None;
         self.moving = None;
+        self.picture = None;
+        self.picture_drag = None;
     }
 
     /// Selects every stroke on `page` with the select tool.
@@ -35,6 +37,7 @@ impl InkApp {
         }
         self.tool = Tool::Select;
         self.saved_tool = None;
+        self.picture = None;
         self.selection = self.selection_for(page, ids);
     }
 
@@ -52,17 +55,20 @@ impl InkApp {
     }
 
     /// Lasso released: pick the strokes that are mostly inside it. A simple
-    /// tap selects the stroke under the pen instead.
+    /// tap selects the stroke under the pen instead, or else the picture.
     fn finish_lasso(&mut self) {
         let Some(l) = self.lasso.take() else { return };
         let mut ids = HashSet::new();
         let path_len: f32 = l.points.windows(2).map(|w| w[0].distance(w[1])).sum();
 
         if l.points.len() < 4 || path_len < 8.0 {
-            if let Some(p) = l.points.first()
-                && let Some(s) = self.doc.strokes.iter().rev().find(|s| s.page == l.page && s.hit_test(*p, 4.0))
-            {
-                ids.insert(s.id);
+            if let Some(p) = l.points.first() {
+                match self.doc.strokes.iter().rev().find(|s| s.page == l.page && s.hit_test(*p, 4.0)) {
+                    Some(s) => {
+                        ids.insert(s.id);
+                    }
+                    None => self.picture = self.picture_at(l.page, *p),
+                }
             }
         } else {
             let poly_bounds = Rect::from_points(&l.points);
@@ -120,6 +126,10 @@ impl InkApp {
     }
 
     pub(super) fn delete_selection(&mut self) {
+        if let Some(id) = self.picture {
+            self.delete_picture(id);
+            return;
+        }
         let Some(sel) = self.selection.take() else {
             return;
         };
@@ -136,7 +146,9 @@ impl InkApp {
 
     pub(super) fn handle_select(&mut self, resp: &egui::Response, view: &View, press: Option<Pos2>, moves: &[Pos2]) {
         if resp.drag_started_by(PointerButton::Primary) {
-            if let Some(pos) = press.or(resp.interact_pointer_pos()) {
+            if let Some(pos) = press.or(resp.interact_pointer_pos())
+                && !self.begin_picture_drag(view, pos)
+            {
                 let c = view.screen_to_content(pos);
                 let inside = self
                     .selection
@@ -146,6 +158,7 @@ impl InkApp {
                     self.moving = Some(MoveDrag { start: c, delta: Vec2::ZERO });
                 } else {
                     self.selection = None;
+                    self.picture = None;
                     if let Some(page) = view.layout.page_at(c) {
                         let p = to_page_point(view, page, pos, 1.0).pos2();
                         self.lasso = Some(Lasso { page, points: vec![p] });
@@ -153,7 +166,11 @@ impl InkApp {
                 }
             }
         } else if resp.dragged() || resp.drag_stopped() {
-            if let Some(m) = self.moving.as_mut() {
+            if self.picture_drag.is_some() {
+                if let Some(last) = moves.last() {
+                    self.drag_picture(view, *last);
+                }
+            } else if let Some(m) = self.moving.as_mut() {
                 if let Some(last) = moves.last() {
                     m.delta = view.screen_to_content(*last) - m.start;
                 }
@@ -167,7 +184,9 @@ impl InkApp {
             }
         }
         if !resp.dragged() {
-            if self.moving.is_some() {
+            if self.picture_drag.is_some() {
+                self.finish_picture_drag();
+            } else if self.moving.is_some() {
                 self.commit_move(view.layout);
             } else if self.lasso.is_some() {
                 self.finish_lasso();

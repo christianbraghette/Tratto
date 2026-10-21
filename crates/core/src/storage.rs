@@ -3,10 +3,10 @@
 
 //! Note files.
 //!
-//! Layout (format version 6, the only one Tratto reads and writes):
+//! Layout (format version 7, the one Tratto writes):
 //!
 //! ```text
-//! "INK1" | version u32 LE (= 6) | slot_size u32 LE
+//! "INK1" | version u32 LE (= 7) | slot_size u32 LE
 //!        | meta slot A | meta slot B             (slot_size bytes each)
 //!        | pdf_len u64 LE | PDF bytes             (empty unless on a PDF)
 //!        | doc_len u64 LE | bincode(Document)     (the snapshot)
@@ -32,8 +32,13 @@
 //!
 //! Whole-file writes are atomic (temp file + rename) and copy the previous
 //! version to `<note>.ink.bak` at most every ten minutes, so a bug can never
-//! destroy the only good copy. Files of any other version (the pre-release
-//! formats 2 to 5) are refused with `StorageError::UnsupportedVersion`.
+//! destroy the only good copy.
+//!
+//! Format 6 is the same without pictures (in the document and in the
+//! records); such a note is read, and its first save writes it whole as
+//! format 7 (the backup keeps the format 6 file). Files of any other version
+//! (the pre-release formats 2 to 5) are refused with
+//! `StorageError::UnsupportedVersion`.
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -43,12 +48,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::journal::{self, Delta};
-use crate::model::{Document, Stroke};
+use crate::journal::{self, Delta, DeltaV6};
+use crate::model::{Document, DocumentV6, Stroke};
 use crate::pdf_pages::PdfFile;
 
 const MAGIC: &[u8; 4] = b"INK1";
-const FORMAT_VERSION: u32 = 6;
+const FORMAT_VERSION: u32 = 7;
+/// The format before pictures, still read.
+const FORMAT_V6: u32 = 6;
 /// Magic + version + slot size.
 const HEADER_LEN: usize = 12;
 /// seq + len + crc of a meta slot.
@@ -230,8 +237,9 @@ fn decode_slot(slot: &[u8]) -> Option<(u64, NoteMeta)> {
     Some((seq, bincode::deserialize(meta).ok()?))
 }
 
-/// Checks the header at the start of `bytes` and returns the slot size.
-fn parse_header(bytes: &[u8]) -> Result<usize, StorageError> {
+/// Checks the header at the start of `bytes` and returns the format version
+/// and the slot size.
+fn parse_header(bytes: &[u8]) -> Result<(u32, usize), StorageError> {
     if bytes.get(..4) != Some(&MAGIC[..]) {
         return Err(StorageError::BadMagic);
     }
@@ -240,14 +248,14 @@ fn parse_header(bytes: &[u8]) -> Result<usize, StorageError> {
         Ok::<_, StorageError>(u32::from_le_bytes(b.try_into().expect("4 bytes")))
     };
     let version = word(4)?;
-    if version != FORMAT_VERSION {
+    if version != FORMAT_VERSION && version != FORMAT_V6 {
         return Err(StorageError::UnsupportedVersion(version));
     }
     let size = word(8)? as usize;
     if !(SLOT_HEAD..=MAX_SLOT).contains(&size) {
         return Err(StorageError::Corrupt);
     }
-    Ok(size)
+    Ok((version, size))
 }
 
 /// The two meta slots of a note file.
@@ -264,7 +272,7 @@ impl Slots {
         let mut head = [0u8; HEADER_LEN];
         f.seek(SeekFrom::Start(0))?;
         f.read_exact(&mut head)?;
-        let size = parse_header(&head)?;
+        let (_, size) = parse_header(&head)?;
         let mut both = vec![0u8; 2 * size];
         f.read_exact(&mut both)?;
         let (a, b) = (decode_slot(&both[..size]), decode_slot(&both[size..]));
@@ -482,9 +490,10 @@ fn sized_part(bytes: &[u8], at: usize) -> Result<&[u8], StorageError> {
     part(bytes, at + 8, len)
 }
 
-/// Applies the journal records from `at` on and returns where the intact
-/// ones end. A torn record (a crash while appending) ends the journal.
-fn replay(bytes: &[u8], mut at: usize, doc: &mut Document) -> Result<usize, StorageError> {
+/// Applies the journal records (of format `version`) from `at` on and
+/// returns where the intact ones end. A torn record (a crash while
+/// appending) ends the journal.
+fn replay(bytes: &[u8], mut at: usize, doc: &mut Document, version: u32) -> Result<usize, StorageError> {
     while let Some(head) = bytes.get(at..).and_then(|rest| rest.get(..RECORD_HEAD)) {
         let len = u32::from_le_bytes(head[..4].try_into().expect("4 bytes")) as usize;
         let crc = u32::from_le_bytes(head[4..].try_into().expect("4 bytes"));
@@ -494,7 +503,11 @@ fn replay(bytes: &[u8], mut at: usize, doc: &mut Document) -> Result<usize, Stor
         }
         // An intact record that does not decode is no crash: the note is not
         // opened (so not overwritten either) rather than silently cut short.
-        let delta: Delta = bincode::deserialize(body)?;
+        let delta: Delta = if version == FORMAT_V6 {
+            bincode::deserialize::<DeltaV6>(body)?.into()
+        } else {
+            bincode::deserialize(body)?
+        };
         delta.apply(doc);
         at += RECORD_HEAD + len;
     }
@@ -504,7 +517,7 @@ fn replay(bytes: &[u8], mut at: usize, doc: &mut Document) -> Result<usize, Stor
 /// Reads a note; with `writer`, also the layout and document to append to.
 fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Written>), StorageError> {
     let bytes = fs::read(path)?;
-    let slot_size = parse_header(&bytes)?;
+    let (version, slot_size) = parse_header(&bytes)?;
     let slots = part(&bytes, HEADER_LEN, 2 * slot_size as u64)?;
     let newest = [decode_slot(&slots[..slot_size]), decode_slot(&slots[slot_size..])]
         .into_iter()
@@ -516,17 +529,23 @@ fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Wr
     at += 8 + pdf.len();
     let snapshot = sized_part(&bytes, at)?;
     at += 8 + snapshot.len();
-    let mut doc: Document = bincode::deserialize(snapshot)?;
+    let mut doc: Document = if version == FORMAT_V6 {
+        bincode::deserialize::<DocumentV6>(snapshot)?.into()
+    } else {
+        bincode::deserialize(snapshot)?
+    };
     if let Some(p) = doc.pdf.as_mut() {
         if pdf.is_empty() {
             return Err(StorageError::Corrupt);
         }
         p.file = Some(PdfFile::new(pdf.to_vec()));
     }
-    let end = replay(&bytes, at, &mut doc)?;
+    let end = replay(&bytes, at, &mut doc, version)?;
     // Both slots torn: rebuilt from the document, written at the next save.
     let meta = newest.unwrap_or_else(|| meta_from_file(path, &doc));
-    let written = writer.then(|| Written {
+    // Nothing is appended to a file of the old format: the first save
+    // writes it whole, in the new one.
+    let written = (writer && version == FORMAT_VERSION).then(|| Written {
         slot_size,
         journal_start: at as u64,
         end: end as u64,
@@ -579,6 +598,8 @@ pub fn rewrite_meta(path: &Path, change: impl FnOnce(&mut NoteMeta)) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::model::{Point, StrokeKind, TextBox};
 
@@ -827,6 +848,87 @@ mod tests {
         let (m, loaded) = load_note(&path).unwrap();
         assert!(same(&loaded, &doc));
         assert_eq!(m.title, "Mine");
+        remove(&path);
+    }
+
+    fn picture(doc: &mut Document, data: &Arc<crate::model::ImageData>) -> crate::model::Image {
+        let id = doc.alloc_id();
+        crate::model::Image { id, page: 0, x: 10.0, y: 20.0, width: 200.0, height: 100.0, data: data.clone() }
+    }
+
+    #[test]
+    fn a_picture_is_saved_once_and_follows_its_moves() {
+        let path = std::env::temp_dir().join("tratto_pictures.ink");
+        remove(&path);
+        let data = Arc::new(crate::model::ImageData::new(40, 20, vec![7u8; 50_000]));
+        let mut doc = Document::default();
+        let mut meta = NoteMeta::new("Pictures", false);
+        let mut writer = NoteWriter::default();
+        writer.save(&path, &mut meta, &doc).unwrap();
+
+        // Added: its file goes into the journal...
+        let before = len_of(&path);
+        let img = picture(&mut doc, &data);
+        doc.images.push(img);
+        writer.save(&path, &mut meta, &doc).unwrap();
+        assert!(len_of(&path) - before > 50_000);
+        // ...once: moved, and copied, only places are added.
+        let before = len_of(&path);
+        doc.images[0].x += 30.0;
+        let copy = picture(&mut doc, &data);
+        doc.images.push(copy);
+        writer.save(&path, &mut meta, &doc).unwrap();
+        assert!(len_of(&path) - before < 1_000, "{}", len_of(&path) - before);
+
+        let (_, loaded) = load_note(&path).unwrap();
+        assert!(same(&loaded, &doc));
+        assert_eq!(loaded.images[0].x, 40.0);
+        assert_eq!(loaded.images[1].data.bytes, data.bytes);
+        // Deleted, then saved whole: still right.
+        doc.images.remove(0);
+        save_note(&path, &mut meta, &doc).unwrap();
+        assert!(same(&load_note(&path).unwrap().1, &doc));
+        remove(&path);
+    }
+
+    #[test]
+    fn format_6_notes_open_and_are_saved_as_format_7() {
+        let path = std::env::temp_dir().join("tratto_format6.ink");
+        remove(&path);
+        // A format 6 file: a format 7 one without its (empty) pictures, and
+        // a record without the pictures' fields.
+        let mut doc = sample_doc();
+        let mut meta = NoteMeta::new("Old note", false);
+        save_note(&path, &mut meta, &doc).unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+        let slot_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let at = HEADER_LEN + 2 * slot_size + 8; // after the empty PDF's length
+        let snapshot_len = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
+        // `images`: an empty list, 8 bytes, the last of the document.
+        bytes.drain(at + 8 + snapshot_len - 8..at + 8 + snapshot_len);
+        bytes[at..at + 8].copy_from_slice(&(snapshot_len as u64 - 8).to_le_bytes());
+        let old = doc.clone();
+        let s = pen(&mut doc, 5);
+        doc.strokes.push(s);
+        let mut body = bincode::serialize(&journal::diff(&old, &doc).unwrap()).unwrap();
+        // No pictures: an empty list delta (8 + 8 + 8 + 1 bytes), no files (8).
+        body.truncate(body.len() - 33);
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&crc32(&[&body]).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        fs::write(&path, &bytes).unwrap();
+
+        let (m, loaded, mut writer) = open_note(&path).unwrap();
+        assert_eq!(m.title, "Old note");
+        assert!(same(&loaded, &doc), "the snapshot and the record are read");
+        assert!(read_meta(&path).is_ok());
+        // The first save writes it whole, as format 7.
+        let mut meta = m;
+        writer.save(&path, &mut meta, &loaded).unwrap();
+        let saved = fs::read(&path).unwrap();
+        assert_eq!(u32::from_le_bytes(saved[4..8].try_into().unwrap()), FORMAT_VERSION);
+        assert!(same(&load_note(&path).unwrap().1, &doc));
         remove(&path);
     }
 

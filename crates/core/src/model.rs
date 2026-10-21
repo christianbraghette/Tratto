@@ -314,6 +314,87 @@ pub struct Document {
     next_id: u64,
     /// The PDF the note is written on, if any.
     pub pdf: Option<PdfBackground>,
+    /// Pictures, in draw order (under the ink and the text).
+    pub images: Vec<Image>,
+}
+
+/// A document as format 6 saved it, before pictures (see `storage`).
+#[derive(Deserialize)]
+pub(crate) struct DocumentV6 {
+    page_width: f32,
+    page_height: f32,
+    page_count: u32,
+    page: PageStyle,
+    strokes: Vec<Stroke>,
+    texts: Vec<TextBox>,
+    next_id: u64,
+    pdf: Option<PdfBackground>,
+}
+
+impl From<DocumentV6> for Document {
+    fn from(d: DocumentV6) -> Self {
+        let DocumentV6 { page_width, page_height, page_count, page, strokes, texts, next_id, pdf } = d;
+        Self { page_width, page_height, page_count, page, strokes, texts, next_id, pdf, images: Vec::new() }
+    }
+}
+
+/// A picture placed on a page: its top-left corner `x`, `y` and its size, in
+/// page space. Its file is shared by its copies (undo, the saved document).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Image {
+    pub id: u64,
+    pub page: u32,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub data: Arc<ImageData>,
+}
+
+impl Image {
+    /// Its place on its page.
+    pub fn rect(&self) -> Rect {
+        Rect::from_min_size(pos2(self.x, self.y), vec2(self.width, self.height))
+    }
+}
+
+/// A picture's file: PNG or JPEG bytes, its size in pixels, and `key`, a
+/// hash of the bytes that names the file (the journal refers to it by it).
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ImageData {
+    pub key: u64,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+}
+
+impl ImageData {
+    pub fn new(width: u32, height: u32, bytes: Vec<u8>) -> Self {
+        Self { key: fnv1a(&bytes), width, height, bytes }
+    }
+
+    /// A JPEG (else a PNG).
+    pub fn is_jpeg(&self) -> bool {
+        self.bytes.starts_with(&[0xFF, 0xD8])
+    }
+}
+
+/// The same file: the same key (comparing the bytes would be slow).
+impl PartialEq for ImageData {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.width == other.width && self.height == other.height
+    }
+}
+
+impl std::fmt::Debug for ImageData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ImageData({:x}, {}x{}, {} bytes)", self.key, self.width, self.height, self.bytes.len())
+    }
+}
+
+/// 64-bit FNV-1a: a hash that stays the same across builds (saved keys).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// Points (1/72 in) to document units (1/96 in).
@@ -330,6 +411,7 @@ impl Default for Document {
             texts: Vec::new(),
             next_id: 1,
             pdf: None,
+            images: Vec::new(),
         }
     }
 }

@@ -6,6 +6,7 @@
 //! - `model`          serializable data model (`Point`, `Stroke`, `Document`)
 //! - `geometry`       point-to-segment math used by the eraser
 //! - `history`        action-based undo/redo (no document cloning)
+//! - `images`         pictures: their files, decoded for the screen and the PDF
 //! - `stroke_builder` jitter filter + velocity-adaptive smoothing + prediction
 //! - `stroke_path`    smoothed stroke centreline shared by rendering and export
 //! - `storage`        `.ink` files: a snapshot plus an append-only journal
@@ -16,6 +17,7 @@
 
 pub mod geometry;
 pub mod history;
+pub mod images;
 mod journal;
 pub mod library;
 pub mod model;

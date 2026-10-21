@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Document, PageStyle, Stroke, TextBox};
+use crate::model::{Document, Image, ImageData, PageStyle, Stroke, TextBox};
 
 /// The changes from one version of a document to the next.
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,6 +25,55 @@ pub(crate) struct Delta {
     pdf_pages: Option<Vec<Option<u32>>>,
     strokes: ListDelta<Stroke>,
     texts: ListDelta<TextBox>,
+    /// Pictures by their place; their files are in `image_files`, once.
+    images: ListDelta<ImagePlace>,
+    /// The files of the pictures that were not in the document before.
+    image_files: Vec<Arc<ImageData>>,
+}
+
+/// A record as format 6 saved it, before pictures (see `storage`).
+#[derive(Deserialize)]
+pub(crate) struct DeltaV6 {
+    layout: Option<Layout>,
+    pdf_pages: Option<Vec<Option<u32>>>,
+    strokes: ListDelta<Stroke>,
+    texts: ListDelta<TextBox>,
+}
+
+impl From<DeltaV6> for Delta {
+    fn from(d: DeltaV6) -> Self {
+        let DeltaV6 { layout, pdf_pages, strokes, texts } = d;
+        Delta { layout, pdf_pages, strokes, texts, images: ListDelta::default(), image_files: Vec::new() }
+    }
+}
+
+/// A picture as the journal sees it: its place, and its file by its key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct ImagePlace {
+    id: u64,
+    page: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    key: u64,
+}
+
+impl ImagePlace {
+    fn of(images: &[Image]) -> Vec<ImagePlace> {
+        images
+            .iter()
+            .map(|i| ImagePlace {
+                id: i.id,
+                page: i.page,
+                x: i.x,
+                y: i.y,
+                width: i.width,
+                height: i.height,
+                key: i.data.key,
+            })
+            .collect()
+    }
 }
 
 /// Page size, paper, page count and the id counter.
@@ -57,7 +106,7 @@ impl Layout {
     }
 }
 
-/// The changes to the strokes or the text boxes, by id.
+/// The changes to the strokes, the text boxes or the pictures, by id.
 #[derive(Debug, Serialize, Deserialize)]
 struct ListDelta<T> {
     removed: Vec<u64>,
@@ -71,13 +120,19 @@ struct ListDelta<T> {
     order: Option<Vec<u64>>,
 }
 
+impl<T> Default for ListDelta<T> {
+    fn default() -> Self {
+        Self { removed: Vec::new(), changed: Vec::new(), pages: Vec::new(), order: None }
+    }
+}
+
 impl<T> ListDelta<T> {
     fn is_empty(&self) -> bool {
         self.removed.is_empty() && self.changed.is_empty() && self.pages.is_empty() && self.order.is_none()
     }
 }
 
-/// A stroke or a text box, as the journal sees it.
+/// A stroke, a text box or a picture, as the journal sees it.
 trait Item: Clone {
     fn id(&self) -> u64;
     fn page(&self) -> u32;
@@ -140,9 +195,32 @@ impl Item for TextBox {
     }
 }
 
+impl Item for ImagePlace {
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn page(&self) -> u32 {
+        self.page
+    }
+
+    fn set_page(&mut self, page: u32) {
+        self.page = page;
+    }
+
+    fn same_content(&self, other: &Self) -> bool {
+        Self { page: other.page, ..self.clone() } == *other
+    }
+}
+
 impl Delta {
     pub(crate) fn is_empty(&self) -> bool {
-        self.layout.is_none() && self.pdf_pages.is_none() && self.strokes.is_empty() && self.texts.is_empty()
+        self.layout.is_none()
+            && self.pdf_pages.is_none()
+            && self.strokes.is_empty()
+            && self.texts.is_empty()
+            && self.images.is_empty()
+            && self.image_files.is_empty()
     }
 
     pub(crate) fn apply(self, doc: &mut Document) {
@@ -154,6 +232,22 @@ impl Delta {
         }
         apply_list(&mut doc.strokes, self.strokes);
         apply_list(&mut doc.texts, self.texts);
+        if !self.images.is_empty() {
+            // The files: those of the pictures there, and the new ones.
+            let mut files: HashMap<u64, Arc<ImageData>> =
+                doc.images.iter().map(|i| (i.data.key, i.data.clone())).collect();
+            files.extend(self.image_files.into_iter().map(|f| (f.key, f)));
+            let mut places = ImagePlace::of(&doc.images);
+            apply_list(&mut places, self.images);
+            doc.images = places
+                .into_iter()
+                .filter_map(|p| {
+                    let data = files.get(&p.key)?.clone();
+                    let ImagePlace { id, page, x, y, width, height, key: _ } = p;
+                    Some(Image { id, page, x, y, width, height, data })
+                })
+                .collect();
+        }
     }
 }
 
@@ -176,11 +270,20 @@ pub(crate) fn diff(old: &Document, new: &Document) -> Option<Delta> {
         _ => return None,
     };
     let layout = Layout::of(new);
+    let had: HashSet<u64> = old.images.iter().map(|i| i.data.key).collect();
+    let mut image_files: Vec<Arc<ImageData>> = Vec::new();
+    for i in &new.images {
+        if !had.contains(&i.data.key) && !image_files.iter().any(|f| f.key == i.data.key) {
+            image_files.push(i.data.clone());
+        }
+    }
     Some(Delta {
         layout: (Layout::of(old) != layout).then_some(layout),
         pdf_pages,
         strokes: diff_list(&old.strokes, &new.strokes)?,
         texts: diff_list(&old.texts, &new.texts)?,
+        images: diff_list(&ImagePlace::of(&old.images), &ImagePlace::of(&new.images))?,
+        image_files,
     })
 }
 

@@ -150,6 +150,7 @@ impl InkApp {
         let texts = &self.doc.texts;
         let cache = &mut self.thumb_cache;
         let pdf_textures = &mut self.pdf_textures;
+        let pictures = &mut self.picture_textures;
         let drag = &mut self.page_drag;
 
         // Scroll the list to the current page when it changes.
@@ -213,6 +214,7 @@ impl InkApp {
                             p.rect_filled(rect, 0.0, render::PAGE_COLOR);
                             let clipped = ui.painter_at(rect);
                             pdf_textures.paint(&clipped, doc, i, rect, false);
+                            pictures.paint_page(&clipped, &doc.images, i, rect.min, scale, None);
                             render::paint_page_strokes(&clipped, rect.min.to_vec2(), scale, strokes, i, cache, aa);
                             render::paint_page_texts(&clipped, rect.min.to_vec2(), scale, texts, i);
                             let p = ui.painter();

@@ -21,7 +21,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use crate::model::{Document, Stroke, TextBox};
+use crate::model::{Document, Image, Stroke, TextBox};
 
 const MAX_DEPTH: usize = 1000;
 
@@ -43,6 +43,17 @@ pub enum Action {
     /// Replace the text box that has the same id.
     ReplaceText {
         text: TextBox,
+    },
+    AddImage {
+        index: usize,
+        image: Image,
+    },
+    RemoveImage {
+        id: u64,
+    },
+    /// Replace the picture that has the same id (moved, resized).
+    ReplaceImage {
+        image: Image,
     },
     /// `pdf_page`: the PDF page under the new page (notes on a PDF).
     InsertPage {
@@ -74,19 +85,23 @@ pub enum Action {
         index: u32,
         strokes: Vec<(usize, Stroke)>,
         texts: Vec<(usize, TextBox)>,
+        images: Vec<(usize, Image)>,
         insert_page: bool,
         pdf_page: Option<u32>,
     },
     Batch(Vec<Action>),
 }
 
-/// Renumbers the page of every stroke and text box.
+/// Renumbers the page of every stroke, text box and picture.
 fn remap_pages(doc: &mut Document, f: impl Fn(u32) -> u32) {
     for s in doc.strokes.iter_mut() {
         s.page = f(s.page);
     }
     for t in doc.texts.iter_mut() {
         t.page = f(t.page);
+    }
+    for i in doc.images.iter_mut() {
+        i.page = f(i.page);
     }
 }
 
@@ -143,6 +158,26 @@ impl Action {
                 Some(i) => {
                     let old = std::mem::replace(&mut doc.texts[i], text);
                     Action::ReplaceText { text: old }
+                }
+                None => Action::Batch(Vec::new()),
+            },
+            Action::AddImage { index, image } => {
+                let id = image.id;
+                let index = index.min(doc.images.len());
+                doc.images.insert(index, image);
+                Action::RemoveImage { id }
+            }
+            Action::RemoveImage { id } => match doc.images.iter().position(|i| i.id == id) {
+                Some(index) => {
+                    let image = doc.images.remove(index);
+                    Action::AddImage { index, image }
+                }
+                None => Action::Batch(Vec::new()),
+            },
+            Action::ReplaceImage { image } => match doc.images.iter().position(|i| i.id == image.id) {
+                Some(i) => {
+                    let old = std::mem::replace(&mut doc.images[i], image);
+                    Action::ReplaceImage { image: old }
                 }
                 None => Action::Batch(Vec::new()),
             },
@@ -220,8 +255,10 @@ impl Action {
                 }
                 let (kept_s, strokes) = split_page(std::mem::take(&mut doc.strokes), index, |s| s.page);
                 let (kept_t, texts) = split_page(std::mem::take(&mut doc.texts), index, |t| t.page);
+                let (kept_i, images) = split_page(std::mem::take(&mut doc.images), index, |i| i.page);
                 doc.strokes = kept_s;
                 doc.texts = kept_t;
+                doc.images = kept_i;
                 let remove_page = doc.page_count > 1;
                 let mut pdf_page = None;
                 if remove_page {
@@ -233,9 +270,9 @@ impl Action {
                     }
                     doc.page_count -= 1;
                 }
-                Action::RestorePage { index, strokes, texts, insert_page: remove_page, pdf_page }
+                Action::RestorePage { index, strokes, texts, images, insert_page: remove_page, pdf_page }
             }
-            Action::RestorePage { index, strokes, texts, insert_page, pdf_page } => {
+            Action::RestorePage { index, strokes, texts, images, insert_page, pdf_page } => {
                 if insert_page {
                     let at = index.min(doc.page_count);
                     remap_pages(doc, |p| if p >= at { p + 1 } else { p });
@@ -254,6 +291,11 @@ impl Action {
                     t.page = index;
                     let at = i.min(doc.texts.len());
                     doc.texts.insert(at, t);
+                }
+                for (i, mut image) in images {
+                    image.page = index;
+                    let at = i.min(doc.images.len());
+                    doc.images.insert(at, image);
                 }
                 Action::DeletePage { index }
             }
@@ -489,6 +531,31 @@ mod tests {
         assert_eq!(doc.strokes.iter().map(|s| s.page).collect::<Vec<_>>(), vec![0, 1, 2]);
         h.exec(&mut doc, Action::MovePage { from: 2, to: 0 });
         assert_eq!(doc.strokes.iter().map(|s| s.page).collect::<Vec<_>>(), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn pictures_move_are_undone_and_go_with_their_page() {
+        let mut doc = Document::default();
+        doc.page_count = 3;
+        let mut h = History::default();
+        let data = std::sync::Arc::new(crate::model::ImageData::new(4, 4, vec![1, 2, 3]));
+        let img =
+            |id, page| crate::model::Image { id, page, x: 0.0, y: 0.0, width: 40.0, height: 40.0, data: data.clone() };
+        h.exec(&mut doc, Action::AddImage { index: 0, image: img(1, 1) });
+        h.exec(&mut doc, Action::AddImage { index: 1, image: img(2, 2) });
+        h.exec(&mut doc, Action::ReplaceImage { image: crate::model::Image { x: 99.0, ..img(1, 1) } });
+        assert_eq!(doc.images[0].x, 99.0);
+        h.undo(&mut doc);
+        assert_eq!(doc.images[0].x, 0.0);
+        // Page 1 goes with its picture; the one on page 2 moves up a page.
+        h.exec(&mut doc, Action::DeletePage { index: 1 });
+        assert_eq!(doc.images.iter().map(|i| (i.id, i.page)).collect::<Vec<_>>(), [(2, 1)]);
+        h.undo(&mut doc);
+        assert_eq!(doc.images.iter().map(|i| (i.id, i.page)).collect::<Vec<_>>(), [(1, 1), (2, 2)]);
+        h.exec(&mut doc, Action::RemoveImage { id: 2 });
+        assert_eq!(doc.images.len(), 1);
+        h.undo(&mut doc);
+        assert_eq!(doc.images.len(), 2);
     }
 
     #[test]

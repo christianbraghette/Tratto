@@ -75,7 +75,7 @@ impl InkApp {
             self.open_export_dialog();
         }
         // While the context menu is open, Escape belongs to it.
-        if self.selection.is_some()
+        if (self.selection.is_some() || self.picture.is_some())
             && self.context_menu.is_none()
             && !ctx.egui_wants_keyboard_input()
             && !self.reading()
@@ -464,6 +464,8 @@ impl InkApp {
 
         let view = View::new(canvas, self.scroll, scale, layout);
         self.shown_content = (self.scroll.y, self.scroll.y + visible);
+        let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| canvas.contains(*p));
+        self.picture_input(ui.ctx(), &view, pointer);
 
         // ---- pen / mouse input
         self.update_pressure(ui.ctx());
@@ -496,7 +498,10 @@ impl InkApp {
                 }
                 _ => false,
             };
-            self.context_menu = Some(ContextMenu { pos, page, text: self.text_at(&view.layout, c), on_selection });
+            let at = page.map(|p| (p, c - view.layout.page_origin(p).to_vec2()));
+            let picture = at.and_then(|(p, local)| self.picture_at(p, local));
+            let text = self.text_at(&view.layout, c);
+            self.context_menu = Some(ContextMenu { pos, page, text, on_selection, picture, at });
             ui.ctx().request_repaint();
         }
 
@@ -542,10 +547,16 @@ impl InkApp {
                 a.live.paint(&painter, &view, a.page, a.kind, a.color, a.width, points, ppp);
             }
         };
+        render::paint_rules(&painter, &view, &self.doc);
+        // Pictures, on the paper and under the ink; the one dragged where it is now.
+        let dragged = self.picture_drag.as_ref().map(|d| &d.now);
+        for page in view.visible_pages() {
+            let origin = view.page_origin_screen(page);
+            self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scale, dragged);
+        }
         let strokes = &self.doc.strokes;
         render::paint_strokes(&painter, &view, Layer::Highlight, strokes, &mut self.cache, ppp, moved.as_ref());
         paint_live(StrokeKind::Highlighter);
-        render::paint_rules(&painter, &view, &self.doc);
         let text_move = self
             .text_press
             .as_ref()
@@ -576,6 +587,9 @@ impl InkApp {
             painter.rect_filled(rect, 2.0, color::accent_alpha(28));
             let path = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
             painter.extend(egui::Shape::dashed_line(&path, egui::Stroke::new(1.5, blue), 6.0, 4.0));
+        }
+        if self.tool == Tool::Select {
+            self.paint_picked_picture(&painter, &view, canvas_resp.hover_pos());
         }
         if let Some(l) = &self.lasso {
             let o = layout.page_origin(l.page).to_vec2();

@@ -418,6 +418,9 @@ impl InkApp {
         self.nav_back.clear();
         self.outline_open.clear();
         self.page_drag = None;
+        self.picture = None;
+        self.picture_drag = None;
+        self.picture_textures.clear();
         self.edit = None;
         self.text_press = None;
         self.text_layer.clear();

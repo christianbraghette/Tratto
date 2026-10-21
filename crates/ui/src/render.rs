@@ -4,7 +4,7 @@
 //! Painting: pages, cached anti-aliased stroke meshes, eraser cursor.
 //!
 //! A page is painted bottom to top: paper, the PDF page it is written on (if
-//! any), highlighter strokes, rules, text boxes, pen strokes. Highlighters
+//! any), rules, pictures, highlighter strokes, text boxes, pen strokes. Highlighters
 //! are in the colour they leave on the paper (`model::highlight_on`) and
 //! darken what is under them (`stroke_gpu`): overlapping highlighter
 //! strokes never get darker, and nothing written or printed is covered.
@@ -14,17 +14,77 @@ use std::ops::Range;
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Stroke as UiStroke, StrokeKind as UiStrokeKind, Vec2, epaint::Mesh,
-    pos2, vec2,
+    Align2, Color32, ColorImage, FontId, Painter, Pos2, Rect, Stroke as UiStroke, StrokeKind as UiStrokeKind,
+    TextureFilter, TextureHandle, TextureId, TextureOptions, Vec2, epaint::Mesh, pos2, vec2,
 };
 
-use tratto_core::model::{self, Document, PageKind, Point, Stroke, StrokeKind, TextBox, TextMark};
+use tratto_core::model::{self, Document, Image, ImageData, PageKind, Point, Stroke, StrokeKind, TextBox, TextMark};
 
 use crate::markdown;
 use crate::stroke_gpu::{self, Batch, Blend};
 use crate::stroke_mesh::{self, LiveMesh};
 use crate::theme::color;
 use crate::view::View;
+
+/// Pictures are shown no larger than this (pixels, on the longer side).
+const PICTURE_SIDE: u32 = 2048;
+
+/// The pictures' textures, by their files' keys, made when first painted;
+/// `None` for a file that cannot be read.
+#[derive(Default)]
+pub struct PictureTextures {
+    textures: HashMap<u64, Option<TextureHandle>>,
+}
+
+impl PictureTextures {
+    fn texture(&mut self, ctx: &eframe::egui::Context, data: &ImageData) -> Option<TextureId> {
+        let made = self.textures.entry(data.key).or_insert_with(|| {
+            let rgba = data.decode(PICTURE_SIDE).ok()?;
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+            // Mipmaps: smooth when shown small (page previews, zoomed out).
+            let options = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
+            Some(ctx.load_texture(format!("picture-{:x}", data.key), image, options))
+        });
+        made.as_ref().map(TextureHandle::id)
+    }
+
+    /// Paints the pictures of `page`, whose top-left corner is at `origin`
+    /// on screen, `scale` points per document unit. `moved` is a picture
+    /// shown at another place (being moved or resized).
+    pub fn paint_page(
+        &mut self,
+        painter: &Painter,
+        images: &[Image],
+        page: u32,
+        origin: Pos2,
+        scale: f32,
+        moved: Option<&Image>,
+    ) {
+        for img in images.iter().filter(|i| i.page == page) {
+            let img = moved.filter(|m| m.id == img.id).unwrap_or(img);
+            let rect = Rect::from_min_size(origin + vec2(img.x, img.y) * scale, vec2(img.width, img.height) * scale);
+            if !rect.intersects(painter.clip_rect()) {
+                continue;
+            }
+            match self.texture(painter.ctx(), &img.data) {
+                Some(tex) => {
+                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                    painter.image(tex, rect, uv, Color32::WHITE);
+                }
+                // A file that cannot be read: its place, greyed.
+                None => {
+                    painter.rect_filled(rect, 0.0, Color32::from_gray(225));
+                }
+            }
+        }
+    }
+
+    /// Forgets every texture (another note).
+    pub fn clear(&mut self) {
+        self.textures.clear();
+    }
+}
 
 /// Distinct colour of the non-writable area around the pages.
 pub const PADDING_COLOR: Color32 = color::DESK;

@@ -60,6 +60,11 @@ pub(super) enum Command {
     Deselect,
     EditText(u64),
     DeleteText(u64),
+    /// The clipboard's picture, at a page and a point on it (or where the view is).
+    PastePicture(Option<(u32, Pos2)>),
+    /// A picture file, chosen in a dialog, at the same.
+    InsertPicture(Option<(u32, Pos2)>),
+    DeletePicture(u64),
     Tool(Tool),
     ZoomIn,
     ZoomOut,
@@ -85,6 +90,10 @@ pub(super) struct ContextMenu {
     pub page: Option<u32>,
     pub text: Option<u64>,
     pub on_selection: bool,
+    /// The picture under it.
+    pub picture: Option<u64>,
+    /// The page and the point on it.
+    pub at: Option<(u32, Pos2)>,
 }
 
 /// Help windows that can be open.
@@ -471,12 +480,19 @@ impl InkApp {
         if entry(ui, icon::SELECTION_ALL, "Select all on page", &shortcut(&ctx, cmd, Key::A), true) {
             push(ui, Command::SelectAll(self.current_page));
         }
-        let selected = self.selection.is_some();
+        let selected = self.selection.is_some() || self.picture.is_some();
         if entry(ui, icon::TRASH, "Delete selection", &shortcut(&ctx, Modifiers::NONE, Key::Delete), selected) {
             push(ui, Command::DeleteSelection);
         }
         if entry(ui, icon::SELECTION_SLASH, "Deselect", &shortcut(&ctx, Modifiers::NONE, Key::Escape), selected) {
             push(ui, Command::Deselect);
+        }
+        ui.separator();
+        if entry(ui, icon::CLIPBOARD, "Paste picture", &shortcut(&ctx, cmd, Key::V), true) {
+            push(ui, Command::PastePicture(None));
+        }
+        if entry(ui, icon::IMAGE, "Insert picture...", "", true) {
+            push(ui, Command::InsertPicture(None));
         }
     }
 
@@ -521,6 +537,12 @@ impl InkApp {
                         let ctx = ui.ctx().clone();
                         if entry(ui, icon::COPY, "Copy", &shortcut(&ctx, Modifiers::COMMAND, Key::C), true) {
                             push(ui, Command::CopyText);
+                        }
+                        ui.separator();
+                    }
+                    if let Some(id) = menu.picture {
+                        if entry(ui, icon::TRASH, "Delete picture", "", true) {
+                            push(ui, Command::DeletePicture(id));
                         }
                         ui.separator();
                     }
@@ -575,6 +597,13 @@ impl InkApp {
                         }
                         if entry(ui, icon::TEXT_AA, "Select all text on page", "", true) {
                             push(ui, Command::SelectAllText(page));
+                        }
+                        ui.separator();
+                        if entry(ui, icon::CLIPBOARD, "Paste picture here", "", true) {
+                            push(ui, Command::PastePicture(menu.at));
+                        }
+                        if entry(ui, icon::IMAGE, "Insert picture here...", "", true) {
+                            push(ui, Command::InsertPicture(menu.at));
                         }
                         self.page_entries(ui, page, &mut push);
                     }
@@ -741,6 +770,9 @@ impl InkApp {
             Command::Redo => self.redo(),
             Command::SelectAll(page) if editor => self.select_all_on_page(page),
             Command::DeleteSelection => self.delete_selection(),
+            Command::PastePicture(at) if editor => self.paste_picture(at, false),
+            Command::InsertPicture(at) if editor => self.ask_picture_file(at),
+            Command::DeletePicture(id) => self.delete_picture(id),
             Command::Deselect => {
                 self.clear_selection();
                 self.text_sel = None;
@@ -870,6 +902,7 @@ impl InkApp {
                             (key(none, Key::Delete), "Delete the selection"),
                             (key(none, Key::Escape), "Deselect"),
                             (key(c, Key::C), "Copy the selected text"),
+                            (key(c, Key::V), "Paste a picture"),
                         ],
                     ),
                     (

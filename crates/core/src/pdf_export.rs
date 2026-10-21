@@ -22,6 +22,7 @@
 //!   form XObjects (`pdf_pages::underlay`, PDFium), so their text stays
 //!   text; such pages get no rules.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::ops::RangeInclusive;
@@ -30,7 +31,10 @@ use std::path::Path;
 use flate2::{Compression, write::ZlibEncoder};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{self, Document, PageKind, RunStyle, Stroke, StrokeKind, TextBox, TextLayout, TextMark, TextRun};
+use crate::images;
+use crate::model::{
+    self, Document, ImageData, PageKind, RunStyle, Stroke, StrokeKind, TextBox, TextLayout, TextMark, TextRun,
+};
 use crate::pdf_pages::{self, Underlay};
 use crate::stroke_path::{self, Sample};
 
@@ -210,12 +214,37 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     // Object numbers: 1 catalog, 2 page tree, 3 resources, 4 info, 5 the
     // highlighters' graphics state, 6.. the fonts, then (page, content)
     // pairs, then (several notes only) the outline root and one bookmark per
-    // note.
+    // note, then the pictures (each with its transparency, if it has some).
     let gs_obj = 5;
     let font_obj = 6;
     let first_page_obj = font_obj + FONTS.len();
     let outline_obj = first_page_obj + 2 * pages;
     let outlined = notes.len() > 1;
+    let bookmarks = (0..notes.len()).filter(|n| page_list.iter().any(|&(m, _)| m == *n)).count();
+    let image_obj = outline_obj + if outlined { 1 + bookmarks } else { 0 };
+
+    // The pictures on the pages exported, each file once: `/Im<n>`.
+    let mut pictures: HashMap<u64, usize> = HashMap::new();
+    let mut xobjects: Vec<XObject> = Vec::new();
+    for &(note, page) in &page_list {
+        for img in notes[note].doc.images.iter().filter(|i| i.page == page) {
+            if !pictures.contains_key(&img.data.key)
+                && let Some(x) = XObject::of(&img.data)?
+            {
+                pictures.insert(img.data.key, xobjects.len());
+                xobjects.push(x);
+            }
+        }
+    }
+    let mut next = image_obj;
+    let numbers: Vec<usize> = xobjects
+        .iter()
+        .map(|x| {
+            let n = next;
+            next += 1 + usize::from(x.mask.is_some());
+            n
+        })
+        .collect();
 
     let mut pdf = Pdf::new();
     pdf.raw(b"%PDF-1.5\n%\xE2\xE3\xCF\xD3\n");
@@ -230,7 +259,15 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     pdf.obj(2, &format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" ")));
 
     let fonts: Vec<String> = (0..FONTS.len()).map(|i| format!("/F{} {} 0 R", i + 1, font_obj + i)).collect();
-    pdf.obj(3, &format!("<< /ExtGState << /GSH {gs_obj} 0 R >> /Font << {} >> >>", fonts.join(" ")));
+    let images: Vec<String> = numbers.iter().enumerate().map(|(i, n)| format!("/Im{i} {n} 0 R")).collect();
+    pdf.obj(
+        3,
+        &format!(
+            "<< /ExtGState << /GSH {gs_obj} 0 R >> /Font << {} >> /XObject << {} >> >>",
+            fonts.join(" "),
+            images.join(" ")
+        ),
+    );
 
     let author = if opts.author.trim().is_empty() {
         String::new()
@@ -252,7 +289,7 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
         let doc = notes[note].doc;
         let ((out_w, out_h), _, _) = opts.placement(doc);
         let (pw, ph) = (out_w * PX_TO_PT, out_h * PX_TO_PT);
-        let content = page_content(doc, page, opts);
+        let content = page_content(doc, page, opts, &pictures);
         let packed = deflate(content.as_bytes())?;
         let page_obj = first_page_obj + 2 * p;
         pdf.obj(
@@ -295,7 +332,64 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
         }
     }
 
+    for (x, &n) in xobjects.iter().zip(&numbers) {
+        let mask = x.mask.as_ref().map_or(String::new(), |_| format!(" /SMask {} 0 R", n + 1));
+        pdf.stream_obj(n, &format!("{}{mask}", x.dict), &x.data);
+        if let Some(alpha) = &x.mask {
+            let dict = format!(
+                "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode",
+                x.size[0], x.size[1]
+            );
+            pdf.stream_obj(n + 1, &dict, alpha);
+        }
+    }
+
     Ok(pdf.finish(1, 4))
+}
+
+/// A picture as a PDF image: a JPEG as it is (grey or colour), anything
+/// else its pixels, compressed, with its transparency as a mask if it has
+/// some.
+struct XObject {
+    /// The stream's dictionary entries, without `/Length`.
+    dict: String,
+    data: Vec<u8>,
+    size: [u32; 2],
+    /// The transparency, compressed.
+    mask: Option<Vec<u8>>,
+}
+
+impl XObject {
+    /// `None`: a picture that cannot be read (it is left out).
+    fn of(img: &ImageData) -> io::Result<Option<XObject>> {
+        let size = [img.width, img.height];
+        let head = |space: &str, filter: &str| {
+            format!(
+                "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /{space} /BitsPerComponent 8 /Filter /{filter}",
+                img.width, img.height
+            )
+        };
+        if img.is_jpeg() {
+            let space = match images::jpeg_channels(&img.bytes) {
+                Some(1) => Some("DeviceGray"),
+                Some(3) => Some("DeviceRGB"),
+                _ => None,
+            };
+            if let Some(space) = space {
+                return Ok(Some(XObject { dict: head(space, "DCTDecode"), data: img.bytes.clone(), size, mask: None }));
+            }
+        }
+        let Ok(pixels) = img.decode(u32::MAX) else { return Ok(None) };
+        let size = [pixels.width(), pixels.height()];
+        let rgb: Vec<u8> = pixels.pixels().flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let alpha: Vec<u8> = pixels.pixels().map(|p| p[3]).collect();
+        let mask = if alpha.iter().any(|a| *a < 255) { Some(deflate(&alpha)?) } else { None };
+        let dict = format!(
+            "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode",
+            size[0], size[1]
+        );
+        Ok(Some(XObject { dict, data: deflate(&rgb)?, size, mask }))
+    }
 }
 
 fn deflate(data: &[u8]) -> io::Result<Vec<u8>> {
@@ -356,7 +450,9 @@ impl Pdf {
 
 // ------------------------------------------------------- page content
 
-fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
+/// The drawing of note page `page`; `pictures` names the pictures' images
+/// (`/Im<n>`) by their files' keys.
+fn page_content(doc: &Document, page: u32, opts: &PdfOptions, pictures: &HashMap<u64, usize>) -> String {
     let mut c = String::with_capacity(32 * 1024);
     // Note page space (y down, px) -> PDF space (y up, pt), scaled and
     // centred on the output page.
@@ -370,15 +466,23 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions) -> String {
         num((out_h - oy) * PX_TO_PT, 3),
     ));
 
-    // Bottom to top, as on screen: highlighters, rules, text, pen strokes.
+    // Bottom to top, as on screen: rules, pictures, highlighters, text, pen
+    // strokes.
     let strokes = |kind: StrokeKind| doc.strokes.iter().filter(move |s| s.page == page && s.kind == kind);
+    if opts.include_rules && doc.ruled(page) {
+        write_rules(&mut c, doc);
+    }
+    for img in doc.images.iter().filter(|i| i.page == page) {
+        if let Some(n) = pictures.get(&img.data.key) {
+            // The image's unit square, upright (the page space is y down).
+            let (w, h) = (num(img.width, 2), num(img.height, 2));
+            c.push_str(&format!("q\n{w} 0 0 -{h} {} {} cm\n/Im{n} Do\nQ\n", num(img.x, 2), num(img.y + img.height, 2)));
+        }
+    }
     if opts.include_highlighter {
         for s in strokes(StrokeKind::Highlighter) {
             write_stroke(&mut c, s, opts);
         }
-    }
-    if opts.include_rules && doc.ruled(page) {
-        write_rules(&mut c, doc);
     }
     if opts.include_text {
         for t in doc.texts.iter().filter(|t| t.page == page) {
@@ -733,7 +837,7 @@ mod tests {
             height: 60.0,
         };
         doc.texts[0].layout = Some(std::sync::Arc::new(layout));
-        let c = page_content(&doc, 0, &PdfOptions::default());
+        let c = page_content(&doc, 0, &PdfOptions::default(), &HashMap::new());
         assert!(c.contains("/F2 16 Tf\n1 0 0 -1 40 216 Tm\n(bold) Tj"), "bold, at the run's baseline");
         assert!(c.contains("/F5 16 Tf\n1 0 0 -1 80 216 Tm\n(code) Tj"), "code in Courier");
         assert!(c.contains(" re S\n"), "the task's box");
@@ -744,6 +848,44 @@ mod tests {
         )
         .into_owned();
         assert!(FONTS.iter().all(|f| fonts.contains(&format!("/BaseFont /{f} "))));
+    }
+
+    /// Pictures become images, each file once: a JPEG as it is, a PNG with
+    /// transparency as pixels and a mask; the file stays consistent.
+    #[test]
+    fn pictures_are_embedded_once() {
+        use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
+        let encode = |img: DynamicImage, format| {
+            let mut out = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut out), format).unwrap();
+            ImageData::from_file(out).unwrap()
+        };
+        let png = encode(DynamicImage::ImageRgba8(RgbaImage::from_pixel(3, 2, Rgba([9, 8, 7, 100]))), ImageFormat::Png);
+        let jpeg = encode(DynamicImage::ImageRgb8(RgbImage::from_pixel(4, 4, Rgb([1, 2, 3]))), ImageFormat::Jpeg);
+        let mut doc = sample_doc();
+        for (n, data) in [&png, &png, &jpeg].into_iter().enumerate() {
+            let id = doc.alloc_id();
+            let (x, y, width, height, data) = (n as f32 * 50.0, 10.0, 40.0, 20.0, data.clone());
+            doc.images.push(model::Image { id, page: 0, x, y, width, height, data });
+        }
+        let bytes = build_pdf(&[PdfNote { doc: &doc, title: "A".into() }], &PdfOptions::default()).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches("/Subtype /Image").count(), 3, "the PNG, its mask, the JPEG");
+        assert_eq!(text.matches("/SMask").count(), 1);
+        assert_eq!(text.matches("/DCTDecode").count(), 1);
+        let pictures = HashMap::from([(png.key, 0), (jpeg.key, 1)]);
+        let c = page_content(&doc, 0, &PdfOptions::default(), &pictures);
+        assert_eq!(c.matches("/Im0 Do").count(), 2);
+        assert!(c.contains("q\n40 0 0 -20 0 30 cm\n/Im0 Do"), "upright, at its place");
+
+        // Every xref entry points at its object.
+        let pos: usize = text.rsplit("startxref\n").next().unwrap().lines().next().unwrap().parse().unwrap();
+        let table = String::from_utf8_lossy(&bytes[pos..]);
+        for (i, line) in table.lines().skip(3).take_while(|l| l.ends_with(" n ")).enumerate() {
+            let off: usize = line[..10].parse().unwrap();
+            let expect = format!("{} 0 obj", i + 1);
+            assert_eq!(&bytes[off..off + expect.len()], expect.as_bytes());
+        }
     }
 
     fn pdf_text(opts: &PdfOptions) -> String {
@@ -817,14 +959,14 @@ mod tests {
         let colour = format!("{} {} {} RG", num(r, 3), num(g, 3), num(b, 3));
         let doc = sample_doc();
         let rules = PdfOptions { include_rules: true, ..Default::default() };
-        let page = page_content(&doc, 1, &rules);
+        let page = page_content(&doc, 1, &rules, &HashMap::new());
         let at = |what: &str| page.find(what).unwrap_or_else(|| panic!("{what} missing"));
-        // Under the rules and the pen ink (black).
-        assert!(at(&colour) < at("0.784 0.839 0.902 RG") && at(&colour) < at("0 0 0 RG"));
+        // Over the rules (and pictures), darkening them; under the pen ink (black).
+        assert!(at("0.784 0.839 0.902 RG") < at(&colour) && at(&colour) < at("0 0 0 RG"));
         assert!(pdf_text(&opts).contains("/BM /Darken"));
         assert!(page.contains("/GSH gs"));
         let no_hl = PdfOptions { include_highlighter: false, ..Default::default() };
-        assert!(!page_content(&doc, 1, &no_hl).contains(&colour));
+        assert!(!page_content(&doc, 1, &no_hl, &HashMap::new()).contains(&colour));
     }
 
     #[test]

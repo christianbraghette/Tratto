@@ -34,7 +34,7 @@ use tratto_core::{storage, stroke_path};
 use super::{InkApp, PathField};
 use crate::file_picker::{self, Pick, Request};
 use crate::pdf_view::PdfTextures;
-use crate::render::{self, Layer};
+use crate::render::{self, Layer, PictureTextures};
 use crate::stroke_mesh;
 use crate::theme::{self, color, radius, space};
 
@@ -559,13 +559,20 @@ impl InkApp {
     // ----------------------------------------------------------- preview
 
     fn export_preview(&mut self, ui: &mut Ui, d: &mut ExportDialog, list: &[(PathBuf, String)]) {
-        // The PDF pages' textures, lent for the preview (the rest only reads).
-        let mut textures = std::mem::take(&mut self.pdf_textures);
+        // The PDF pages' and pictures' textures, lent for the preview (the
+        // rest only reads).
+        let mut textures = (std::mem::take(&mut self.pdf_textures), std::mem::take(&mut self.picture_textures));
         self.preview_pages(ui, d, list, &mut textures);
-        self.pdf_textures = textures;
+        (self.pdf_textures, self.picture_textures) = textures;
     }
 
-    fn preview_pages(&self, ui: &mut Ui, d: &mut ExportDialog, list: &[(PathBuf, String)], textures: &mut PdfTextures) {
+    fn preview_pages(
+        &self,
+        ui: &mut Ui,
+        d: &mut ExportDialog,
+        list: &[(PathBuf, String)],
+        textures: &mut (PdfTextures, PictureTextures),
+    ) {
         theme::caption(ui, "Preview");
         ui.add_space(space::XS);
         let docs: Vec<(&Document, &str)> =
@@ -677,7 +684,14 @@ impl InkApp {
 /// page (white), the note's page scaled and centred on it; then, as in the
 /// PDF, paper (or the PDF page it is written on), highlighters, rules, text
 /// boxes and pen strokes with the chosen ink colours.
-fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions, textures: &mut PdfTextures) {
+fn paint_page(
+    ui: &Ui,
+    area: Rect,
+    doc: &Document,
+    page: u32,
+    opts: &PdfOptions,
+    (textures, pictures): &mut (PdfTextures, PictureTextures),
+) {
     let ((out_w, out_h), s, (ox, oy)) = opts.placement(doc);
     let k = (area.width() / out_w).min(area.height() / out_h);
     let sheet = Rect::from_center_size(area.center(), vec2(out_w * k, out_h * k));
@@ -713,18 +727,7 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions,
             }
         }
     };
-    // Highlighters darken what is under them, as in the PDF.
-    if opts.include_highlighter {
-        let mut mesh = Mesh::default();
-        let aa = 1.0 / ui.ctx().pixels_per_point();
-        for st in doc.strokes.iter().filter(|st| st.page == page && st.kind == StrokeKind::Highlighter) {
-            let (r, g, b) = opts.stroke_rgb(st);
-            let rgba = [r, g, b].map(|v| (v * 255.0).round() as u8);
-            stroke_mesh::tessellate(&mut mesh, st.kind, [rgba[0], rgba[1], rgba[2], 255], st.width, &st.points, f, aa);
-        }
-        mesh.translate(origin.to_vec2());
-        render::paint_mesh(&p, Layer::Highlight, mesh);
-    }
+    // As in the PDF: rules, pictures, highlighters, text, pen.
     if opts.include_rules && doc.ruled(page) {
         let spacing = doc.page.spacing.max(8.0);
         if spacing * f >= 2.5 {
@@ -742,6 +745,19 @@ fn paint_page(ui: &Ui, area: Rect, doc: &Document, page: u32, opts: &PdfOptions,
                 }
             }
         }
+    }
+    pictures.paint_page(&p, &doc.images, page, origin, f, None);
+    // Highlighters darken what is under them, as in the PDF.
+    if opts.include_highlighter {
+        let mut mesh = Mesh::default();
+        let aa = 1.0 / ui.ctx().pixels_per_point();
+        for st in doc.strokes.iter().filter(|st| st.page == page && st.kind == StrokeKind::Highlighter) {
+            let (r, g, b) = opts.stroke_rgb(st);
+            let rgba = [r, g, b].map(|v| (v * 255.0).round() as u8);
+            stroke_mesh::tessellate(&mut mesh, st.kind, [rgba[0], rgba[1], rgba[2], 255], st.width, &st.points, f, aa);
+        }
+        mesh.translate(origin.to_vec2());
+        render::paint_mesh(&p, Layer::Highlight, mesh);
     }
     if opts.include_text {
         for t in doc.texts.iter().filter(|t| t.page == page) {
