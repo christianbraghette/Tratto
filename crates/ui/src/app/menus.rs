@@ -9,7 +9,9 @@
 //! [`InkApp::run_command`], so menus, context menu and shortcuts share one
 //! implementation of each action.
 
-use eframe::egui::{self, Align2, Button, Frame, Id, Key, KeyboardShortcut, Modifiers, Order, Pos2, RichText, Ui};
+use eframe::egui::{
+    self, Align2, Button, Color32, Frame, Id, Key, KeyboardShortcut, Modifiers, Order, Pos2, RichText, Ui,
+};
 use egui_phosphor::regular as icon;
 use tratto_core::history::Action;
 use tratto_core::library;
@@ -106,6 +108,35 @@ pub(super) enum Command {
     CheckUpdates,
     About,
 }
+
+/// Going in or out of full screen (or presenting) through a fade: the
+/// window fades to `color`, switches while covered, then fades back in. The
+/// switch (the window changing size) is never seen.
+pub(super) struct Fade {
+    /// The switch, run once the window is covered.
+    command: Command,
+    color: Color32,
+    phase: FadePhase,
+}
+
+#[derive(Clone, Copy)]
+enum FadePhase {
+    /// Fading out, since (s).
+    Out(f64),
+    /// Covered, the window switching: to full screen or not, since (s) and
+    /// the frame it started in.
+    Switching(bool, f64, u64),
+    /// Fading back in, since (s).
+    In(f64),
+}
+
+/// Fade out and in times (s), and how many frames the window is drawn
+/// covered once switched (so the first ones at its new size are not seen).
+const FADE_OUT: f64 = 0.12;
+const FADE_IN: f64 = 0.18;
+const FADE_SETTLE_FRAMES: u64 = 3;
+/// A switch that does not happen in this long (s) is faded in anyway.
+const FADE_TIMEOUT: f64 = 1.5;
 
 /// Where the canvas context menu was opened and what is under it.
 pub(super) struct ContextMenu {
@@ -216,7 +247,30 @@ impl InkApp {
         // screen top (room for the drop shadow), so the top row would miss
         // the pointer that reveals the bar.
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
-        let decorations = !self.settings.custom_title_bar || fullscreen;
+        // The window's animations back on once a switch in or out of full
+        // screen is done (and has had a moment to settle), or after a while.
+        if let Some((want_fullscreen, want_maximized, since)) = self.chrome.switching {
+            let (maximized, now) = ctx.input(|i| (i.viewport().maximized == Some(true), i.time));
+            let done = fullscreen == want_fullscreen && (maximized || !want_maximized);
+            // Maximized again: its own size un-maximized back (see
+            // `Command::Fullscreen`).
+            if done
+                && maximized
+                && let Some(rect) = self.chrome.normal_rect.take()
+            {
+                chrome::set_normal_rect(rect);
+            }
+            if done && now - since > 0.5 || now - since > 3.0 {
+                chrome::window_transitions(true);
+                self.chrome.switching = None;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+        crate::win_frame::own_frame(self.settings.custom_title_bar);
+        // Leaving full screen they are off already (see `Command::Fullscreen`).
+        let leaving = matches!(self.chrome.switching, Some((false, ..)));
+        let decorations = !self.settings.custom_title_bar || fullscreen && !leaving;
         if self.chrome.decorations != Some(decorations) {
             self.chrome.decorations = Some(decorations);
             ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(decorations));
@@ -313,6 +367,71 @@ impl InkApp {
         for cmd in std::mem::take(&mut self.pending) {
             self.run_command(ctx, cmd);
         }
+        self.fade_step(ctx);
+    }
+
+    /// Starts going in or out of full screen (or presenting, `cmd`) through
+    /// a fade, unless one is running. Returns whether `cmd` waits for it.
+    fn fade_first(&mut self, ctx: &egui::Context, cmd: Command) -> bool {
+        if self.chrome.fade_running {
+            return false;
+        }
+        if self.chrome.fade.is_none() {
+            // Presenting fades through black, full screen through the desk.
+            let color = if cmd == Command::Present { Color32::BLACK } else { color::desk() };
+            let now = ctx.input(|i| i.time);
+            self.chrome.fade = Some(Fade { command: cmd, color, phase: FadePhase::Out(now) });
+            ctx.request_repaint();
+        }
+        true
+    }
+
+    /// Advances the fade and paints its cover over everything.
+    fn fade_step(&mut self, ctx: &egui::Context) {
+        let Some(fade) = self.chrome.fade.as_ref() else { return };
+        // Not inside `input`: the context is locked there.
+        let frame = ctx.cumulative_frame_nr();
+        let (now, fullscreen) = ctx.input(|i| (i.time, i.viewport().fullscreen.unwrap_or(false)));
+        let (color, phase, command) = (fade.color, fade.phase, fade.command);
+        let ease = |t: f64| egui::emath::easing::cubic_in_out(t.clamp(0.0, 1.0) as f32);
+        let cover = match phase {
+            FadePhase::Out(since) => {
+                let t = (now - since) / FADE_OUT;
+                if t >= 1.0 {
+                    // Covered: the switch, now.
+                    self.chrome.fade_running = true;
+                    self.run_command(ctx, command);
+                    self.chrome.fade_running = false;
+                    let target = self.chrome.switching.map_or(fullscreen, |(want, ..)| want);
+                    if let Some(f) = self.chrome.fade.as_mut() {
+                        f.phase = FadePhase::Switching(target, now, frame);
+                    }
+                    1.0
+                } else {
+                    ease(t)
+                }
+            }
+            FadePhase::Switching(target, since, from) => {
+                let switched = fullscreen == target && frame >= from + FADE_SETTLE_FRAMES;
+                if (switched || now - since > FADE_TIMEOUT)
+                    && let Some(f) = self.chrome.fade.as_mut()
+                {
+                    f.phase = FadePhase::In(now);
+                }
+                1.0
+            }
+            FadePhase::In(since) => {
+                let t = (now - since) / FADE_IN;
+                if t >= 1.0 {
+                    self.chrome.fade = None;
+                    return;
+                }
+                1.0 - ease(t)
+            }
+        };
+        let layer = egui::LayerId::new(Order::Debug, Id::new("fullscreen_fade"));
+        ctx.layer_painter(layer).rect_filled(ctx.viewport_rect(), 0.0, color.gamma_multiply(cover));
+        ctx.request_repaint();
     }
 
     // ------------------------------------------------------------ menu bar
@@ -862,6 +981,10 @@ impl InkApp {
 
     pub(super) fn run_command(&mut self, ctx: &egui::Context, cmd: Command) {
         let editor = self.screen == Screen::Editor;
+        // In and out of full screen, and presenting, through a fade.
+        if matches!(cmd, Command::Fullscreen | Command::Present) && self.fade_first(ctx, cmd) {
+            return;
+        }
         match cmd {
             // A reader-only window: other PDFs open in it, closing closes it,
             // and nothing of the library is there.
@@ -990,29 +1113,50 @@ impl InkApp {
                         seen_fullscreen: fullscreen,
                         zoom: ZoomMode::FitPage,
                     });
-                    // From the top of the page being read.
-                    self.scroll_to = Some(self.layout().page_stop(self.current_page));
+                    // From the top of the page being read, at once: easing there
+                    // while the zoom changes swoops across the pages.
+                    self.kinetic.stop();
+                    self.scroll = egui::vec2(0.0, self.layout().page_stop(self.current_page));
+                    crate::toolbar::hide_presenting_bar(ctx);
                 }
             },
             Command::Laser => self.laser = !self.laser,
             Command::Fullscreen => {
                 // Leaving full screen ends presenting too.
                 self.presenting = None;
-                // On Windows, going fullscreen straight from a maximized window
-                // resizes the window without a resize event, so egui keeps
-                // drawing at the maximized size. Un-maximize first and
-                // maximize again after leaving fullscreen.
-                let (fs, maximized) =
-                    ctx.input(|i| (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false)));
+                // A maximized window does not stay full screen (winit maximizes
+                // it again on the next change of its style), so it is
+                // un-maximized first and maximized again after. On Windows that
+                // happens in place: un-maximized at its maximized size, it
+                // comes back from full screen at that size too, not shrinking
+                // and growing back; its own size un-maximized is put back after
+                // (see `window_chrome`). Its animations are off meanwhile.
+                let (fs, maximized, now) = ctx.input(|i| {
+                    (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false), i.time)
+                });
+                chrome::window_transitions(false);
                 if fs {
+                    let maximize = std::mem::take(&mut self.chrome.maximize_after_fullscreen);
+                    self.chrome.switching = Some((false, maximize, now));
+                    // The system frame (on in full screen, see `window_chrome`) off
+                    // first: else the window comes back with it, unthemed, for a
+                    // moment.
+                    if self.settings.custom_title_bar {
+                        self.chrome.decorations = Some(false);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
+                    }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                    if std::mem::take(&mut self.chrome.maximize_after_fullscreen) {
+                    if maximize {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                     }
                 } else {
+                    self.chrome.switching = Some((true, false, now));
                     self.chrome.maximize_after_fullscreen = maximized;
                     if maximized {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                        self.chrome.normal_rect = chrome::unmaximize_in_place();
+                        if self.chrome.normal_rect.is_none() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                        }
                     }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
                 }

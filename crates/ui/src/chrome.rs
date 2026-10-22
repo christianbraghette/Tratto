@@ -115,6 +115,17 @@ fn fullscreen_reveal(ctx: &egui::Context, pinned: bool) -> f32 {
     ctx.animate_bool_with_time(id, show, REVEAL_TIME)
 }
 
+/// Out of full screen: the full screen bar is hidden, at once, so going full
+/// screen does not start by sliding it away.
+fn hide_fullscreen_bar(ctx: &egui::Context) {
+    let id = Id::new("title_bar_reveal");
+    ctx.data_mut(|d| {
+        d.insert_temp(id, false);
+        d.insert_temp(Id::new("title_bar_swiped"), false);
+    });
+    ctx.animate_bool_with_time(id, false, 0.0);
+}
+
 /// What the title bar reports.
 #[derive(Default)]
 pub struct TitleBarResponse {
@@ -145,7 +156,12 @@ pub fn title_bar(
     // it, and a lower bar would leave a gap below its painted background.
     let height = TITLE_BAR_HEIGHT;
     // The panel grows with the reveal, the bar slides down inside it.
-    let shown = if state.fullscreen { fullscreen_reveal(ctx, pinned) } else { 1.0 };
+    let shown = if state.fullscreen {
+        fullscreen_reveal(ctx, pinned)
+    } else {
+        hide_fullscreen_bar(ctx);
+        1.0
+    };
     if shown <= 0.0 {
         return TitleBarResponse::default();
     }
@@ -491,9 +507,48 @@ pub fn own_edge_swipes(frame: &eframe::Frame) {
         let Ok(handle) = frame.window_handle() else { return };
         let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
         edge_gesture::disable_when_fullscreen(h.hwnd.get());
+        dwm::WINDOW.store(h.hwnd.get(), Ordering::Relaxed);
     }
     #[cfg(not(windows))]
     let _ = frame;
+}
+
+/// Windows: turns the window's own animations (maximize, restore) off or
+/// on. Going in and out of full screen takes two steps (see
+/// `Command::Fullscreen`), and animated the window visibly shrank and grew
+/// back in between. Does nothing elsewhere.
+pub fn window_transitions(enabled: bool) {
+    #[cfg(windows)]
+    {
+        let hwnd = dwm::WINDOW.load(Ordering::Relaxed);
+        if hwnd != 0 {
+            dwm::set(hwnd, dwm::TRANSITIONS_FORCEDISABLED, u32::from(!enabled));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = enabled;
+}
+
+/// Windows: un-maximizes the window without it changing size (it keeps the
+/// screen's work area), and returns its own size un-maximized (in the
+/// system's workspace coordinates) for `set_normal_rect`. `None`: not done
+/// (not Windows, or not maximized).
+pub fn unmaximize_in_place() -> Option<[i32; 4]> {
+    #[cfg(windows)]
+    {
+        placement::unmaximize_in_place(dwm::WINDOW.load(Ordering::Relaxed))
+    }
+    #[cfg(not(windows))]
+    None
+}
+
+/// Windows: the size the maximized window gets when un-maximized, as
+/// returned by `unmaximize_in_place`.
+pub fn set_normal_rect(rect: [i32; 4]) {
+    #[cfg(windows)]
+    placement::set_normal_rect(dwm::WINDOW.load(Ordering::Relaxed), rect);
+    #[cfg(not(windows))]
+    let _ = rect;
 }
 
 /// Windows 11: DWM keeps drawing the border colour on the borderless
@@ -522,6 +577,7 @@ mod dwm {
     pub const BORDER_COLOR: u32 = 34;
     pub const CORNER_ROUND: u32 = 2;
     pub const COLOR_NONE: u32 = 0xFFFF_FFFE;
+    pub const TRANSITIONS_FORCEDISABLED: u32 = 3;
     #[link(name = "dwmapi")]
     unsafe extern "system" {
         fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const core::ffi::c_void, size: u32) -> i32;
@@ -529,6 +585,8 @@ mod dwm {
 
     /// Our window, once `round_corners` has run.
     pub static HWND: AtomicIsize = AtomicIsize::new(0);
+    /// Our window, on any Windows version (see `own_edge_swipes`).
+    pub static WINDOW: AtomicIsize = AtomicIsize::new(0);
     /// The border colour is currently off for fullscreen.
     pub static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 
@@ -542,6 +600,97 @@ mod dwm {
     pub fn outline() -> u32 {
         let [r, g, b, _] = color::border_strong().to_array();
         u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16
+    }
+}
+
+/// The window's placement (maximized or not, its size un-maximized), in
+/// user32's terms.
+#[cfg(windows)]
+mod placement {
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct WindowPlacement {
+        length: u32,
+        flags: u32,
+        show_cmd: u32,
+        min_position: Point,
+        max_position: Point,
+        normal_position: Rect,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct MonitorInfo {
+        size: u32,
+        monitor: Rect,
+        work: Rect,
+        flags: u32,
+    }
+
+    const SW_SHOWMAXIMIZED: u32 = 3;
+    const SW_RESTORE: i32 = 9;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetWindowPlacement(hwnd: isize, placement: *mut WindowPlacement) -> i32;
+        fn SetWindowPlacement(hwnd: isize, placement: *const WindowPlacement) -> i32;
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        fn SetWindowPos(hwnd: isize, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+        fn MonitorFromWindow(hwnd: isize, flags: u32) -> isize;
+        fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
+    }
+
+    fn get(hwnd: isize) -> Option<WindowPlacement> {
+        let mut p = WindowPlacement { length: size_of::<WindowPlacement>() as u32, ..Default::default() };
+        // SAFETY: our own window; `p` is a WINDOWPLACEMENT with its length set.
+        (hwnd != 0 && unsafe { GetWindowPlacement(hwnd, &mut p) } != 0).then_some(p)
+    }
+
+    pub fn unmaximize_in_place(hwnd: isize) -> Option<[i32; 4]> {
+        let p = get(hwnd)?;
+        if p.show_cmd != SW_SHOWMAXIMIZED {
+            return None;
+        }
+        let mut info = MonitorInfo { size: size_of::<MonitorInfo>() as u32, ..Default::default() };
+        // SAFETY: our own window, on its thread; `info` has its size set.
+        unsafe {
+            if GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) == 0 {
+                return None;
+            }
+            let w = info.work;
+            ShowWindow(hwnd, SW_RESTORE);
+            SetWindowPos(hwnd, 0, w.left, w.top, w.right - w.left, w.bottom - w.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        let n = p.normal_position;
+        Some([n.left, n.top, n.right, n.bottom])
+    }
+
+    pub fn set_normal_rect(hwnd: isize, [left, top, right, bottom]: [i32; 4]) {
+        let Some(mut p) = get(hwnd) else { return };
+        p.normal_position = Rect { left, top, right, bottom };
+        // SAFETY: our own window; `p` as read, its normal size changed.
+        unsafe {
+            SetWindowPlacement(hwnd, &p);
+        }
     }
 }
 

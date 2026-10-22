@@ -195,6 +195,16 @@ const SWIPE_IN: f32 = 48.0;
 /// Its slide in / out time, in seconds.
 const REVEAL_TIME: f32 = 0.15;
 
+/// Hides the presentation bar at once (presenting starts with it away).
+pub fn hide_presenting_bar(ctx: &egui::Context) {
+    let id = egui::Id::new("presenting_bar_reveal");
+    ctx.data_mut(|d| {
+        d.insert_temp(id, false);
+        d.insert_temp(egui::Id::new("presenting_bar_swiped"), false);
+    });
+    ctx.animate_bool_with_time(id, false, 0.0);
+}
+
 /// How far `p` is from the screen edge of the presentation bar.
 pub fn from_bar_edge(ctx: &egui::Context, position: ToolbarPosition, p: Pos2) -> f32 {
     let screen = ctx.viewport_rect();

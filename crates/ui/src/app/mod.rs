@@ -246,6 +246,16 @@ struct WindowChrome {
     checked: bool,
     /// The window was maximized before entering fullscreen.
     maximize_after_fullscreen: bool,
+    /// Its size un-maximized then (Windows), put back once it is maximized
+    /// again.
+    normal_rect: Option<[i32; 4]>,
+    /// Going in or out of full screen with the window's animations off:
+    /// the state to reach (full screen, maximized) and since when (s).
+    switching: Option<(bool, bool, f64)>,
+    /// Going in or out of full screen (or presenting) through a fade.
+    fade: Option<menus::Fade>,
+    /// The fade's command is being run now, at its middle (not faded again).
+    fade_running: bool,
     /// Window title last sent to the OS.
     os_title: String,
     /// Text of the note title field in the title bar, and whether it has focus.
@@ -263,6 +273,9 @@ struct WindowChrome {
     sidebar_reveal: f32,
     /// The sidebar's width when last fully shown, for the slide.
     sidebar_width: f32,
+    /// Whether the window was full screen when the sidebar was last shown
+    /// (`None`: not yet), so a switch is not animated.
+    sidebar_fullscreen: Option<bool>,
     /// The sidebar view shown and since when (s), for its fade-in.
     view_fade: Option<(Sidebar, f64)>,
 }

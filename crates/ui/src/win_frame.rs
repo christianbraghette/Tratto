@@ -15,6 +15,11 @@
 //! `publish_border`); the window subclass reads them. Elsewhere, and if the
 //! subclass cannot be installed, the chrome moves and resizes the window
 //! through egui as before (`active` is false).
+//!
+//! While the app draws its own title bar (`own_frame`), the subclass also
+//! keeps Windows from painting the system's: the window has no visible
+//! frame then, yet when it is restored, maximized or leaves full screen
+//! Windows painted its unthemed caption over it for a moment.
 
 use eframe::egui::{self, Rect};
 
@@ -98,6 +103,12 @@ pub fn active() -> bool {
     imp::active()
 }
 
+/// The app draws the window's title bar (the custom frame is on): Windows
+/// paints none (see the module docs).
+pub fn own_frame(on: bool) {
+    imp::own_frame(on);
+}
+
 /// Installs the hit test on the eframe window (first frame).
 pub fn install(frame: &eframe::Frame) {
     imp::install(frame);
@@ -140,6 +151,8 @@ mod imp {
     use super::{HTCLIENT, Regions};
 
     const WM_NCHITTEST: u32 = 0x0084;
+    const WM_NCPAINT: u32 = 0x0085;
+    const WM_NCACTIVATE: u32 = 0x0086;
     const SUBCLASS_ID: usize = 0x494E_4B32; // "INK2"
 
     #[link(name = "user32")]
@@ -149,10 +162,15 @@ mod imp {
     }
 
     static ACTIVE: AtomicBool = AtomicBool::new(false);
+    static OWN_FRAME: AtomicBool = AtomicBool::new(false);
     static REGIONS: Mutex<Regions> = Mutex::new(Regions { caption: None, holes: Vec::new(), border: 0 });
 
     pub fn active() -> bool {
         ACTIVE.load(Ordering::Relaxed)
+    }
+
+    pub fn own_frame(on: bool) {
+        OWN_FRAME.store(on, Ordering::Relaxed);
     }
 
     pub fn set(regions: Regions) {
@@ -171,6 +189,17 @@ mod imp {
         _id: usize,
         _data: usize,
     ) -> LRESULT {
+        if OWN_FRAME.load(Ordering::Relaxed) {
+            match msg {
+                // Nothing of the system's frame is painted.
+                WM_NCPAINT => return 0,
+                // Activation still changes, without repainting the frame
+                // (an `lparam` of -1 asks for that).
+                // SAFETY: forwarding to the next window procedure.
+                WM_NCACTIVATE => return unsafe { DefSubclassProc(hwnd, msg, wparam, -1) },
+                _ => {}
+            }
+        }
         // SAFETY: forwarding to the next window procedure, as the subclass API asks.
         let default = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
         if msg != WM_NCHITTEST || default != HTCLIENT {
@@ -203,6 +232,8 @@ mod imp {
     pub fn active() -> bool {
         false
     }
+
+    pub fn own_frame(_on: bool) {}
 
     pub fn set(_regions: Regions) {}
 

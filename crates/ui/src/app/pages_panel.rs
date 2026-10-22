@@ -67,7 +67,12 @@ impl InkApp {
             self.chrome.fullscreen_sidebar = true;
         }
         let shown = !fullscreen || self.chrome.fullscreen_sidebar;
-        let reveal = ui.ctx().animate_bool_with_time(Id::new("sidebar_reveal"), shown, SLIDE_TIME);
+        // Into or out of full screen (or presenting) it is there or not at
+        // once: sliding while the window itself changes size looks broken.
+        let switched = self.chrome.sidebar_fullscreen != Some(fullscreen);
+        self.chrome.sidebar_fullscreen = Some(fullscreen);
+        let time = if switched { 0.0 } else { SLIDE_TIME };
+        let reveal = ui.ctx().animate_bool_with_time(Id::new("sidebar_reveal"), shown, time);
         self.chrome.sidebar_reveal = reveal;
         if reveal <= 0.0 {
             self.page_drag = None;
