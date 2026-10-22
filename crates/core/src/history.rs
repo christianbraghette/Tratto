@@ -8,6 +8,8 @@
 //! which is pushed on the opposite stack:
 //!
 //! * `AddStroke` / `RemoveStroke`   insert / remove a stroke (moved, not cloned).
+//! * `ReplaceStrokes`  swaps strokes for changed copies (resized, rotated,
+//!   recoloured) and returns the old ones.
 //! * `AddText` / `RemoveText` / `ReplaceText`   the same for text boxes; a
 //!   replace swaps the whole box (edit, move, restyle) and returns the old one.
 //! * `InsertPage` / `RemovePage`    change the page list (strokes and text boxes
@@ -19,7 +21,7 @@
 //!   back (the content travels inside the inverse action).
 //! * `Batch`        groups actions, e.g. everything erased in one drag.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::model::{Document, Image, Stroke, TextBox};
 
@@ -32,6 +34,11 @@ pub enum Action {
     },
     RemoveStroke {
         id: u64,
+    },
+    /// Replace the strokes that have the same ids (resized, rotated,
+    /// recoloured), where they are in the draw order.
+    ReplaceStrokes {
+        strokes: Vec<Stroke>,
     },
     AddText {
         index: usize,
@@ -141,6 +148,14 @@ impl Action {
                 }
                 None => Action::Batch(Vec::new()), // already gone: no-op
             },
+            Action::ReplaceStrokes { strokes } => {
+                let at: HashMap<u64, usize> = doc.strokes.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+                let old = strokes
+                    .into_iter()
+                    .filter_map(|s| Some(std::mem::replace(&mut doc.strokes[*at.get(&s.id)?], s)))
+                    .collect();
+                Action::ReplaceStrokes { strokes: old }
+            }
             Action::AddText { index, text } => {
                 let id = text.id;
                 let index = index.min(doc.texts.len());
@@ -607,6 +622,23 @@ mod tests {
         assert_eq!(doc.strokes[0].points[0].x, 0.0);
         h.redo(&mut doc);
         assert_eq!(doc.strokes[0].points[1].x, 15.0);
+    }
+
+    #[test]
+    fn replace_strokes_keeps_the_order_and_undoes() {
+        let mut doc = Document::default();
+        let mut h = History::default();
+        for i in 0..3 {
+            h.exec(&mut doc, Action::AddStroke { index: i as usize, stroke: stroke(i + 1) });
+        }
+        let red = doc.strokes[1].recolored([255, 0, 0]);
+        h.exec(&mut doc, Action::ReplaceStrokes { strokes: vec![red] });
+        assert_eq!(doc.strokes.iter().map(|s| s.id).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(doc.strokes[1].color, [255, 0, 0, 255]);
+        h.undo(&mut doc);
+        assert_eq!(doc.strokes[1].color, [0, 0, 0, 255]);
+        h.redo(&mut doc);
+        assert_eq!(doc.strokes[1].color, [255, 0, 0, 255]);
     }
 
     #[test]

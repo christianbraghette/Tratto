@@ -5,8 +5,9 @@
 //! document units relative to the top-left corner of the stroke's page.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use emath::{Pos2, Rect, pos2, vec2};
+use emath::{Pos2, Rect, Vec2, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::point_segment_distance;
@@ -122,9 +123,127 @@ impl Stroke {
         self.bounds[2] += dx;
         self.bounds[1] += dy;
         self.bounds[3] += dy;
-        self.rev = self.rev.wrapping_add(1);
+        self.rev = fresh_rev();
     }
 
+    /// The stroke with every point moved by `f` (page space) and its width
+    /// times `scale` (resized, rotated).
+    pub fn mapped(&self, f: impl Fn(Pos2) -> Pos2, scale: f32) -> Stroke {
+        let points: Vec<Point> = self
+            .points
+            .iter()
+            .map(|p| {
+                let q = f(p.pos2());
+                Point { x: q.x, y: q.y, ..*p }
+            })
+            .collect();
+        let bounds = compute_bounds(&points);
+        Stroke { points: points.into(), bounds, width: self.width * scale, rev: fresh_rev(), ..self.clone() }
+    }
+
+    /// The stroke in colour `rgb`; a highlighter keeps its strength (alpha).
+    pub fn recolored(&self, rgb: [u8; 3]) -> Stroke {
+        let color = [rgb[0], rgb[1], rgb[2], self.color[3]];
+        Stroke { color, rev: fresh_rev(), ..self.clone() }
+    }
+
+    /// What is left of the stroke after a circular eraser at `center` with
+    /// `radius` (partial erasing): its pieces outside the circle, in order;
+    /// none when it is all inside. `None` if the eraser misses it.
+    pub fn erased(&self, center: Pos2, radius: f32) -> Option<Vec<Vec<Point>>> {
+        if !self.hit_test(center, radius) {
+            return None;
+        }
+        // As far as the stroke's edge: the ends left are clear of the eraser.
+        let reach = radius + self.width * 0.5;
+        let [first, rest @ ..] = &self.points[..] else { return None };
+        if rest.is_empty() {
+            return Some(Vec::new());
+        }
+        let lerp = |a: &Point, b: &Point, t: f32| Point {
+            x: a.x + (b.x - a.x) * t,
+            y: a.y + (b.y - a.y) * t,
+            pressure: a.pressure + (b.pressure - a.pressure) * t,
+        };
+        let mut pieces = Vec::new();
+        let mut piece = Vec::new();
+        let mut cut = false;
+        if first.pos2().distance(center) > reach {
+            piece.push(*first);
+        }
+        for w in self.points.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            match segment_in_circle(a.pos2(), b.pos2(), center, reach) {
+                None => {
+                    // After a cut that ended right at `a` (on the eraser's edge).
+                    if piece.is_empty() {
+                        piece.push(*a);
+                    }
+                    piece.push(*b);
+                }
+                Some((t0, t1)) => {
+                    cut = true;
+                    if t0 > 0.0 {
+                        piece.push(lerp(a, b, t0));
+                    }
+                    if !piece.is_empty() {
+                        pieces.push(std::mem::take(&mut piece));
+                    }
+                    if t1 < 1.0 {
+                        piece.push(lerp(a, b, t1));
+                        piece.push(*b);
+                    }
+                }
+            }
+        }
+        if !piece.is_empty() {
+            pieces.push(piece);
+        }
+        if !cut {
+            return None;
+        }
+        // Crumbs left at the eraser's edge would show as dots.
+        let length = |p: &Vec<Point>| p.windows(2).map(|w| w[0].distance(&w[1])).sum::<f32>();
+        pieces.retain(|p| p.len() >= 2 && length(p) >= MIN_PIECE);
+        Some(pieces)
+    }
+}
+
+/// Pieces of an erased stroke shorter than this (document units) are dropped.
+const MIN_PIECE: f32 = 1.0;
+
+/// The part of the segment `a`-`b` inside the circle at `c` of radius `r`,
+/// as the range of `t` (`a + (b - a) * t`) within `0..=1`; `None` when the
+/// segment stays outside or only touches the circle.
+fn segment_in_circle(a: Pos2, b: Pos2, c: Pos2, r: f32) -> Option<(f32, f32)> {
+    let d: Vec2 = b - a;
+    let f: Vec2 = a - c;
+    let qa = d.dot(d);
+    if qa <= f32::EPSILON {
+        return (f.length() <= r).then_some((0.0, 1.0));
+    }
+    let qb = 2.0 * f.dot(d);
+    let qc = f.dot(f) - r * r;
+    let disc = qb * qb - 4.0 * qa * qc;
+    if disc <= 0.0 {
+        return None;
+    }
+    let sq = disc.sqrt();
+    let (t0, t1) = ((-qb - sq) / (2.0 * qa), (-qb + sq) / (2.0 * qa));
+    if t1 <= 0.0 || t0 >= 1.0 {
+        return None;
+    }
+    Some((t0.max(0.0), t1.min(1.0)))
+}
+
+/// A `rev` no stroke has had: cached meshes of the old points or colour
+/// are never taken for the new ones, even after an undo.
+fn fresh_rev() -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+impl Stroke {
     /// Stroke-based eraser test: does a circle at `center` with `radius`
     /// touch any segment of this stroke?
     pub fn hit_test(&self, center: Pos2, radius: f32) -> bool {
@@ -506,6 +625,64 @@ mod tests {
         assert_eq!(bytes, bincode::serialize(&written).unwrap());
         let back: Stroke = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back.points, stroke.points);
+    }
+
+    fn line(width: f32) -> Stroke {
+        let points = (0..=10).map(|i| Point::new(i as f32 * 10.0, 0.0, 1.0)).collect();
+        Stroke::new(1, 0, StrokeKind::Pen, [0, 0, 0, 255], width, points)
+    }
+
+    #[test]
+    fn erasing_the_middle_leaves_two_pieces() {
+        let s = line(2.0);
+        let pieces = s.erased(pos2(50.0, 0.0), 9.0).unwrap();
+        assert_eq!(pieces.len(), 2);
+        // Cut where the eraser's edge meets the stroke's edge.
+        assert!((pieces[0].last().unwrap().x - 40.0).abs() < 1e-3);
+        assert!((pieces[1][0].x - 60.0).abs() < 1e-3);
+        assert_eq!((pieces[0][0].x, pieces[1].last().unwrap().x), (0.0, 100.0));
+    }
+
+    #[test]
+    fn erasing_an_end_or_all_of_it() {
+        let s = line(2.0);
+        let end = s.erased(pos2(100.0, 0.0), 9.0).unwrap();
+        assert_eq!(end.len(), 1);
+        assert!((end[0].last().unwrap().x - 90.0).abs() < 1e-3);
+        assert!(s.erased(pos2(50.0, 0.0), 80.0).unwrap().is_empty());
+        // Missed: nothing to do.
+        assert!(s.erased(pos2(50.0, 30.0), 9.0).is_none());
+    }
+
+    #[test]
+    fn erasing_between_samples_cuts_the_segment() {
+        let s = Stroke::new(
+            1,
+            0,
+            StrokeKind::Pen,
+            [0; 4],
+            0.0,
+            vec![Point::new(0.0, 0.0, 0.2), Point::new(100.0, 0.0, 1.0)],
+        );
+        let pieces = s.erased(pos2(50.0, 0.0), 10.0).unwrap();
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].len(), 2);
+        assert!((pieces[0][1].x - 40.0).abs() < 1e-3);
+        // The pressure follows along the segment.
+        assert!((pieces[1][0].pressure - 0.68).abs() < 1e-3);
+    }
+
+    #[test]
+    fn mapped_and_recolored_strokes_are_new_to_the_caches() {
+        let s = line(2.0);
+        let m = s.mapped(|p| pos2(p.x * 2.0, p.y + 5.0), 2.0);
+        assert_eq!((m.width, m.bounds), (4.0, [0.0, 5.0, 200.0, 5.0]));
+        assert_ne!(m.rev, s.rev);
+        let mut h = line(10.0);
+        h.color = [255, 235, 0, 96];
+        let r = h.recolored([10, 20, 30]);
+        assert_eq!(r.color, [10, 20, 30, 96]);
+        assert_ne!(r.rev, m.rev);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use eframe::egui::{self, Align2, Color32, Margin, Order, Pos2, Rect, Sense, Shap
 use egui_phosphor::regular as icon;
 
 use crate::scrollbar;
-use crate::settings::{LeftPanel, SelectMode, Settings, ToolStyle, ToolbarPosition, ZoomMode};
+use crate::settings::{EraserMode, LeftPanel, SelectMode, Settings, ToolStyle, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color, radius, space};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,8 @@ pub enum ToolbarEvent {
     Back,
     /// A tool was clicked (already selected in `tool`).
     Tool(Tool),
+    /// A colour for what is selected.
+    Recolor([u8; 3]),
 }
 
 impl Tool {
@@ -90,6 +92,7 @@ const HIGHLIGHTER_PALETTE: [[u8; 3]; 5] =
 /// centred over the canvas (what is left of `ui`). When the window is too narrow for it to fit between the corner
 /// notches at the chosen edge, it moves to the other edge.
 /// `bottom_inset` keeps it clear of the horizontal scrollbar when that is visible.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &egui::Ui,
     tool: &mut Tool,
@@ -97,10 +100,13 @@ pub fn show(
     can_undo: bool,
     can_redo: bool,
     nav: &Navigation,
+    selected: Option<([u8; 3], bool)>,
     bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
     let position = settings.toolbar_position;
-    edge_bar(ui, "tool_notch", position, bottom_inset, |ui| contents(ui, tool, settings, can_undo, can_redo, nav))
+    edge_bar(ui, "tool_notch", position, bottom_inset, |ui| {
+        contents(ui, tool, settings, can_undo, can_redo, nav, selected)
+    })
 }
 
 /// Where the view is, for the page controls of the reader's bar and of the
@@ -207,7 +213,7 @@ fn edge_bar<R>(
                 tool_buttons_style(ui);
                 ui.horizontal(add_contents).inner
             });
-            ui.painter().set(background, edge_notch_shape(shown.response.rect, at, color::CHROME));
+            ui.painter().set(background, edge_notch_shape(shown.response.rect, at, color::chrome()));
             shown.inner
         })
         .inner
@@ -270,8 +276,8 @@ pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool,
     // the canvas (and, being the same surface, joins the library panel).
     let right = pos2(free.right() - scrollbar::THICKNESS, free.top());
     if library && settings.library_panel_open {
-        joins.add(fillet(right, -1.0, 1.0, color::CHROME));
-        joins.add(fillet(pos2(right.x, free.bottom() - bottom_inset), -1.0, -1.0, color::CHROME));
+        joins.add(fillet(right, -1.0, 1.0, color::chrome()));
+        joins.add(fillet(pos2(right.x, free.bottom() - bottom_inset), -1.0, -1.0, color::chrome()));
     } else if library {
         notch(ctx, "corner_notch_library", Corner::TopRight, right, |ui| {
             library_button(ui, &mut settings.library_panel_open);
@@ -280,8 +286,8 @@ pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool,
 
     if settings.left_panel != LeftPanel::Closed {
         // Join the panel to the title bar and to the bottom edge.
-        joins.add(fillet(free.left_top(), 1.0, 1.0, color::CHROME));
-        joins.add(fillet(free.left_bottom(), 1.0, -1.0, color::CHROME));
+        joins.add(fillet(free.left_top(), 1.0, 1.0, color::chrome()));
+        joins.add(fillet(free.left_bottom(), 1.0, -1.0, color::chrome()));
     } else {
         notch(ctx, "corner_notch_pages", Corner::TopLeft, free.left_top(), |ui| {
             if pages_button(ui, false) {
@@ -403,7 +409,7 @@ fn notch(ctx: &egui::Context, id: &str, at: Corner, corner: Pos2, add_contents: 
             .response
             .rect;
         // Same surface as the title bar it hangs from.
-        ui.painter().set(background, notch_shape(rect, at, color::CHROME));
+        ui.painter().set(background, notch_shape(rect, at, color::chrome()));
     });
 }
 
@@ -489,6 +495,7 @@ fn contents(
     can_undo: bool,
     can_redo: bool,
     nav: &Navigation,
+    selected: Option<([u8; 3], bool)>,
 ) -> Option<ToolbarEvent> {
     let mut event = None;
 
@@ -514,6 +521,13 @@ fn contents(
             style_controls(ui, &mut settings.highlighter, &HIGHLIGHTER_PALETTE, 4.0..=40.0, 2.0, above)
         }
         Tool::Eraser => {
+            let modes = [
+                (EraserMode::Partial, icon::ERASER, "Partial: rubs out only the ink under it"),
+                (EraserMode::Stroke, icon::SCRIBBLE, "Stroke: erases every stroke it touches, whole"),
+            ];
+            for (mode, glyph, tip) in modes {
+                ui.selectable_value(&mut settings.eraser_mode, mode, theme::icon(glyph)).on_hover_text(tip);
+            }
             size_slider(ui, &mut settings.eraser_radius, 4.0..=60.0, 2.0, above);
         }
         Tool::Select => {
@@ -527,6 +541,16 @@ fn contents(
             ];
             for (mode, glyph, tip) in modes {
                 ui.selectable_value(&mut settings.select_mode, mode, theme::icon(glyph)).on_hover_text(tip);
+            }
+            // Something selected: its colour (the first stroke's or text box's).
+            if let Some((current, highlighter)) = selected {
+                ui.separator();
+                let palette: &[[u8; 3]] = if highlighter { &HIGHLIGHTER_PALETTE } else { &PEN_PALETTE };
+                for c in palette {
+                    if swatch(ui, *c, current == *c).on_hover_text("Colour of the selection").clicked() {
+                        event = Some(ToolbarEvent::Recolor(*c));
+                    }
+                }
             }
         }
         Tool::Text => style_controls(ui, &mut settings.text, &PEN_PALETTE, 8.0..=96.0, 2.0, above),
@@ -629,11 +653,11 @@ fn swatch(ui: &mut egui::Ui, rgb: [u8; 3], selected: bool) -> egui::Response {
     let painter = ui.painter();
     let c = rect.center();
     // The thin ring keeps dark colours visible on the dark toolbar.
-    painter.circle(c, 8.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]), Stroke::new(1.0, color::BORDER_STRONG));
+    painter.circle(c, 8.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]), Stroke::new(1.0, color::border_strong()));
     if selected {
-        painter.circle_stroke(c, 11.0, Stroke::new(2.0, color::ACCENT));
+        painter.circle_stroke(c, 11.0, Stroke::new(2.0, color::accent()));
     } else if resp.hovered() {
-        painter.circle_stroke(c, 11.0, Stroke::new(1.5, color::TEXT_FAINT));
+        painter.circle_stroke(c, 11.0, Stroke::new(1.5, color::text_faint()));
     }
     resp
 }

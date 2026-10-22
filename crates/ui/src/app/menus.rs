@@ -48,6 +48,10 @@ pub(super) enum Command {
     Paste(Option<(u32, Pos2)>),
     CopyPage(u32),
     CutPage(u32),
+    /// Save a picture of that page as a PNG file.
+    SavePagePng(u32),
+    /// Save a picture of what is selected as a PNG file.
+    SaveSelectionPng,
     /// Insert the copied pages so that the first gets this index.
     PastePages(u32),
     /// Paste the copied (or cut) note into the library's open notebook or
@@ -125,11 +129,11 @@ const SHORTCUT_KEYS_WIDTH: f32 = 170.0;
 /// A key, or keys pressed together, drawn as a key cap.
 fn keycap(ui: &mut Ui, keys: &str) {
     Frame::new()
-        .fill(color::SURFACE)
-        .stroke(egui::Stroke::new(1.0, color::BORDER))
+        .fill(color::surface())
+        .stroke(egui::Stroke::new(1.0, color::border()))
         .corner_radius(4)
         .inner_margin(egui::Margin::symmetric(6, 1))
-        .show(ui, |ui| ui.label(RichText::new(keys).monospace().size(11.5).color(color::TEXT)));
+        .show(ui, |ui| ui.label(RichText::new(keys).monospace().size(11.5).color(color::text())));
 }
 
 /// One menu entry: icon, label and shortcut. Returns true when clicked.
@@ -285,6 +289,7 @@ impl InkApp {
     /// borders: once per frame, after the screen.
     pub(super) fn finish_chrome(&mut self, ctx: &egui::Context) {
         self.poll_export();
+        self.poll_png();
         self.help_windows(ctx);
         self.updates_window(ctx);
         self.global_settings_window(ctx);
@@ -540,6 +545,9 @@ impl InkApp {
         if entry(ui, icon::CLIPBOARD, "Paste page after", "", self.clipboard.has_pages()) {
             push(ui, Command::PastePages(page + 1));
         }
+        if entry(ui, icon::FILE_PNG, "Save page as PNG...", "", true) {
+            push(ui, Command::SavePagePng(page));
+        }
     }
 
     /// Insert / delete entries for `page` (Page menu and context menu).
@@ -583,6 +591,11 @@ impl InkApp {
                     }
                     if self.text_sel.is_some() || menu.on_selection || menu.picture.is_some() {
                         self.cut_copy_entries(ui, &mut push);
+                        if (menu.on_selection || menu.picture.is_some())
+                            && entry(ui, icon::FILE_PNG, "Save as PNG...", "", true)
+                        {
+                            push(ui, Command::SaveSelectionPng);
+                        }
                         ui.separator();
                     }
                     if let Some(id) = menu.picture {
@@ -787,6 +800,8 @@ impl InkApp {
             Command::Paste(at) if editor => self.paste(at, false),
             Command::CopyPage(page) if editor => self.copy_page(ctx, page),
             Command::CutPage(page) if editor => self.cut_page(ctx, page),
+            Command::SavePagePng(page) if editor => self.save_page_png(page),
+            Command::SaveSelectionPng if editor => self.save_selection_png(),
             Command::PastePages(index) if editor => self.paste_pages_here(index),
             Command::PasteNote if !editor => {
                 let dir = self.library_target_dir();
@@ -917,7 +932,7 @@ impl InkApp {
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::ACCENT));
+                    ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::accent()));
                     ui.label(theme::title("Tratto"));
                     ui.label(theme::muted(format!("Version {}", crate::update::CURRENT)));
                     ui.add_space(10.0);
@@ -926,14 +941,18 @@ impl InkApp {
                     ui.label("Copyright © 2026 Christian Braghette");
                     ui.add_space(10.0);
                     ui.label(
-                        RichText::new("Free software under the GNU AGPL v3 or later.").small().color(color::TEXT_MUTED),
+                        RichText::new("Free software under the GNU AGPL v3 or later.")
+                            .small()
+                            .color(color::text_muted()),
                     );
-                    ui.label(RichText::new("Commercial licenses are also available.").small().color(color::TEXT_MUTED));
+                    ui.label(
+                        RichText::new("Commercial licenses are also available.").small().color(color::text_muted()),
+                    );
                     ui.add_space(5.0);
                     ui.hyperlink_to("Source code and license", env!("CARGO_PKG_REPOSITORY"));
                     ui.add_space(15.0);
                     ui.label(
-                        RichText::new("Font: Inter (OFL) · Icons: Phosphor (MIT)").small().color(color::TEXT_FAINT),
+                        RichText::new("Font: Inter (OFL) · Icons: Phosphor (MIT)").small().color(color::text_faint()),
                     );
                 });
             });

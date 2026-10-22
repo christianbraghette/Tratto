@@ -88,7 +88,7 @@ impl InkApp {
             // The canvas scrollbar (same surface) sits just left of the panel,
             // so the extra right margin keeps the library button exactly
             // where it is in the notch, and the padding visually symmetric.
-            .frame(egui::Frame::NONE.fill(color::CHROME).inner_margin(egui::Margin {
+            .frame(egui::Frame::NONE.fill(color::chrome()).inner_margin(egui::Margin {
                 left: top.left,
                 right: top.right + scrollbar::THICKNESS as i8,
                 top: top.top,
@@ -128,7 +128,7 @@ impl InkApp {
                                 "Notebook name",
                                 theme::font_strong(size::HEADING),
                                 Align::Min,
-                                color::TEXT_STRONG,
+                                color::text_strong(),
                             );
                             name_resp = Some(resp.on_hover_text("Rename the notebook"));
                         } else {
@@ -327,7 +327,7 @@ fn quick_tree(ui: &mut Ui, root: &Path, notes: &[NoteInfo], trash: &[&TrashItem]
         glyph: icon::LIGHTNING,
         name: "Quick notes",
         notes,
-        tint: color::TEXT_MUTED,
+        tint: color::text_muted(),
         section: None,
         default_open: true,
     };
@@ -392,7 +392,7 @@ fn group(ui: &mut Ui, g: &Group, t: &mut Tree) {
             area,
             radius::SMALL,
             color::accent_alpha(24),
-            egui::Stroke::new(1.0, color::ACCENT),
+            egui::Stroke::new(1.0, color::accent()),
             egui::StrokeKind::Middle,
         );
         t.drop_to = Some((g.dir.to_path_buf(), g.name.to_owned()));
@@ -417,19 +417,19 @@ fn paint_header(
     let hovered = ui.rect_contains_pointer(row);
     let p = ui.painter();
     if hovered {
-        p.rect_filled(row, radius::SMALL, color::HOVER);
+        p.rect_filled(row, radius::SMALL, color::hover());
     }
     let y = row.center().y;
     let caret = if openness > 0.5 { icon::CARET_DOWN } else { icon::CARET_RIGHT };
     p.text(pos2(row.left() + 10.0, y), Align2::CENTER_CENTER, caret, theme::font(12.0), tint);
-    p.text(pos2(row.left() + 22.0, y), Align2::LEFT_CENTER, glyph, theme::font(size::BODY), color::TEXT_MUTED);
+    p.text(pos2(row.left() + 22.0, y), Align2::LEFT_CENTER, glyph, theme::font(size::BODY), color::text_muted());
 
-    let text = if has_current || hovered { color::TEXT_STRONG } else { color::TEXT };
+    let text = if has_current || hovered { color::text_strong() } else { color::text() };
     let left = row.left() + 44.0;
     let count_w = if actions > 0 {
         0.0
     } else {
-        ui.fonts_mut(|f| f.layout_no_wrap(count.to_owned(), theme::font(size::CAPTION), color::TEXT_FAINT).size().x)
+        ui.fonts_mut(|f| f.layout_no_wrap(count.to_owned(), theme::font(size::CAPTION), color::text_faint()).size().x)
             + space::S
     };
     let right = row.right() - space::S - actions as f32 * theme::ROW_BUTTON - count_w;
@@ -440,7 +440,7 @@ fn paint_header(
     p.galley(pos2(left, y - galley.size().y * 0.5), galley, text);
     if actions == 0 {
         let at = pos2(left + name_w + space::S, y);
-        p.text(at, Align2::LEFT_CENTER, count, theme::font(size::CAPTION), color::TEXT_FAINT);
+        p.text(at, Align2::LEFT_CENTER, count, theme::font(size::CAPTION), color::text_faint());
     }
 }
 
@@ -478,9 +478,9 @@ fn ghost_row(ui: &mut Ui, glyph: &str, label: &str) -> egui::Response {
     let hovered = resp.hovered();
     let p = ui.painter();
     if hovered {
-        p.rect_filled(row, radius::SMALL, color::HOVER);
+        p.rect_filled(row, radius::SMALL, color::hover());
     }
-    let fg = if hovered { color::ACCENT_HOVER } else { color::TEXT_FAINT };
+    let fg = if hovered { color::accent_hover() } else { color::text_faint() };
     let y = row.center().y;
     p.text(pos2(row.left() + 22.0, y), Align2::LEFT_CENTER, glyph, theme::font(size::BODY), fg);
     p.text(pos2(row.left() + 44.0, y), Align2::LEFT_CENTER, label, theme::font(size::BODY), fg);
@@ -500,7 +500,7 @@ fn trash_group(ui: &mut Ui, scope: &Path, items: &[&TrashItem], t: &mut Tree) {
     let hovered = t.drag.is_none() && ui.rect_contains_pointer(row);
     let count = items.len().to_string();
     let openness = state.openness(ui.ctx());
-    paint_header(ui, row, icon::TRASH, "Trash", &count, color::TEXT_FAINT, openness, false, usize::from(hovered));
+    paint_header(ui, row, icon::TRASH, "Trash", &count, color::text_faint(), openness, false, usize::from(hovered));
     if header.clicked() {
         state.toggle(ui);
     }
@@ -591,7 +591,7 @@ fn note_list(ui: &mut Ui, dir: &Path, notes: &[NoteInfo], t: &mut Tree) {
     let slot = rects.iter().filter(|r| r.center().y < p.y).count();
     let y = if slot < rects.len() { rects[slot].top() - 1.0 } else { last.bottom() + 1.0 };
     let line = Rect::from_min_max(pos2(first.left(), y - 1.0), pos2(first.right(), y + 1.0));
-    ui.painter().rect_filled(line, 1.0, color::ACCENT);
+    ui.painter().rect_filled(line, 1.0, color::accent());
 
     if ui.input(|i| !i.pointer.any_down()) {
         let to = if slot > d.from { slot - 1 } else { slot };

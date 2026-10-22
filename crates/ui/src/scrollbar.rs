@@ -81,21 +81,21 @@ pub fn update(
 }
 
 pub fn paint(painter: &Painter, track: Rect, vertical: bool, s: &BarState, label: Option<&str>) {
-    painter.rect_filled(track, 0.0, color::CHROME);
+    painter.rect_filled(track, 0.0, color::chrome());
     let fill = if !s.enabled {
-        color::RAISED
+        color::raised()
     } else if s.active {
-        color::ACCENT
+        color::accent()
     } else if s.hovered {
-        color::TEXT_FAINT
+        color::text_faint()
     } else {
-        color::BORDER_STRONG
+        color::border_strong()
     };
     painter.rect_filled(s.thumb, radius::SMALL, fill);
 
     // Floating label (e.g. "Page 3 / 12") next to the thumb while dragging.
     if let (true, true, Some(text)) = (s.active, vertical, label) {
-        let width = painter.layout_no_wrap(text.to_owned(), theme::font(theme::size::BODY), color::TEXT).size().x;
+        let width = painter.layout_no_wrap(text.to_owned(), theme::font(theme::size::BODY), color::text()).size().x;
         let center = pos2(track.left() - space::M - width * 0.5 - space::L, s.thumb.center().y);
         theme::paint_toast(painter, center, text);
     }

@@ -267,9 +267,9 @@ fn hit_row(ui: &mut Ui, hit: &Hit, current: bool) -> egui::Response {
     let fmt = |font: &egui::FontId, color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
     let mut job = LayoutJob::default();
     let (before, matched, after) = &hit.snippet;
-    job.append(before, 0.0, fmt(&font, color::TEXT_MUTED));
-    job.append(matched, 0.0, fmt(&strong, color::TEXT_STRONG));
-    job.append(after, 0.0, fmt(&font, color::TEXT_MUTED));
+    job.append(before, 0.0, fmt(&font, color::text_muted()));
+    job.append(matched, 0.0, fmt(&strong, color::text_strong()));
+    job.append(after, 0.0, fmt(&font, color::text_muted()));
     job.wrap.max_rows = 2;
     job.wrap.max_width = ui.available_width() - 2.0 * space::S;
     let galley = ui.fonts_mut(|f| f.layout_job(job));
@@ -279,7 +279,7 @@ fn hit_row(ui: &mut Ui, hit: &Hit, current: bool) -> egui::Response {
     if let Some(fill) = fill {
         ui.painter().rect_filled(rect, radius::SMALL, fill);
     }
-    ui.painter().galley(rect.min + egui::vec2(space::S, space::XS), galley, color::TEXT_MUTED);
+    ui.painter().galley(rect.min + egui::vec2(space::S, space::XS), galley, color::text_muted());
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

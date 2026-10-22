@@ -165,28 +165,28 @@ fn outline_row(
     if marked {
         p.rect_filled(rect, radius::SMALL, color::accent_alpha(46));
         let bar = Rect::from_min_size(rect.left_top() + vec2(0.0, 6.0), vec2(3.0, rect.height() - 12.0));
-        p.rect_filled(bar, 1.5, color::ACCENT);
+        p.rect_filled(bar, 1.5, color::accent());
     } else if hovered && page.is_some() {
-        p.rect_filled(rect, radius::SMALL, color::HOVER);
+        p.rect_filled(rect, radius::SMALL, color::hover());
     }
     let y = rect.center().y;
     if let (Some(is_open), Some(resp)) = (caret, &caret_resp) {
         let glyph = if is_open { icon::CARET_DOWN } else { icon::CARET_RIGHT };
-        let fg = if resp.hovered() { color::TEXT_STRONG } else { color::TEXT_MUTED };
+        let fg = if resp.hovered() { color::text_strong() } else { color::text_muted() };
         p.text(caret_rect.center(), Align2::CENTER_CENTER, glyph, theme::font(size::CAPTION), fg);
     }
     let text_color = match (page, marked || hovered) {
-        (None, _) => color::TEXT_FAINT,
-        (Some(_), true) => color::TEXT_STRONG,
-        (Some(_), false) => color::TEXT,
+        (None, _) => color::text_faint(),
+        (Some(_), true) => color::text_strong(),
+        (Some(_), false) => color::text(),
     };
     // The page number at the right, the title truncated before it.
     let right = rect.right() - space::S;
     let number_w = match page {
         Some(n) => {
-            let g = p.layout_no_wrap(format!("{}", n + 1), theme::font(size::CAPTION), color::TEXT_MUTED);
+            let g = p.layout_no_wrap(format!("{}", n + 1), theme::font(size::CAPTION), color::text_muted());
             let w = g.size().x;
-            p.galley(pos2(right - w, y - g.size().y * 0.5), g, color::TEXT_MUTED);
+            p.galley(pos2(right - w, y - g.size().y * 0.5), g, color::text_muted());
             w + space::S
         }
         None => 0.0,

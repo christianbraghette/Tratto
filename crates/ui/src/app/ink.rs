@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Writing and erasing: the pen and highlighter strokes being drawn, and the
-//! stroke eraser.
+//! eraser (whole strokes, or only the ink under it: `EraserMode`).
 
 use eframe::egui::{self, PointerButton, Pos2};
 
@@ -11,6 +11,7 @@ use tratto_core::model::{Stroke, StrokeKind};
 use tratto_core::stroke_builder::StrokeBuilder;
 
 use crate::render::LiveStroke;
+use crate::settings::EraserMode;
 use crate::toolbar::Tool;
 use crate::view::{Layout, View};
 
@@ -113,17 +114,35 @@ impl InkApp {
 
     fn erase_at(&mut self, center: Pos2, radius: f32) {
         let layout = Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count };
-        let mut hits: Vec<u64> = Vec::new();
+        // The strokes hit, and where the eraser is on their page.
+        let mut hits: Vec<(u64, Pos2)> = Vec::new();
         // The eraser circle may touch two neighbouring pages near the gap.
         for page in layout.pages_overlapping(center.y - radius, center.y + radius) {
             let local = center - layout.page_origin(page).to_vec2();
-            hits.extend(self.doc.strokes.iter().filter(|s| s.page == page && s.hit_test(local, radius)).map(|s| s.id));
+            hits.extend(
+                self.doc.strokes.iter().filter(|s| s.page == page && s.hit_test(local, radius)).map(|s| (s.id, local)),
+            );
         }
         // Only ink: text boxes are deleted from their context menu (or by
         // emptying them), never wiped by accident.
-        for id in hits {
-            let inverse = Action::RemoveStroke { id }.apply(&mut self.doc);
-            self.erase_session.push(inverse);
+        let partial = self.settings.eraser_mode == EraserMode::Partial;
+        for (id, local) in hits {
+            if !partial {
+                let inverse = Action::RemoveStroke { id }.apply(&mut self.doc);
+                self.erase_session.push(inverse);
+                continue;
+            }
+            // Partial: the stroke gives way to what is left of it, new
+            // strokes in its place in the draw order.
+            let Some(index) = self.doc.strokes.iter().position(|s| s.id == id) else { continue };
+            let s = &self.doc.strokes[index];
+            let Some(pieces) = s.erased(local, radius) else { continue };
+            let (page, kind, color, width) = (s.page, s.kind, s.color, s.width);
+            self.erase_session.push(Action::RemoveStroke { id }.apply(&mut self.doc));
+            for (k, points) in pieces.into_iter().enumerate() {
+                let stroke = Stroke::new(self.doc.alloc_id(), page, kind, color, width, points);
+                self.erase_session.push(Action::AddStroke { index: index + k, stroke }.apply(&mut self.doc));
+            }
         }
     }
 

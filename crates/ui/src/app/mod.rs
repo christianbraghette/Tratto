@@ -9,6 +9,7 @@
 //! - `canvas`         the editor's canvas: input routing, scrolling, zoom, painting, links
 //! - `ink`            pen and highlighter strokes, the eraser
 //! - `selection`      lasso, select all, moving and deleting what is selected
+//! - `transform`      resizing, rotating and recolouring what is selected
 //! - `clipboard`      copy, cut and paste (note content, pages, library notes)
 //! - `text`           text boxes
 //! - `text_select`    the text of the pages: selecting and copying it
@@ -71,6 +72,7 @@ mod selection;
 mod settings_ui;
 mod text;
 mod text_select;
+mod transform;
 mod update_ui;
 
 use menus::{Command, ContextMenu, HelpWindows};
@@ -277,6 +279,8 @@ pub struct InkApp {
     /// The picture picked with the select tool, and one being dragged.
     picture: Option<u64>,
     picture_drag: Option<pictures::PictureDrag>,
+    /// The selection being resized or rotated by a handle.
+    transform: Option<transform::TransformDrag>,
     /// The pictures' textures (canvas, page previews, export preview).
     picture_textures: PictureTextures,
     /// Cached anti-aliased meshes of finished strokes.
@@ -355,6 +359,8 @@ pub struct InkApp {
     export_dialog: Option<export_ui::ExportDialog>,
     /// PDF being written in the background, if any.
     export_job: Option<export_ui::ExportJob>,
+    /// Pictures being saved as PNG files in the background.
+    png_jobs: Vec<Receiver<Result<PathBuf, String>>>,
     /// Note being dragged in the notebook panel.
     note_drag: Option<library_panel::NoteDrag>,
     /// Same for the notebook name in the notebook panel.
@@ -404,6 +410,8 @@ enum PathField {
     ExportTo,
     /// A picture to insert, at a page and a point on it (or where the view is).
     Picture { at: Option<(u32, Pos2)> },
+    /// Where to save this picture of a page or of the selection, as PNG.
+    Png(Box<crate::snapshot::Snapshot>),
 }
 
 impl InkApp {
@@ -443,6 +451,7 @@ impl InkApp {
             moving: None,
             picture: None,
             picture_drag: None,
+            transform: None,
             picture_textures: PictureTextures::default(),
             cache: StrokeCache::default(),
             thumb_cache: StrokeCache::default(),
@@ -489,6 +498,7 @@ impl InkApp {
             global_settings_open: false,
             export_dialog: None,
             export_job: None,
+            png_jobs: Vec::new(),
             note_drag: None,
             notebook_buf: String::new(),
             notebook_focused: false,
@@ -568,6 +578,10 @@ impl InkApp {
                 }
             }
             PathField::Picture { at } => self.insert_picture_file(Path::new(&path), at),
+            PathField::Png(snap) => {
+                let job = crate::snapshot::save_png(&self.egui_ctx, *snap, PathBuf::from(path));
+                self.png_jobs.push(job);
+            }
         }
     }
 
@@ -610,6 +624,7 @@ impl InkApp {
             || self.lasso.is_some()
             || self.moving.is_some()
             || self.picture_drag.is_some()
+            || self.transform.is_some()
     }
 
     /// A PDF is open in the reader (not a note).
@@ -701,6 +716,7 @@ impl InkApp {
             contents: self.doc.pdf.is_some(),
             can_go_back: !self.nav_back.is_empty(),
         };
+        let selected = self.selection_color();
         let event = if self.reading() {
             toolbar::show_reader(ui, &mut self.settings, &nav, bottom_inset)
         } else {
@@ -711,6 +727,7 @@ impl InkApp {
                 self.history.can_undo(),
                 self.history.can_redo(),
                 &nav,
+                selected,
                 bottom_inset,
             )
         };
@@ -740,6 +757,7 @@ impl InkApp {
             Some(ToolbarEvent::GoToPage(i)) => self.scroll_to = Some(self.layout().page_stop(i)),
             Some(ToolbarEvent::Back) => self.go_back(),
             Some(ToolbarEvent::Tool(t)) => self.pick_tool(t),
+            Some(ToolbarEvent::Recolor(rgb)) => self.recolor_selection(rgb),
             None => {}
         }
 
@@ -791,15 +809,15 @@ fn loading_screen(ctx: &egui::Context, label: &str) {
         ui.painter().rect(
             card,
             radius::LARGE,
-            color::SURFACE,
-            egui::Stroke::new(1.0, color::BORDER),
+            color::surface(),
+            egui::Stroke::new(1.0, color::border()),
             egui::StrokeKind::Middle,
         );
         let inner = card.shrink(space::L);
         ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(space::S);
-                ui.add(egui::Spinner::new().size(28.0).color(color::ACCENT));
+                ui.add(egui::Spinner::new().size(28.0).color(color::accent()));
                 ui.add_space(space::M);
                 ui.add(egui::Label::new(theme::heading(label)).truncate());
                 ui.label(theme::muted("Large PDFs can take a moment."));
@@ -828,6 +846,8 @@ impl eframe::App for InkApp {
             crate::chrome::round_corners(frame);
             crate::win_frame::install(frame);
         }
+        // Before anything is painted: the palette of this frame.
+        crate::theme::follow(ctx, self.settings.theme);
         self.present_mode(ctx, frame);
         self.publish_clipboard(ctx);
         // Every frame, so that one pressed elsewhere is not pasted later.
@@ -891,7 +911,7 @@ impl eframe::App for InkApp {
     /// The window background, visible only through gaps between panels:
     /// the bars' colour, so a gap can never show as a dark line.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        color::CHROME.to_normalized_gamma_f32()
+        color::chrome().to_normalized_gamma_f32()
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

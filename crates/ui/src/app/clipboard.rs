@@ -153,7 +153,7 @@ impl InkApp {
     }
 
     /// What is selected on the note (or the picked picture), copied.
-    fn selected_content(&self) -> Option<Content> {
+    pub(super) fn selected_content(&self) -> Option<Content> {
         let (page, strokes, texts, images) = match (&self.selection, self.picture) {
             (Some(sel), _) => (sel.page, sel.ids.clone(), sel.texts.clone(), sel.images.clone()),
             (None, Some(id)) => {

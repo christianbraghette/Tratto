@@ -72,6 +72,27 @@ impl LibrarySort {
     }
 }
 
+/// What the eraser takes away.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EraserMode {
+    /// Only the ink under it: strokes it crosses are cut in pieces.
+    Partial,
+    /// Every stroke it touches, whole.
+    #[default]
+    Stroke,
+}
+
+impl EraserMode {
+    pub const ALL: [EraserMode; 2] = [Self::Partial, Self::Stroke];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Partial => "What it rubs out",
+            Self::Stroke => "Whole strokes",
+        }
+    }
+}
+
 /// What happens when a new version is released.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UpdateMode {
@@ -203,6 +224,7 @@ pub struct Settings {
     pub text: ToolStyle,
     /// Eraser radius in document units.
     pub eraser_radius: f32,
+    pub eraser_mode: EraserMode,
     /// Extrapolate the live stroke slightly ahead of the pen (hides latency).
     pub predict_pen: bool,
     /// Present with vsync: saves power, adds latency.
@@ -222,6 +244,8 @@ pub struct Settings {
     pub library_root: String,
     /// Draw our own title bar with the menus (system decorations off).
     pub custom_title_bar: bool,
+    /// Dark or light interface, or as the system is (the paper stays white).
+    pub theme: crate::theme::ThemeMode,
     /// Interface scale (egui zoom factor).
     pub ui_scale: f32,
     /// Wheel glide and acceleration, flick to pan, animated page jumps.
@@ -368,6 +392,7 @@ impl Default for Settings {
             highlighter: ToolStyle { color: [255, 235, 0], width: 14.0 },
             text: ToolStyle { color: [20, 20, 20], width: 18.0 },
             eraser_radius: 12.0,
+            eraser_mode: EraserMode::Stroke,
             predict_pen: true,
             vsync: false,
             battery_saver: BatterySaver::default(),
@@ -378,6 +403,7 @@ impl Default for Settings {
             pdf_rules: true,
             library_root: tratto_core::library::default_root().to_string_lossy().into_owned(),
             custom_title_bar: true,
+            theme: crate::theme::ThemeMode::Dark,
             ui_scale: 1.0,
             smooth_scroll: true,
             scroll_speed: 1.0,

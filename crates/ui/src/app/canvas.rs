@@ -240,7 +240,7 @@ impl InkApp {
         let full = ui.max_rect();
         let layout =
             Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count.max(1) };
-        ui.painter().rect_filled(full, 0.0, render::PADDING_COLOR);
+        ui.painter().rect_filled(full, 0.0, crate::theme::color::desk());
 
         // ---- geometry and zoom
         let (mut canvas, mut scale, mut hbar) = self.canvas_geometry(full, &layout);
@@ -618,7 +618,7 @@ impl InkApp {
         }
 
         // Selection box and lasso outline.
-        let blue = color::ACCENT;
+        let blue = color::accent();
         if let Some(sel) = &self.selection {
             let r = sel.bounds.translate(layout.page_origin(sel.page).to_vec2() + move_off);
             let rect = Rect::from_min_max(view.content_to_screen(r.min), view.content_to_screen(r.max));
@@ -628,6 +628,7 @@ impl InkApp {
         }
         if self.tool == Tool::Select {
             self.paint_picked_picture(&painter, &view, canvas_resp.hover_pos());
+            self.paint_selection_handles(&painter, &view, canvas_resp.hover_pos());
         }
         if let Some(l) = &self.lasso {
             let o = layout.page_origin(l.page).to_vec2();

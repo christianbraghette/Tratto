@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! A picture of what was copied, for other apps (the system clipboard).
+//! A picture of what was copied, for other apps (the system clipboard), and
+//! of a page or a selection saved as a PNG file.
 //!
 //! On the UI thread, the strokes and text boxes are painted as they are on
 //! screen (the same tessellation and text layout) onto a hidden layer, which
@@ -16,8 +17,13 @@
 //! the keyboard: there it is HTML holding the picture (what Word, mail or a
 //! browser take), with the text of the copied text boxes as plain text (a
 //! space if there are none).
+//!
+//! A page saved as a file has all of the page under the ink: the paper, its
+//! rules or grid, and the PDF page the note is written on.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{
@@ -26,7 +32,8 @@ use eframe::egui::{
     pos2,
 };
 
-use tratto_core::model::{Image, ImageData, Stroke, TextBox};
+use tratto_core::model::{Document, Image, ImageData, PageKind, PageStyle, Stroke, TextBox};
+use tratto_core::pdf_pages::{self, PdfFile};
 
 use crate::app::clipboard::{Content, PageContent, SystemCopy};
 use crate::stroke_mesh;
@@ -37,6 +44,10 @@ const MAX_SIDE: f32 = 2048.0;
 const MAX_DENSITY: f32 = 3.0;
 /// Room around copied content, in document units (antialiased edges).
 const MARGIN: f32 = 4.0;
+/// A picture saved as a file: its longer side at most (pixels), and pixels
+/// per document unit (288 dpi).
+const FILE_MAX_SIDE: f32 = 8192.0;
+const FILE_DENSITY: f32 = 3.0;
 
 /// What to make a picture of.
 pub struct Snapshot {
@@ -49,6 +60,11 @@ pub struct Snapshot {
     paper: bool,
     /// Plain text with it, where it goes as HTML (see the module docs).
     alt: String,
+    /// The paper's rules or grid.
+    rules: Option<PageStyle>,
+    /// The PDF page under it: its file, the page, and where it goes (page
+    /// space).
+    underlay: Option<(Arc<PdfFile>, u32, Rect)>,
 }
 
 /// The text of `texts`, one box a paragraph; a space without any.
@@ -61,13 +77,37 @@ impl Snapshot {
     pub fn of_content(c: &Content) -> Self {
         let area = c.bounds.expand(MARGIN);
         let alt = alt_text(&c.texts);
-        Self { strokes: c.strokes.clone(), texts: c.texts.clone(), images: c.images.clone(), area, paper: false, alt }
+        let (strokes, texts, images) = (c.strokes.clone(), c.texts.clone(), c.images.clone());
+        Self { strokes, texts, images, area, paper: false, alt, rules: None, underlay: None }
     }
 
     pub fn of_page(p: &PageContent, (w, h): (f32, f32)) -> Self {
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(w, h));
         let alt = alt_text(&p.texts);
-        Self { strokes: p.strokes.clone(), texts: p.texts.clone(), images: p.images.clone(), area, paper: true, alt }
+        let (strokes, texts, images) = (p.strokes.clone(), p.texts.clone(), p.images.clone());
+        Self { strokes, texts, images, area, paper: true, alt, rules: None, underlay: None }
+    }
+
+    /// Page `page` of `doc` as it looks: on its paper, with its rules or
+    /// grid and the PDF page under it.
+    pub fn of_note_page(doc: &Document, page: u32) -> Self {
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(doc.page_width, doc.page_height));
+        let texts: Vec<TextBox> = doc.texts.iter().filter(|t| t.page == page).cloned().collect();
+        let underlay = doc.pdf.as_ref().and_then(|pdf| {
+            let pdf_page = doc.pdf_page(page)?;
+            let [x, y, w, h] = pdf.placement(pdf_page, doc.page_width, doc.page_height)?;
+            Some((pdf.file.clone()?, pdf_page, Rect::from_min_size(pos2(x, y), egui::vec2(w, h))))
+        });
+        Self {
+            strokes: doc.strokes.iter().filter(|s| s.page == page).cloned().collect(),
+            images: doc.images.iter().filter(|i| i.page == page).cloned().collect(),
+            alt: alt_text(&texts),
+            texts,
+            area,
+            paper: true,
+            rules: doc.ruled(page).then_some(doc.page),
+            underlay,
+        }
     }
 }
 
@@ -82,6 +122,10 @@ struct Scene {
     ppp: f32,
     atlas: ColorImage,
     alt: String,
+    /// The paper's rules (pixels).
+    rules: Vec<Rect>,
+    /// The PDF page under it, and where it goes (pixels).
+    underlay: Option<(Arc<PdfFile>, u32, Rect)>,
 }
 
 /// Makes a picture of `snap` and puts it on the system clipboard, in the
@@ -91,7 +135,7 @@ pub fn export(ctx: &egui::Context, snap: Snapshot, system: Arc<Mutex<SystemCopy>
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     // Before the thread starts: it may be done at once.
     *system.lock().unwrap_or_else(|e| e.into_inner()) = SystemCopy::Pending(id);
-    let scene = scene(ctx, &snap);
+    let scene = scene(ctx, &snap, MAX_SIDE, MAX_DENSITY);
     let shared = system.clone();
     let spawned = std::thread::Builder::new().name("copy-picture".into()).spawn(move || {
         let image = rasterise(&scene);
@@ -107,11 +151,36 @@ pub fn export(ctx: &egui::Context, snap: Snapshot, system: Arc<Mutex<SystemCopy>
     }
 }
 
-fn scene(ctx: &egui::Context, snap: &Snapshot) -> Scene {
+/// Saves a picture of `snap` as the PNG file `path`, in the background;
+/// the path saved, or why it was not, arrives on the receiver.
+pub fn save_png(ctx: &egui::Context, snap: Snapshot, path: PathBuf) -> Receiver<Result<PathBuf, String>> {
+    let scene = scene(ctx, &snap, FILE_MAX_SIDE, FILE_DENSITY);
+    let (tx, rx) = mpsc::channel();
+    let failed = tx.clone();
+    let ctx = ctx.clone();
+    let spawned = std::thread::Builder::new().name("save-picture".into()).spawn(move || {
+        let image = rasterise(&scene);
+        let [w, h] = image.size;
+        let saved = tratto_core::images::encode_png(w as u32, h as u32, image.bytes)
+            .map_err(|e| e.to_string())
+            .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()))
+            .map(|()| path);
+        let _ = tx.send(saved);
+        ctx.request_repaint();
+    });
+    if let Err(e) = spawned {
+        let _ = failed.send(Err(e.to_string()));
+    }
+    rx
+}
+
+/// What the thread needs to make the picture of `snap`: its longer side at
+/// most `max_side` pixels, at most `max_density` pixels a document unit.
+fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) -> Scene {
     let ppp = ctx.pixels_per_point();
     let area = snap.area;
     // Pixels per document unit, then points per document unit.
-    let density = (MAX_SIDE / area.width().max(area.height()).max(1.0)).min(MAX_DENSITY);
+    let density = (max_side / area.width().max(area.height()).max(1.0)).min(max_density);
     let scale = density / ppp;
     let size = [(area.width() * density).ceil().max(1.0) as usize, (area.height() * density).ceil().max(1.0) as usize];
     let at = |p: Pos2| ((p - area.min) * scale).to_pos2();
@@ -146,7 +215,26 @@ fn scene(ctx: &egui::Context, snap: &Snapshot) -> Scene {
             (Rect::from_min_size(min.to_pos2(), i.rect().size() * density), i.data.clone())
         })
         .collect();
-    Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, alt: snap.alt.clone() }
+    let px = |r: Rect| {
+        Rect::from_min_max(((r.min - area.min) * density).to_pos2(), ((r.max - area.min) * density).to_pos2())
+    };
+    let rules =
+        snap.rules.map(|style| rule_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
+    let underlay = snap.underlay.as_ref().map(|(file, page, rect)| (file.clone(), *page, px(*rect)));
+    Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, alt: snap.alt.clone(), rules, underlay }
+}
+
+/// The rules (and the grid's columns) of a page `size` large on paper
+/// `style`, as on screen: lines one unit thick, every `spacing`.
+fn rule_rects(style: PageStyle, size: egui::Vec2) -> Vec<Rect> {
+    let spacing = style.spacing.max(8.0);
+    let steps = |extent: f32| (1..).map(move |k| k as f32 * spacing).take_while(move |v| *v < extent);
+    let mut rects: Vec<Rect> =
+        steps(size.y).map(|y| Rect::from_min_max(pos2(0.0, y - 0.5), pos2(size.x, y + 0.5))).collect();
+    if style.kind == PageKind::Grid {
+        rects.extend(steps(size.x).map(|x| Rect::from_min_max(pos2(x - 0.5, 0.0), pos2(x + 0.5, size.y))));
+    }
+    rects
 }
 
 /// Premultiplied RGBA pixels.
@@ -185,6 +273,13 @@ fn rasterise(scene: &Scene) -> Rgba {
     let [w, h] = scene.size;
     let paper = if scene.paper { [1.0; 4] } else { [0.0; 4] };
     let mut canvas = Canvas { size: scene.size, px: vec![paper; w * h] };
+    if let Some((file, page, rect)) = &scene.underlay {
+        draw_pdf_page(&mut canvas, file, *page, *rect);
+    }
+    let [r, g, b, _] = crate::theme::color::page_rule().to_array().map(|c| c as f32 / 255.0);
+    for rule in &scene.rules {
+        fill_rect(&mut canvas, *rule, [r, g, b, 1.0]);
+    }
     for (rect, data) in &scene.pictures {
         draw_picture(&mut canvas, *rect, data);
     }
@@ -220,7 +315,44 @@ fn draw_picture(canvas: &mut Canvas, rect: Rect, data: &ImageData) {
     let side = rect.width().max(rect.height()).ceil() as u32;
     let Ok(decoded) = data.decode_sizes(&[side.max(1)]) else { return };
     let Some(img) = decoded.first() else { return };
-    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    draw_rgba(canvas, rect, [img.width(), img.height()], |x, y| img.get_pixel(x, y).0);
+}
+
+/// Page `page` of the PDF `file`, rendered for `rect` (pixels) and put there.
+/// Blocks until the PDF worker has rendered it; left out if it cannot.
+fn draw_pdf_page(canvas: &mut Canvas, file: &Arc<PdfFile>, page: u32, rect: Rect) {
+    let (tx, rx) = mpsc::channel();
+    pdf_pages::render(file, page, rect.width().round().max(1.0) as u32, None, tx, Arc::new(|| {}));
+    let Ok(Ok((w, h, bytes))) = rx.recv().map(|r| r.image) else { return };
+    let at = |x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]
+    };
+    draw_rgba(canvas, rect, [w, h], at);
+}
+
+/// `rect` (pixels) filled with `c` (premultiplied), its edges partly.
+fn fill_rect(canvas: &mut Canvas, rect: Rect, c: [f32; 4]) {
+    let [w, h] = canvas.size;
+    let (x0, y0) = (rect.min.x.floor().max(0.0) as usize, rect.min.y.floor().max(0.0) as usize);
+    let (x1, y1) = ((rect.max.x.ceil().max(0.0) as usize).min(w), (rect.max.y.ceil().max(0.0) as usize).min(h));
+    for y in y0..y1 {
+        let cy = (rect.max.y.min(y as f32 + 1.0) - rect.min.y.max(y as f32)).clamp(0.0, 1.0);
+        for x in x0..x1 {
+            let cx = (rect.max.x.min(x as f32 + 1.0) - rect.min.x.max(x as f32)).clamp(0.0, 1.0);
+            let k = cx * cy;
+            canvas.over(y * w + x, c.map(|v| v * k));
+        }
+    }
+}
+
+/// A picture `size` pixels large, its pixels (RGBA, not premultiplied) from
+/// `pixel`, scaled into `rect` (pixels).
+fn draw_rgba(canvas: &mut Canvas, rect: Rect, size: [u32; 2], pixel: impl Fn(u32, u32) -> [u8; 4]) {
+    let (iw, ih) = (size[0] as f32, size[1] as f32);
+    if iw < 1.0 || ih < 1.0 {
+        return;
+    }
     let [w, h] = canvas.size;
     let (x0, y0) = (rect.min.x.max(0.0) as usize, rect.min.y.max(0.0) as usize);
     let (x1, y1) = ((rect.max.x.ceil() as usize).min(w), (rect.max.y.ceil() as usize).min(h));
@@ -228,7 +360,7 @@ fn draw_picture(canvas: &mut Canvas, rect: Rect, data: &ImageData) {
         for x in x0..x1 {
             let u = ((x as f32 + 0.5 - rect.min.x) / rect.width() * iw).clamp(0.0, iw - 1.0);
             let v = ((y as f32 + 0.5 - rect.min.y) / rect.height() * ih).clamp(0.0, ih - 1.0);
-            let p = img.get_pixel(u as u32, v as u32).0;
+            let p = pixel(u as u32, v as u32);
             let a = p[3] as f32 / 255.0;
             let c = [p[0] as f32 / 255.0 * a, p[1] as f32 / 255.0 * a, p[2] as f32 / 255.0 * a, a];
             canvas.over(y * w + x, c);
@@ -354,10 +486,14 @@ mod tests {
             area,
             paper: false,
             alt: " ".into(),
+            rules: None,
+            underlay: None,
         };
         let ctx = egui::Context::default();
         let mut made = None;
-        crate::test_frame(&ctx, egui::RawInput::default(), |ui| made = Some(scene(ui.ctx(), &snap)));
+        crate::test_frame(&ctx, egui::RawInput::default(), |ui| {
+            made = Some(scene(ui.ctx(), &snap, MAX_SIDE, MAX_DENSITY))
+        });
         let image = rasterise(&made.unwrap());
         let [w, h] = image.size;
         assert_eq!([w, h], [360, 180], "3 pixels a unit");
@@ -370,6 +506,47 @@ mod tests {
         let image = &image;
         let text_px = (30 * 3..50 * 3).flat_map(|y| (10 * 3..60 * 3).map(move |x| image.pixel(x, y)));
         assert!(text_px.filter(|c| c[3] > 200 && c[0] < 80).count() > 20, "the text is drawn");
+    }
+
+    #[test]
+    fn a_page_saved_as_png_has_its_paper_and_rules() {
+        let mut doc = Document::default();
+        (doc.page_width, doc.page_height) = (100.0, 80.0);
+        doc.page = PageStyle { kind: PageKind::Ruled, spacing: 20.0 };
+        let snap = Snapshot::of_note_page(&doc, 0);
+        let ctx = egui::Context::default();
+        let mut made = None;
+        crate::test_frame(&ctx, egui::RawInput::default(), |ui| {
+            made = Some(scene(ui.ctx(), &snap, FILE_MAX_SIDE, FILE_DENSITY))
+        });
+        let image = rasterise(&made.unwrap());
+        assert_eq!(image.size, [300, 240]);
+        let rule = crate::theme::color::page_rule().to_array();
+        assert_eq!(image.pixel(150, 60), [rule[0], rule[1], rule[2], 255], "a rule at 20 units");
+        assert_eq!(image.pixel(150, 30), [255, 255, 255, 255], "white paper between the rules");
+        let dir = std::env::temp_dir().join(format!("tratto-png-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("page.png");
+        let mut rx = None;
+        crate::test_frame(&ctx, egui::RawInput::default(), |ui| {
+            rx = Some(save_png(ui.ctx(), Snapshot::of_note_page(&doc, 0), path.clone()))
+        });
+        assert_eq!(rx.unwrap().recv().unwrap(), Ok(path.clone()));
+        assert!(std::fs::read(&path).unwrap().starts_with(b"\x89PNG"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rules_and_grid_cover_the_page() {
+        let size = egui::vec2(100.0, 50.0);
+        let ruled = rule_rects(PageStyle { kind: PageKind::Ruled, spacing: 20.0 }, size);
+        assert_eq!(ruled.iter().map(|r| r.center().y).collect::<Vec<_>>(), [20.0, 40.0]);
+        let grid = rule_rects(PageStyle { kind: PageKind::Grid, spacing: 20.0 }, size);
+        assert_eq!(grid.len(), 2 + 4);
+        // Partly covered pixels are partly painted.
+        let mut canvas = Canvas { size: [4, 1], px: vec![[0.0; 4]; 4] };
+        fill_rect(&mut canvas, Rect::from_min_max(pos2(0.5, 0.0), pos2(2.0, 1.0)), [1.0; 4]);
+        assert_eq!(canvas.px.iter().map(|p| p[3]).collect::<Vec<_>>(), [0.5, 1.0, 0.0, 0.0]);
     }
 
     #[test]

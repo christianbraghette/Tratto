@@ -20,8 +20,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, Id, LayerId, Layout, Order, PointerButton, Rect, ResizeDirection,
-    RichText, Sense, Stroke, StrokeKind, Ui, ViewportCommand, pos2, vec2,
+    self, Align, Align2, CursorIcon, Id, LayerId, Layout, Order, PointerButton, Rect, ResizeDirection, RichText, Sense,
+    Stroke, StrokeKind, Ui, ViewportCommand, pos2, vec2,
 };
 use egui_phosphor::regular as icon;
 
@@ -33,7 +33,6 @@ use crate::win_frame;
 pub const TITLE_BAR_HEIGHT: f32 = 32.0;
 /// Width of the invisible resize borders.
 const RESIZE_BORDER: f32 = 5.0;
-const CLOSE_HOVER: Color32 = color::DANGER;
 /// Fullscreen: how close to the top edge the pointer reveals the bar, and
 /// how far below it the bar stays.
 const REVEAL_EDGE: f32 = 2.0;
@@ -156,7 +155,7 @@ pub fn title_bar(
     egui::Panel::top("title_bar")
         .exact_size(height * shown)
         .show_separator_line(false)
-        .frame(egui::Frame::NONE.fill(color::CHROME))
+        .frame(egui::Frame::NONE.fill(color::chrome()))
         .show(ui, |ui| {
             let panel = ui.max_rect();
             let bar = Rect::from_min_size(panel.min - vec2(0.0, height * (1.0 - shown)), vec2(panel.width(), height));
@@ -186,12 +185,14 @@ pub fn title_bar(
                     });
                 }
                 ui.add_space(space::M);
-                ui.label(RichText::new(icon::PEN_NIB).size(size::ICON).color(color::ACCENT));
+                // Only the app's mark: not text to select.
+                let mark = RichText::new(icon::PEN_NIB).size(size::ICON).color(color::accent());
+                ui.add(egui::Label::new(mark).selectable(false));
                 ui.add_space(space::XS);
                 egui::MenuBar::new().ui(ui, |ui| {
                     // Menu titles: flat, muted until hovered or open.
                     theme::ghost_buttons(ui);
-                    ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_MUTED;
+                    ui.visuals_mut().widgets.inactive.fg_stroke.color = color::text_muted();
                     ui.spacing_mut().button_padding = vec2(space::S, space::XS);
                     menus(ui);
                     // The bar fills the row, so its rect says nothing; the
@@ -227,7 +228,7 @@ pub fn title_bar(
             let place = |w: f32| (max_x - min_x >= w).then(|| (bar.center().x - w * 0.5).clamp(min_x, max_x - w));
             match title {
                 Title::Text(text) => {
-                    let color = color::TEXT_MUTED;
+                    let color = color::text_muted();
                     let galley = ui.painter().layout_no_wrap(text.to_owned(), theme::font(size::BODY), color);
                     if let Some(x) = place(galley.size().x) {
                         let pos = pos2(x, bar.center().y - galley.size().y * 0.5);
@@ -263,7 +264,7 @@ fn editable_title(
 ) -> Option<egui::Response> {
     let font = theme::font(size::BODY);
     let shown = if text.is_empty() { hint } else { text.as_str() };
-    let text_w = ui.painter().layout_no_wrap(shown.to_owned(), font.clone(), color::TEXT).size().x;
+    let text_w = ui.painter().layout_no_wrap(shown.to_owned(), font.clone(), color::text()).size().x;
     let w = (text_w + 2.0 * space::L).clamp(160.0, 420.0);
     // Narrower (but still editable) when the window is tight, hidden when it
     // does not fit at all.
@@ -274,7 +275,7 @@ fn editable_title(
     let rect = Rect::from_min_size(pos2(x, bar.center().y - 12.0), vec2(w, 24.0));
 
     let resp =
-        theme::inline_edit(ui, rect, Id::new("note_title_edit"), text, hint, font, Align::Center, color::TEXT_MUTED);
+        theme::inline_edit(ui, rect, Id::new("note_title_edit"), text, hint, font, Align::Center, color::text_muted());
     Some(resp.on_hover_text("Rename the note"))
 }
 
@@ -331,40 +332,40 @@ fn window_button(ui: &mut Ui, style: Style, glyph: &str, close: bool, height: f3
     let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     let pressed = resp.is_pointer_button_down_on();
     let painter = ui.painter();
-    let mut color = color::TEXT_MUTED;
+    let mut color = color::text_muted();
     let glyph_size = match style {
         Style::Windows => {
             if resp.hovered() {
-                painter.rect_filled(rect, 0.0, if close { CLOSE_HOVER } else { color::HOVER });
-                color = if close { color::ON_ACCENT } else { color::TEXT_STRONG };
+                painter.rect_filled(rect, 0.0, if close { color::danger() } else { color::hover() });
+                color = if close { color::on_accent() } else { color::text_strong() };
             }
             15.0
         }
         // Always a filled circle, a bit lighter when hovered.
         Style::Adwaita => {
             let fill = if pressed {
-                color::PRESSED
+                color::pressed()
             } else if resp.hovered() {
-                color::HOVER
+                color::hover()
             } else {
-                color::RAISED
+                color::raised()
             };
             painter.circle_filled(rect.center(), 12.0, fill);
-            color = color::TEXT;
+            color = color::text();
             13.0
         }
         // A circle only when hovered: red behind the close button.
         Style::Breeze => {
             if resp.hovered() || pressed {
                 let fill = if close {
-                    CLOSE_HOVER
+                    color::danger()
                 } else if pressed {
-                    color::PRESSED
+                    color::pressed()
                 } else {
-                    color::HOVER
+                    color::hover()
                 };
                 painter.circle_filled(rect.center(), 10.0, fill);
-                color = if close { color::ON_ACCENT } else { color::TEXT_STRONG };
+                color = if close { color::on_accent() } else { color::text_strong() };
             }
             14.0
         }
@@ -450,7 +451,7 @@ fn paint_outline(ctx: &egui::Context) {
     if !DWM_FRAME.load(Ordering::Relaxed) {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("window_outline")));
         let r = ctx.viewport_rect();
-        painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, color::BORDER_STRONG), StrokeKind::Middle);
+        painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, color::border_strong()), StrokeKind::Middle);
     }
 }
 
@@ -521,7 +522,7 @@ mod dwm {
 
     /// The outline colour as a COLORREF (0x00BBGGRR).
     pub fn outline() -> u32 {
-        let [r, g, b, _] = color::BORDER_STRONG.to_array();
+        let [r, g, b, _] = color::border_strong().to_array();
         u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16
     }
 }

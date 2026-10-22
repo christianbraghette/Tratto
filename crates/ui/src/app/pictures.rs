@@ -69,7 +69,7 @@ fn read_picture(path: &Path) -> Result<Arc<ImageData>, String> {
 }
 
 /// The corners of `rect`, clockwise from the top-left.
-fn corners(rect: Rect) -> [Pos2; 4] {
+pub(super) fn corners(rect: Rect) -> [Pos2; 4] {
     [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()]
 }
 
@@ -258,10 +258,10 @@ impl InkApp {
     pub(super) fn paint_picked_picture(&self, painter: &Painter, view: &View, hover: Option<Pos2>) {
         let Some(img) = self.picked_picture() else { return };
         let rect = Self::picture_rect(view, img);
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.5, color::ACCENT), StrokeKind::Outside);
+        painter.rect_stroke(rect, 0.0, Stroke::new(1.5, color::accent()), StrokeKind::Outside);
         for c in corners(rect) {
             let handle = Rect::from_center_size(c, vec2(10.0, 10.0));
-            painter.rect(handle, 2.0, Color32::WHITE, Stroke::new(1.5, color::ACCENT), StrokeKind::Middle);
+            painter.rect(handle, 2.0, Color32::WHITE, Stroke::new(1.5, color::accent()), StrokeKind::Middle);
         }
         let dragging = self.picture_drag.as_ref().map(|d| d.corner);
         let grabbed = dragging.or_else(|| hover.and_then(|p| self.picture_grab(view, p)).map(|(_, corner)| corner));

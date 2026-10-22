@@ -16,8 +16,8 @@ use tratto_core::model::{PAPERS, PageKind, paper_label};
 use super::InkApp;
 use super::library_ui::{Dialog, location, when};
 use crate::file_assoc;
-use crate::settings::{BatterySaver, ToolbarPosition};
-use crate::theme::{self, color, space};
+use crate::settings::{BatterySaver, EraserMode, ToolbarPosition};
+use crate::theme::{self, ThemeMode, color, space};
 
 /// Note settings in the left panel: default width and resize range.
 const NOTE_WIDTH: f32 = 340.0;
@@ -36,7 +36,7 @@ pub(super) fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 pub(super) fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).small().color(color::TEXT_FAINT));
+    ui.label(RichText::new(text).small().color(color::text_faint()));
 }
 
 pub(super) fn section(ui: &mut Ui, title: &str) {
@@ -224,6 +224,13 @@ impl InkApp {
 
         section(ui, "Appearance");
         rows(ui, "global_appearance", |ui| {
+            row(ui, "Theme", |ui| {
+                egui::ComboBox::from_id_salt("theme_mode").selected_text(s.theme.label()).show_ui(ui, |ui| {
+                    for mode in ThemeMode::ALL {
+                        ui.selectable_value(&mut s.theme, mode, mode.label());
+                    }
+                });
+            });
             row(ui, "Interface size", |ui| {
                 ui.add(
                     Slider::new(&mut s.ui_scale, 0.75..=1.5)
@@ -297,6 +304,13 @@ impl InkApp {
             });
             row(ui, "Eraser size", |ui| {
                 ui.add(Slider::new(&mut s.eraser_radius, 4.0..=60.0));
+            });
+            row(ui, "Eraser erases", |ui| {
+                egui::ComboBox::from_id_salt("eraser_mode").selected_text(s.eraser_mode.label()).show_ui(ui, |ui| {
+                    for mode in EraserMode::ALL {
+                        ui.selectable_value(&mut s.eraser_mode, mode, mode.label());
+                    }
+                });
             });
         });
 
@@ -389,7 +403,7 @@ impl InkApp {
             if ui.button(format!("{}  Reset to defaults", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
                 reset = true;
             }
-            ui.label(RichText::new("Keeps the library folder and the panels.").small().color(color::TEXT_FAINT));
+            ui.label(RichText::new("Keeps the library folder and the panels.").small().color(color::text_faint()));
         });
 
         match pdf_reader.map(|on| (on, if on { file_assoc::register() } else { file_assoc::unregister() })) {

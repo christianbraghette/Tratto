@@ -48,7 +48,10 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 **Writing**
 - Pen and highlighter with configurable colors and widths
 - Pressure-sensitive strokes, with smoothing and optional prediction of the pen tip
-- Stroke eraser, and lasso selection to move or delete ink, text boxes and pictures
+- Eraser that rubs out only the ink under it, or whole strokes
+- Lasso or rectangle selection to move or delete ink, text boxes and pictures;
+  drag a corner of the selection to resize it, the handle above it to rotate
+  ink, and pick a colour in the toolbar to recolour it
 - Cut, copy and paste what is selected, within a note or into another one;
   other apps get the copied text, or a picture of the copied ink
 - Text boxes for typed notes
@@ -68,6 +71,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 
 **Interface**
 - VS Code-style title bar with File, Edit, View, Page and Help menus (or the system title bar, if you prefer)
+- Dark or light interface, or the same as the system (Settings > Appearance)
 - Context menu on right-click, adapted to what is under the pointer
 - Icon buttons, with names and shortcuts in tooltips
 - Controls in notches attached to the canvas edges; resizable page and notebook panels
@@ -85,6 +89,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 - Autosave a moment after every change, with atomic writes and periodic `.bak` backups
 - Undo and redo
 - Vector PDF export, with or without the ruled lines or grid
+- Save a page (with its paper, rules and PDF page) or a selection as a PNG picture
 
 ## Getting Started
 
@@ -140,7 +145,7 @@ resize.
 | **File** | New note, new notebook, import, open a PDF to read, write on a PDF, save, export as PDF, close note, library folder, settings, exit |
 | **Edit** | Undo, redo, cut, copy, paste, select all on page, delete selection, deselect |
 | **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen |
-| **Page** | Insert a page before / after the current one, delete it, copy, cut or paste a page, paper style, page setup |
+| **Page** | Insert a page before / after the current one, delete it, copy, cut or paste a page, save it as PNG, paper style, page setup |
 | **Help** | Keyboard shortcuts, about Tratto |
 
 ### Editor

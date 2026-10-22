@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The Export PDF dialog (File > Export as PDF, `Ctrl+E`, Note settings).
+//! The Export PDF dialog (File > Export as PDF, `Ctrl+E`, Note settings),
+//! and saving a page or the selection as a PNG picture (see `snapshot`).
 //!
 //! * **What**: the open note (all pages, the current one or a range), its
 //!   whole section, or a selection of the notebook's notes; several notes go
@@ -35,6 +36,7 @@ use super::{InkApp, PathField};
 use crate::file_picker::{self, Pick, Request};
 use crate::pdf_view::PdfTextures;
 use crate::render::{self, Layer, PictureTextures};
+use crate::snapshot::Snapshot;
 use crate::stroke_mesh;
 use crate::theme::{self, color, radius, space};
 
@@ -465,7 +467,7 @@ impl InkApp {
         ui.label(
             RichText::new("With another page size, each page is scaled to fit and centred.")
                 .small()
-                .color(color::TEXT_FAINT),
+                .color(color::text_faint()),
         );
 
         section(ui, "Document");
@@ -478,7 +480,7 @@ impl InkApp {
             });
         });
         if d.scope != Scope::Note {
-            ui.label(RichText::new("Each note gets a bookmark in the PDF.").small().color(color::TEXT_FAINT));
+            ui.label(RichText::new("Each note gets a bookmark in the PDF.").small().color(color::text_faint()));
         }
 
         section(ui, "File");
@@ -519,7 +521,7 @@ impl InkApp {
                 d.selected.clear();
             }
         });
-        egui::Frame::NONE.fill(color::INPUT).corner_radius(radius::SMALL).inner_margin(space::S).show(ui, |ui| {
+        egui::Frame::NONE.fill(color::input()).corner_radius(radius::SMALL).inner_margin(space::S).show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("export_checklist").max_height(200.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 for g in &groups {
@@ -588,7 +590,7 @@ impl InkApp {
                 Align2::CENTER_CENTER,
                 "Nothing to export",
                 theme::font(theme::size::BODY),
-                color::TEXT_FAINT,
+                color::text_faint(),
             );
             return;
         }
@@ -616,7 +618,7 @@ impl InkApp {
             ui.label(
                 RichText::new(format!("{missing} note(s) cannot be read and will be skipped."))
                     .small()
-                    .color(color::DANGER),
+                    .color(color::danger()),
             );
         }
     }
@@ -680,6 +682,63 @@ impl InkApp {
     }
 }
 
+impl InkApp {
+    // ------------------------------------------------------------- PNG
+
+    /// Asks where to save a picture of page `page` (as it looks: paper,
+    /// rules, the PDF under it), then saves it.
+    pub(super) fn save_page_png(&mut self, page: u32) {
+        let snap = Snapshot::of_note_page(&self.doc, page);
+        self.ask_png_path(snap, &format!("page {}", page + 1));
+    }
+
+    /// Asks where to save a picture of what is selected (transparent around
+    /// it), then saves it.
+    pub(super) fn save_selection_png(&mut self) {
+        let Some(content) = self.selected_content() else { return };
+        self.ask_png_path(Snapshot::of_content(&content), "selection");
+    }
+
+    /// The system's Save dialog for a picture, next to the note and named
+    /// after it and `what`; `snap` is saved where it says.
+    fn ask_png_path(&mut self, snap: Snapshot, what: &str) {
+        if self.file_picker.is_open() {
+            return;
+        }
+        let stem = self.note_path.as_deref().and_then(Path::file_stem).map(|s| s.to_string_lossy().into_owned());
+        let name = format!("{} - {what}.png", file_name(stem.as_deref().unwrap_or("Note")));
+        let current = self.note_path.as_ref().map(|p| p.with_file_name(&name)).unwrap_or_else(|| PathBuf::from(&name));
+        self.pick_request = Some(Request {
+            pick: Pick::Save("PNG image", &["png"]),
+            title: "Save as PNG",
+            current: current.to_string_lossy().into_owned(),
+            field: PathField::Png(Box::new(snap)),
+        });
+    }
+
+    /// Tells how the pictures being saved went.
+    pub(super) fn poll_png(&mut self) {
+        let mut done = Vec::new();
+        self.png_jobs.retain(|job| match job.try_recv() {
+            Ok(r) => {
+                done.push(r);
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => {
+                done.push(Err("the picture could not be made".to_owned()));
+                false
+            }
+        });
+        for r in done {
+            match r {
+                Ok(path) => self.toast(format!("Saved {}", path.display())),
+                Err(e) => self.toast(format!("Cannot save the picture: {e}")),
+            }
+        }
+    }
+}
+
 /// One exported page as the PDF will show it, fitted into `area`: the output
 /// page (white), the note's page scaled and centred on it; then, as in the
 /// PDF, paper (or the PDF page it is written on), highlighters, rules, text
@@ -731,7 +790,7 @@ fn paint_page(
     if opts.include_rules && doc.ruled(page) {
         let spacing = doc.page.spacing.max(8.0);
         if spacing * f >= 2.5 {
-            let rule = Stroke::new(0.6, color::PAGE_RULE);
+            let rule = Stroke::new(0.6, color::page_rule());
             let mut y = spacing;
             while y < doc.page_height {
                 p.line_segment([at(0.0, y), at(doc.page_width, y)], rule);

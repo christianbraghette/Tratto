@@ -212,7 +212,7 @@ impl InkApp {
 
         let sort = self.settings.library_sort;
         egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(color::DESK).inner_margin(Margin::symmetric(space::XXL as i8, space::L as i8)))
+            .frame(Frame::NONE.fill(color::desk()).inner_margin(Margin::symmetric(space::XXL as i8, space::L as i8)))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if searching {
@@ -281,7 +281,7 @@ impl InkApp {
             .exact_size(SIDEBAR_W)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::NONE.fill(color::CHROME).inner_margin(Margin::symmetric(space::M as i8, space::L as i8)))
+            .frame(Frame::NONE.fill(color::chrome()).inner_margin(Margin::symmetric(space::M as i8, space::L as i8)))
             .show(ui, |ui| {
                 ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                     let quick =
@@ -374,7 +374,7 @@ impl InkApp {
         let searching = !self.lib_ui.search.trim().is_empty();
         egui::Panel::top("lib_top")
             .show_separator_line(false)
-            .frame(Frame::NONE.fill(color::DESK).inner_margin(Margin {
+            .frame(Frame::NONE.fill(color::desk()).inner_margin(Margin {
                 left: space::XXL as i8,
                 right: space::XXL as i8,
                 top: space::L as i8,
@@ -947,7 +947,7 @@ fn heading_with_sort(ui: &mut Ui, text: &str, sort: LibrarySort, acts: &mut Vec<
 fn empty_state(ui: &mut Ui, glyph: &str, title: &str, hint: &str) {
     ui.add_space(48.0);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(glyph).size(48.0).color(color::TEXT_FAINT));
+        ui.label(RichText::new(glyph).size(48.0).color(color::text_faint()));
         ui.add_space(space::M);
         ui.label(theme::heading(title));
         ui.add_space(space::XS);
@@ -986,22 +986,22 @@ fn action_tile(ui: &mut Ui, glyph: &str, title: &str, hint: &str) -> egui::Respo
     p.rect(
         rect,
         radius::MEDIUM,
-        if hovered { color::RAISED } else { color::SURFACE },
-        Stroke::new(1.0, if hovered { color::ACCENT } else { color::BORDER }),
+        if hovered { color::raised() } else { color::surface() },
+        Stroke::new(1.0, if hovered { color::accent() } else { color::border() }),
         egui::StrokeKind::Middle,
     );
     let icon_rect = Rect::from_center_size(pos2(rect.left() + 34.0, rect.center().y), vec2(40.0, 40.0));
     p.rect_filled(icon_rect, radius::MEDIUM, color::accent_alpha(if hovered { 60 } else { 34 }));
-    p.text(icon_rect.center(), Align2::CENTER_CENTER, glyph, theme::font(22.0), color::ACCENT_HOVER);
+    p.text(icon_rect.center(), Align2::CENTER_CENTER, glyph, theme::font(22.0), color::accent_hover());
     let x = rect.left() + 66.0;
     p.text(
         pos2(x, rect.center().y - 9.0),
         Align2::LEFT_CENTER,
         title,
         theme::font_strong(size::BODY),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
-    p.text(pos2(x, rect.center().y + 11.0), Align2::LEFT_CENTER, hint, theme::font(size::CAPTION), color::TEXT_MUTED);
+    p.text(pos2(x, rect.center().y + 11.0), Align2::LEFT_CENTER, hint, theme::font(size::CAPTION), color::text_muted());
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -1173,25 +1173,26 @@ fn trash_view(ui: &mut Ui, lib: &library::Library, acts: &mut Vec<Act>) {
     });
     ui.add_space(space::M);
     let root = &lib.root;
-    egui::Frame::NONE.fill(color::SURFACE).corner_radius(radius::MEDIUM).stroke(Stroke::new(1.0, color::BORDER)).show(
-        ui,
-        |ui| {
+    egui::Frame::NONE
+        .fill(color::surface())
+        .corner_radius(radius::MEDIUM)
+        .stroke(Stroke::new(1.0, color::border()))
+        .show(ui, |ui| {
             ui.set_width(ui.available_width());
             for (i, item) in lib.trash.iter().enumerate() {
                 if i > 0 {
                     let y = ui.cursor().top();
-                    ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, color::BORDER));
+                    ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, color::border()));
                 }
                 trash_row(ui, item, root, acts);
             }
-        },
-    );
+        });
 }
 
 fn trash_row(ui: &mut Ui, item: &library::TrashItem, root: &Path, acts: &mut Vec<Act>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, color::HOVER.gamma_multiply(0.5));
+        ui.painter().rect_filled(rect, 0.0, color::hover().gamma_multiply(0.5));
     }
     let p = ui.painter();
     let y = rect.center().y;
@@ -1201,7 +1202,7 @@ fn trash_row(ui: &mut Ui, item: &library::TrashItem, root: &Path, acts: &mut Vec
         Align2::CENTER_CENTER,
         glyph,
         theme::font(size::ICON),
-        color::TEXT_MUTED,
+        color::text_muted(),
     );
     let x = rect.left() + space::L + 32.0;
     p.text(
@@ -1209,7 +1210,7 @@ fn trash_row(ui: &mut Ui, item: &library::TrashItem, root: &Path, acts: &mut Vec
         Align2::LEFT_CENTER,
         truncate(&item.name, 60),
         theme::font_strong(size::BODY),
-        color::TEXT_STRONG,
+        color::text_strong(),
     );
     let from = match &item.origin {
         Some(o) if o.parent() == Some(root) => "From the library".to_owned(),
@@ -1217,14 +1218,14 @@ fn trash_row(ui: &mut Ui, item: &library::TrashItem, root: &Path, acts: &mut Vec
         None => "Origin unknown (restored to the library)".to_owned(),
     };
     let detail = format!("{from} \u{b7} deleted {}", when(item.deleted).to_lowercase());
-    p.text(pos2(x, y + 10.0), Align2::LEFT_CENTER, detail, theme::font(size::CAPTION), color::TEXT_MUTED);
+    p.text(pos2(x, y + 10.0), Align2::LEFT_CENTER, detail, theme::font(size::CAPTION), color::text_muted());
 
     let buttons = Rect::from_min_max(pos2(rect.right() - 340.0, rect.top()), rect.max).shrink2(vec2(space::L, 10.0));
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(buttons).layout(egui::Layout::right_to_left(egui::Align::Center)),
         |ui| {
             theme::ghost_buttons(ui);
-            if ui.button(RichText::new(format!("{}  Delete permanently", icon::X)).color(color::DANGER)).clicked() {
+            if ui.button(RichText::new(format!("{}  Delete permanently", icon::X)).color(color::danger())).clicked() {
                 acts.push(Act::Dialog(Dialog::DeleteForever { path: item.path.clone(), label: item.name.clone() }));
             }
             if ui.button(format!("{}  Restore", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
@@ -1237,18 +1238,18 @@ fn trash_row(ui: &mut Ui, item: &library::TrashItem, root: &Path, acts: &mut Vec
 /// A section tab: name and count, the selected one in the notebook's colour.
 fn pill(ui: &mut Ui, name: &str, n: usize, selected: bool, tint: Color32) -> egui::Response {
     let text = format!("{name}  {n}");
-    let galley = ui.painter().layout_no_wrap(text, theme::font(size::BODY), color::TEXT);
+    let galley = ui.painter().layout_no_wrap(text, theme::font(size::BODY), color::text());
     let size = galley.size() + vec2(2.0 * space::M, 12.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let (fill, stroke, fg) = if selected {
-        (tint.gamma_multiply(0.35), Stroke::new(1.0, tint), color::TEXT_STRONG)
+        (tint.gamma_multiply(0.35), Stroke::new(1.0, tint), color::text_strong())
     } else if resp.hovered() {
-        (color::HOVER, Stroke::new(1.0, color::BORDER_STRONG), color::TEXT_STRONG)
+        (color::hover(), Stroke::new(1.0, color::border_strong()), color::text_strong())
     } else {
-        (color::SURFACE, Stroke::new(1.0, color::BORDER), color::TEXT)
+        (color::surface(), Stroke::new(1.0, color::border()), color::text())
     };
     let dropping = egui::DragAndDrop::has_payload_of_type::<DraggedNote>(ui.ctx()) && resp.contains_pointer();
-    let stroke = if dropping { Stroke::new(2.0, color::ACCENT) } else { stroke };
+    let stroke = if dropping { Stroke::new(2.0, color::accent()) } else { stroke };
     ui.painter().rect(rect, rect.height() * 0.5, fill, stroke, egui::StrokeKind::Middle);
     ui.painter().galley(rect.center() - galley.size() * 0.5, galley, fg);
     resp.on_hover_cursor(CursorIcon::PointingHand)
@@ -1271,15 +1272,15 @@ fn nav_row(
     if selected {
         p.rect_filled(rect, radius::SMALL, color::accent_alpha(46));
         let bar = Rect::from_min_size(rect.left_top() + vec2(0.0, 7.0), vec2(3.0, rect.height() - 14.0));
-        p.rect_filled(bar, 1.5, color::ACCENT);
+        p.rect_filled(bar, 1.5, color::accent());
     } else if hovered || dropping {
-        p.rect_filled(rect, radius::SMALL, color::HOVER);
+        p.rect_filled(rect, radius::SMALL, color::hover());
     }
     if dropping {
-        p.rect_stroke(rect, radius::SMALL, Stroke::new(1.5, color::ACCENT), egui::StrokeKind::Middle);
+        p.rect_stroke(rect, radius::SMALL, Stroke::new(1.5, color::accent()), egui::StrokeKind::Middle);
     }
     let y = rect.center().y;
-    let icon_color = tint.unwrap_or(if selected { color::ACCENT_HOVER } else { color::TEXT_MUTED });
+    let icon_color = tint.unwrap_or(if selected { color::accent_hover() } else { color::text_muted() });
     p.text(
         pos2(rect.left() + space::M + 6.0, y),
         Align2::CENTER_CENTER,
@@ -1289,15 +1290,15 @@ fn nav_row(
     );
     let count_w = match n {
         Some(n) => {
-            let g = ui.painter().layout_no_wrap(n.to_string(), theme::font(size::CAPTION), color::TEXT_FAINT);
+            let g = ui.painter().layout_no_wrap(n.to_string(), theme::font(size::CAPTION), color::text_faint());
             let w = g.size().x;
-            ui.painter().galley(pos2(rect.right() - space::S - w, y - g.size().y * 0.5), g, color::TEXT_FAINT);
+            ui.painter().galley(pos2(rect.right() - space::S - w, y - g.size().y * 0.5), g, color::text_faint());
             w + space::S
         }
         None => 0.0,
     };
     let left = rect.left() + space::M + 22.0;
-    let text_color = if selected || hovered { color::TEXT_STRONG } else { color::TEXT };
+    let text_color = if selected || hovered { color::text_strong() } else { color::text() };
     let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), theme::font(size::BODY), text_color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - space::S - count_w - left).max(0.0));
     let galley = ui.fonts_mut(|f| f.layout_job(job));
@@ -1426,7 +1427,7 @@ fn note_card(ui: &mut Ui, note: &NoteInfo, root: &Path, show_location: bool, act
             ui.painter().rect_stroke(
                 rect.expand(1.0),
                 radius::SMALL,
-                Stroke::new(2.0, color::ACCENT),
+                Stroke::new(2.0, color::accent()),
                 egui::StrokeKind::Middle,
             );
         }
@@ -1444,14 +1445,14 @@ fn note_card(ui: &mut Ui, note: &NoteInfo, root: &Path, show_location: bool, act
         if (hovered || menu_open) && !egui::DragAndDrop::has_any_payload(ui.ctx()) {
             let r = Rect::from_min_size(pos2(rect.right() - 32.0, rect.top() + 6.0), vec2(26.0, 26.0));
             let more = ui.interact(r, menu.with("button"), Sense::click()).on_hover_text("Actions");
-            let fill = if more.hovered() { color::RAISED } else { color::SURFACE.gamma_multiply(0.92) };
-            ui.painter().rect(r, radius::SMALL, fill, Stroke::new(1.0, color::BORDER), egui::StrokeKind::Middle);
+            let fill = if more.hovered() { color::raised() } else { color::surface().gamma_multiply(0.92) };
+            ui.painter().rect(r, radius::SMALL, fill, Stroke::new(1.0, color::border()), egui::StrokeKind::Middle);
             ui.painter().text(
                 r.center(),
                 Align2::CENTER_CENTER,
                 icon::DOTS_THREE,
                 theme::font(size::BODY),
-                color::TEXT_STRONG,
+                color::text_strong(),
             );
             button_menu(menu, &more, |ui| note_menu(ui, note, acts));
         }
@@ -1460,15 +1461,16 @@ fn note_card(ui: &mut Ui, note: &NoteInfo, root: &Path, show_location: bool, act
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.add(
             egui::Label::new(
-                RichText::new(&note.meta.title).font(theme::font_strong(size::BODY)).color(color::TEXT_STRONG),
+                RichText::new(&note.meta.title).font(theme::font_strong(size::BODY)).color(color::text_strong()),
             )
             .truncate(),
         );
         let pages = count(note.meta.pages as usize, "page");
-        ui.label(RichText::new(format!("{} · {}", when(note.meta.modified), pages)).small().color(color::TEXT_MUTED));
+        ui.label(RichText::new(format!("{} · {}", when(note.meta.modified), pages)).small().color(color::text_muted()));
         if show_location {
             ui.add(
-                egui::Label::new(RichText::new(location(root, &note.path)).small().color(color::TEXT_FAINT)).truncate(),
+                egui::Label::new(RichText::new(location(root, &note.path)).small().color(color::text_faint()))
+                    .truncate(),
             );
         }
     });
@@ -1502,7 +1504,7 @@ fn notebook_cover(ui: &mut Ui, nb: &NotebookInfo, acts: &mut Vec<Act>) {
     );
     let dropping = egui::DragAndDrop::has_payload_of_type::<DraggedNote>(ui.ctx()) && resp.contains_pointer();
     if resp.hovered() || dropping {
-        p.rect_stroke(rect.expand(1.0), r, Stroke::new(2.0, color::ACCENT), egui::StrokeKind::Middle);
+        p.rect_stroke(rect.expand(1.0), r, Stroke::new(2.0, color::accent()), egui::StrokeKind::Middle);
     }
     drop_target(&resp, acts, |path| Act::MoveNote(path, nb.path.clone()));
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
@@ -1543,7 +1545,7 @@ struct PreviewBatch {
 /// Page 1 as stored in the note header (no document loading).
 fn paint_preview(painter: &egui::Painter, rect: Rect, note: &NoteInfo) {
     let pv: &Preview = &note.meta.preview;
-    painter.rect_filled(rect, radius::SMALL, color::PAGE);
+    painter.rect_filled(rect, radius::SMALL, color::page());
     if pv.page_w <= 0.0 {
         return;
     }

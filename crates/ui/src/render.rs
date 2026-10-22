@@ -211,10 +211,6 @@ impl PictureTextures {
     }
 }
 
-/// Distinct colour of the non-writable area around the pages.
-pub const PADDING_COLOR: Color32 = color::DESK;
-pub const PAGE_COLOR: Color32 = color::PAGE;
-
 /// Cache entries unused for this many frames are dropped (bounds memory).
 const CACHE_TTL_FRAMES: u64 = 512;
 /// While zooming, batches are drawn scaled; they are made again at the new
@@ -663,12 +659,12 @@ pub fn paint_mesh(painter: &Painter, layer: Layer, mesh: Mesh) {
 
 /// Fills the area around the pages and the paper of every visible page.
 pub fn paint_paper(painter: &Painter, view: &View) {
-    painter.rect_filled(view.rect, 0.0, PADDING_COLOR);
+    painter.rect_filled(view.rect, 0.0, color::desk());
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
         // Soft drop shadow, then the paper.
         painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, Color32::from_black_alpha(60));
-        painter.rect_filled(rect, 0.0, PAGE_COLOR);
+        painter.rect_filled(rect, 0.0, color::page());
     }
 }
 
@@ -679,7 +675,7 @@ pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
     let s = view.scale;
     let style = &doc.page;
     let spacing = style.spacing.max(8.0);
-    let rule = UiStroke::new(1.0, color::PAGE_RULE);
+    let rule = UiStroke::new(1.0, color::page_rule());
 
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
@@ -708,7 +704,7 @@ pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
                 x += spacing;
             }
         }
-        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::PAGE_EDGE), UiStrokeKind::Middle);
+        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::page_edge()), UiStrokeKind::Middle);
     }
 }
 

@@ -3,7 +3,8 @@
 
 //! The select tool: lasso or rectangle (`SelectMode`), select all on a page,
 //! moving and deleting what is selected (strokes, text boxes and pictures
-//! together); a tap on a picture picks it alone (see `pictures`).
+//! together); a tap on a picture picks it alone (see `pictures`). The
+//! handles of the selection's box resize and rotate it (see `transform`).
 
 use std::collections::HashSet;
 
@@ -20,6 +21,8 @@ use super::{InkApp, Lasso, MoveDrag, Selection, to_page_point};
 
 impl InkApp {
     pub(super) fn clear_selection(&mut self) {
+        // Resized or rotated so far: kept, and undoable.
+        self.finish_transform();
         self.selection = None;
         self.lasso = None;
         self.moving = None;
@@ -170,6 +173,7 @@ impl InkApp {
     pub(super) fn handle_select(&mut self, resp: &egui::Response, view: &View, press: Option<Pos2>, moves: &[Pos2]) {
         if resp.drag_started_by(PointerButton::Primary) {
             if let Some(pos) = press.or(resp.interact_pointer_pos())
+                && !self.begin_transform(view, pos)
                 && !self.begin_picture_drag(view, pos)
             {
                 let c = view.screen_to_content(pos);
@@ -190,7 +194,11 @@ impl InkApp {
                 }
             }
         } else if resp.dragged() || resp.drag_stopped() {
-            if self.picture_drag.is_some() {
+            if self.transform.is_some() {
+                if let Some(last) = moves.last() {
+                    self.drag_transform(view, *last);
+                }
+            } else if self.picture_drag.is_some() {
                 if let Some(last) = moves.last() {
                     self.drag_picture(view, *last);
                 }
@@ -212,7 +220,9 @@ impl InkApp {
             }
         }
         if !resp.dragged() {
-            if self.picture_drag.is_some() {
+            if self.transform.is_some() {
+                self.finish_transform();
+            } else if self.picture_drag.is_some() {
                 self.finish_picture_drag();
             } else if self.moving.is_some() {
                 self.commit_move(view.layout);

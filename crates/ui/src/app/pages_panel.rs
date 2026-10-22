@@ -66,7 +66,7 @@ impl InkApp {
             .resizable(false)
             .exact_size(toolbar::STRIP_WIDTH)
             .show_separator_line(false)
-            .frame(egui::Frame::NONE.fill(color::CHROME).inner_margin(egui::Margin {
+            .frame(egui::Frame::NONE.fill(color::chrome()).inner_margin(egui::Margin {
                 left: top.left,
                 right: top.right,
                 top: top.top,
@@ -125,7 +125,7 @@ impl InkApp {
 
     /// Frame of a left panel view: the strip's surface, with `view_margin`.
     pub(super) fn view_frame(padded: bool) -> egui::Frame {
-        egui::Frame::NONE.fill(color::CHROME).inner_margin(Self::view_margin(padded))
+        egui::Frame::NONE.fill(color::chrome()).inner_margin(Self::view_margin(padded))
     }
 
     /// Hairline between the button strip and a left panel view (framed with
@@ -134,7 +134,7 @@ impl InkApp {
         let r = ui.max_rect();
         let x = r.left() - f32::from(Self::view_margin(padded).left) + 0.5;
         let y = (r.top() + space::XS)..=(r.bottom() - space::XS);
-        ui.painter().vline(x, y, egui::Stroke::new(1.0, color::BORDER));
+        ui.painter().vline(x, y, egui::Stroke::new(1.0, color::border()));
     }
 
     fn pages_view(&mut self, ui: &mut egui::Ui) {
@@ -143,7 +143,7 @@ impl InkApp {
             Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count.max(1) };
         let ppp = ctx.pixels_per_point();
         let current = self.current_page;
-        let blue = color::ACCENT;
+        let blue = color::accent();
         // A PDF in the reader: its pages are looked at, not changed.
         let editable = !self.reading();
         let can_paste = self.clipboard.has_pages();
@@ -214,10 +214,10 @@ impl InkApp {
                         if ui.is_rect_visible(card) {
                             let p = ui.painter();
                             if resp.hovered() && drag.is_none() {
-                                p.rect_filled(card, radius::MEDIUM, color::HOVER.gamma_multiply(0.6));
+                                p.rect_filled(card, radius::MEDIUM, color::hover().gamma_multiply(0.6));
                             }
                             p.rect_filled(rect.translate(vec2(0.0, 2.0)), 2.0, Color32::from_black_alpha(90));
-                            p.rect_filled(rect, 0.0, render::PAGE_COLOR);
+                            p.rect_filled(rect, 0.0, crate::theme::color::page());
                             let clipped = ui.painter_at(rect);
                             pdf_textures.paint(&clipped, doc, i, rect, false);
                             pictures.paint_page(&clipped, &doc.images, i, rect.min, scale, &[]);
@@ -235,7 +235,7 @@ impl InkApp {
                                 p.rect_stroke(
                                     rect,
                                     0.0,
-                                    egui::Stroke::new(1.0, color::BORDER),
+                                    egui::Stroke::new(1.0, color::border()),
                                     egui::StrokeKind::Middle,
                                 );
                             }
@@ -243,9 +243,9 @@ impl InkApp {
                             let center = pos2(card.center().x, rect.bottom() + PAD + NUMBER_H * 0.5);
                             let text = format!("{}", i + 1);
                             let (font, ink) = if i == current {
-                                (theme::font_strong(theme::size::CAPTION), color::TEXT_STRONG)
+                                (theme::font_strong(theme::size::CAPTION), color::text_strong())
                             } else {
-                                (theme::font(theme::size::CAPTION), color::TEXT_MUTED)
+                                (theme::font(theme::size::CAPTION), color::text_muted())
                             };
                             p.text(center, Align2::CENTER_CENTER, text, font, ink);
                         }
@@ -255,10 +255,11 @@ impl InkApp {
                         let del = ui.interact(del_rect, ui.id().with(("page_del", i)), Sense::click());
                         if editable && ui.rect_contains_pointer(card) && drag.is_none() {
                             let p = ui.painter();
-                            let fill = if del.hovered() { color::DANGER } else { color::CHROME };
-                            p.circle(del_rect.center(), 10.0, fill, egui::Stroke::new(1.0, color::BORDER));
+                            let fill = if del.hovered() { color::danger() } else { color::chrome() };
+                            p.circle(del_rect.center(), 10.0, fill, egui::Stroke::new(1.0, color::border()));
                             let a = 3.5;
-                            let x = egui::Stroke::new(1.6, if del.hovered() { color::ON_ACCENT } else { color::TEXT });
+                            let x =
+                                egui::Stroke::new(1.6, if del.hovered() { color::on_accent() } else { color::text() });
                             let c = del_rect.center();
                             p.line_segment([c + vec2(-a, -a), c + vec2(a, a)], x);
                             p.line_segment([c + vec2(-a, a), c + vec2(a, -a)], x);

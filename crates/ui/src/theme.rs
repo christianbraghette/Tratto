@@ -10,9 +10,9 @@
 //!
 //! Surfaces, from back to front:
 //!
-//! * [`color::DESK`]    the area around the pages and the library background
-//! * [`color::CHROME`]  title bar, side panels, notches, toolbars, headers
-//! * [`color::SURFACE`] windows, menus, popups, toasts
+//! * [`color::desk()`]    the area around the pages and the library background
+//! * [`color::chrome()`]  title bar, side panels, notches, toolbars, headers
+//! * [`color::surface()`] windows, menus, popups, toasts
 //!
 //! One accent colour marks the selected / active / primary element.
 
@@ -23,51 +23,179 @@ use eframe::egui::{
     Pos2, Rect, RichText, Shadow, Stroke, StrokeKind, TextStyle, Theme, ThemePreference, Ui, WidgetText, pos2, vec2,
 };
 
+/// The colours of the interface, of the dark or the light theme: the one
+/// [`follow`] picked for this frame.
 pub mod color {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use eframe::egui::Color32;
 
-    /// Area around the pages, library background.
-    pub const DESK: Color32 = Color32::from_rgb(43, 45, 49);
-    /// Title bar, side panels, notches, floating toolbar, headers.
-    pub const CHROME: Color32 = Color32::from_rgb(25, 26, 29);
-    /// Windows, menus, popups, toasts.
-    pub const SURFACE: Color32 = Color32::from_rgb(34, 36, 40);
-    /// Button at rest.
-    pub const RAISED: Color32 = Color32::from_rgb(47, 50, 55);
-    pub const HOVER: Color32 = Color32::from_rgb(58, 61, 67);
-    pub const PRESSED: Color32 = Color32::from_rgb(70, 74, 81);
-    /// Text fields, slider rails.
-    pub const INPUT: Color32 = Color32::from_rgb(18, 19, 21);
-    /// Separators, outlines.
-    pub const BORDER: Color32 = Color32::from_rgb(55, 58, 64);
-    pub const BORDER_STRONG: Color32 = Color32::from_rgb(82, 86, 93);
-
-    pub const TEXT: Color32 = Color32::from_rgb(222, 225, 229);
-    /// Emphasised text (strong labels, hovered widgets).
-    pub const TEXT_STRONG: Color32 = Color32::from_rgb(246, 247, 249);
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(156, 161, 168);
-    pub const TEXT_FAINT: Color32 = Color32::from_rgb(110, 115, 123);
-
-    pub const ACCENT: Color32 = Color32::from_rgb(77, 139, 255);
-    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(106, 159, 255);
-    /// Text and icons on an accent fill.
-    pub const ON_ACCENT: Color32 = Color32::WHITE;
-    pub const DANGER: Color32 = Color32::from_rgb(222, 70, 76);
-
-    /// Paper and its rules.
-    pub const PAGE: Color32 = Color32::WHITE;
-    pub const PAGE_RULE: Color32 = Color32::from_rgb(203, 216, 232);
-    pub const PAGE_EDGE: Color32 = Color32::from_rgb(20, 21, 23);
-
-    /// `ACCENT` with the given alpha (selection fills, outlines on paper).
-    pub const fn accent_alpha(a: u8) -> Color32 {
-        Color32::from_rgba_premultiplied(
-            (77 * a as u32 / 255) as u8,
-            (139 * a as u32 / 255) as u8,
-            (255 * a as u32 / 255) as u8,
-            a,
-        )
+    /// Every colour of one theme.
+    pub struct Palette {
+        /// Area around the pages, library background.
+        pub desk: Color32,
+        /// Title bar, side panels, notches, floating toolbar, headers.
+        pub chrome: Color32,
+        /// Windows, menus, popups, toasts.
+        pub surface: Color32,
+        /// Button at rest.
+        pub raised: Color32,
+        pub hover: Color32,
+        pub pressed: Color32,
+        /// Text fields, slider rails.
+        pub input: Color32,
+        /// Separators, outlines.
+        pub border: Color32,
+        pub border_strong: Color32,
+        pub text: Color32,
+        /// Emphasised text (strong labels, hovered widgets).
+        pub text_strong: Color32,
+        pub text_muted: Color32,
+        pub text_faint: Color32,
+        pub accent: Color32,
+        pub accent_hover: Color32,
+        /// Text and icons on an accent fill.
+        pub on_accent: Color32,
+        pub danger: Color32,
+        /// Paper and its rules (the same paper in both themes).
+        pub page: Color32,
+        pub page_rule: Color32,
+        /// The page's outline on the desk.
+        pub page_edge: Color32,
     }
+
+    pub const DARK: Palette = Palette {
+        desk: Color32::from_rgb(43, 45, 49),
+        chrome: Color32::from_rgb(25, 26, 29),
+        surface: Color32::from_rgb(34, 36, 40),
+        raised: Color32::from_rgb(47, 50, 55),
+        hover: Color32::from_rgb(58, 61, 67),
+        pressed: Color32::from_rgb(70, 74, 81),
+        input: Color32::from_rgb(18, 19, 21),
+        border: Color32::from_rgb(55, 58, 64),
+        border_strong: Color32::from_rgb(82, 86, 93),
+        text: Color32::from_rgb(222, 225, 229),
+        text_strong: Color32::from_rgb(246, 247, 249),
+        text_muted: Color32::from_rgb(156, 161, 168),
+        text_faint: Color32::from_rgb(110, 115, 123),
+        accent: Color32::from_rgb(77, 139, 255),
+        accent_hover: Color32::from_rgb(106, 159, 255),
+        on_accent: Color32::WHITE,
+        danger: Color32::from_rgb(222, 70, 76),
+        page: Color32::WHITE,
+        page_rule: Color32::from_rgb(203, 216, 232),
+        page_edge: Color32::from_rgb(20, 21, 23),
+    };
+
+    pub const LIGHT: Palette = Palette {
+        desk: Color32::from_rgb(222, 225, 230),
+        chrome: Color32::from_rgb(245, 246, 248),
+        surface: Color32::from_rgb(255, 255, 255),
+        raised: Color32::from_rgb(232, 234, 238),
+        hover: Color32::from_rgb(222, 225, 230),
+        pressed: Color32::from_rgb(207, 211, 218),
+        input: Color32::from_rgb(240, 242, 245),
+        border: Color32::from_rgb(214, 217, 223),
+        border_strong: Color32::from_rgb(178, 184, 192),
+        text: Color32::from_rgb(38, 41, 46),
+        text_strong: Color32::from_rgb(14, 16, 19),
+        text_muted: Color32::from_rgb(92, 98, 107),
+        text_faint: Color32::from_rgb(130, 136, 145),
+        accent: Color32::from_rgb(37, 99, 235),
+        accent_hover: Color32::from_rgb(29, 78, 216),
+        on_accent: Color32::WHITE,
+        danger: Color32::from_rgb(205, 43, 51),
+        page: Color32::WHITE,
+        page_rule: Color32::from_rgb(203, 216, 232),
+        page_edge: Color32::from_rgb(170, 176, 185),
+    };
+
+    static LIGHT_ON: AtomicBool = AtomicBool::new(false);
+
+    /// Use the light palette (else the dark one) from now on.
+    pub(super) fn set_light(light: bool) {
+        LIGHT_ON.store(light, Ordering::Relaxed);
+    }
+
+    /// The palette in use.
+    pub fn palette() -> &'static Palette {
+        if LIGHT_ON.load(Ordering::Relaxed) { &LIGHT } else { &DARK }
+    }
+
+    macro_rules! colors {
+        ($($name:ident),* $(,)?) => {$(
+            pub fn $name() -> Color32 {
+                palette().$name
+            }
+        )*};
+    }
+
+    colors!(
+        desk,
+        chrome,
+        surface,
+        raised,
+        hover,
+        pressed,
+        input,
+        border,
+        border_strong,
+        text,
+        text_strong,
+        text_muted,
+        text_faint,
+        accent,
+        accent_hover,
+        on_accent,
+        danger,
+        page,
+        page_rule,
+        page_edge,
+    );
+
+    /// `accent` with the given alpha (selection fills, outlines on paper).
+    pub fn accent_alpha(a: u8) -> Color32 {
+        let [r, g, b, _] = accent().to_array();
+        let k = |c: u8| (c as u32 * a as u32 / 255) as u8;
+        Color32::from_rgba_premultiplied(k(r), k(g), k(b), a)
+    }
+}
+
+/// Which theme the interface takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ThemeMode {
+    /// The computer's light or dark mode.
+    System,
+    Light,
+    #[default]
+    Dark,
+}
+
+impl ThemeMode {
+    pub const ALL: [ThemeMode; 3] = [Self::Dark, Self::Light, Self::System];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "Same as the system",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+}
+
+/// Takes the theme `mode` asks for (egui's widgets, and the palette of the
+/// custom-painted surfaces). Call at the start of every frame: the system's
+/// mode may change while the app runs.
+pub fn follow(ctx: &egui::Context, mode: ThemeMode) {
+    let preference = match mode {
+        ThemeMode::System => ThemePreference::System,
+        ThemeMode::Light => ThemePreference::Light,
+        ThemeMode::Dark => ThemePreference::Dark,
+    };
+    if ctx.options(|o| o.theme_preference) != preference {
+        ctx.set_theme(preference);
+    }
+    color::set_light(ctx.theme() == Theme::Light);
 }
 
 /// Corner radii.
@@ -119,9 +247,8 @@ pub fn font_strong(size: f32) -> FontId {
     FontId::new(size, strong_family())
 }
 
-/// Fonts (Inter + Phosphor icons) and the egui style; call once at startup.
-/// The app is dark only: the theme does not follow the OS setting, so egui
-/// widgets always match the custom-painted surfaces.
+/// Fonts (Inter + Phosphor icons) and the egui style of both themes; call
+/// once at startup, then [`follow`] every frame.
 pub fn install(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     // Inter's glyphs on whole pixels: sharper than egui's default of four
@@ -153,11 +280,27 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 
     ctx.set_theme(ThemePreference::Dark);
-    ctx.style_mut_of(Theme::Dark, apply_style);
+    ctx.style_mut_of(Theme::Dark, |s| apply_style(s, &color::DARK, true));
+    ctx.style_mut_of(Theme::Light, |s| apply_style(s, &color::LIGHT, false));
 }
 
-fn apply_style(style: &mut egui::Style) {
-    use color::*;
+fn apply_style(style: &mut egui::Style, p: &color::Palette, dark: bool) {
+    let color::Palette {
+        chrome,
+        surface,
+        raised,
+        hover,
+        pressed,
+        input,
+        border,
+        text,
+        text_strong,
+        accent,
+        accent_hover,
+        on_accent,
+        danger,
+        ..
+    } = *p;
 
     style.text_styles = [
         (TextStyle::Small, font(size::CAPTION)),
@@ -182,24 +325,26 @@ fn apply_style(style: &mut egui::Style) {
     s.menu_width = 220.0;
 
     let v = &mut style.visuals;
-    v.dark_mode = true;
-    v.panel_fill = CHROME;
-    v.window_fill = SURFACE;
-    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.dark_mode = dark;
+    v.panel_fill = chrome;
+    v.window_fill = surface;
+    v.window_stroke = Stroke::new(1.0, border);
     v.window_corner_radius = CornerRadius::from(radius::MEDIUM);
     v.menu_corner_radius = CornerRadius::from(radius::MEDIUM);
-    v.window_shadow = Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(120) };
-    v.popup_shadow = Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(100) };
+    // Softer on a light interface.
+    let shadow = |a: u8| Color32::from_black_alpha(if dark { a } else { a / 3 });
+    v.window_shadow = Shadow { offset: [0, 10], blur: 28, spread: 0, color: shadow(120) };
+    v.popup_shadow = Shadow { offset: [0, 6], blur: 16, spread: 0, color: shadow(100) };
     v.window_highlight_topmost = false;
-    v.extreme_bg_color = INPUT;
-    v.faint_bg_color = Color32::from_white_alpha(6);
-    v.code_bg_color = INPUT;
-    v.hyperlink_color = ACCENT_HOVER;
-    v.error_fg_color = DANGER;
+    v.extreme_bg_color = input;
+    v.faint_bg_color = if dark { Color32::from_white_alpha(6) } else { Color32::from_black_alpha(6) };
+    v.code_bg_color = input;
+    v.hyperlink_color = accent_hover;
+    v.error_fg_color = danger;
     v.warn_fg_color = Color32::from_rgb(232, 170, 64);
-    v.selection.bg_fill = ACCENT;
-    v.selection.stroke = Stroke::new(1.0, ON_ACCENT);
-    v.text_cursor.stroke = Stroke::new(2.0, ACCENT);
+    v.selection.bg_fill = accent;
+    v.selection.stroke = Stroke::new(1.0, on_accent);
+    v.text_cursor.stroke = Stroke::new(2.0, accent);
     v.button_frame = true;
     // Sliders show their value as an accent fill, like the other selections.
     v.slider_trailing_fill = true;
@@ -207,16 +352,16 @@ fn apply_style(style: &mut egui::Style) {
 
     let rounding = CornerRadius::from(radius::SMALL);
     let w = &mut v.widgets;
-    w.noninteractive.bg_fill = SURFACE;
-    w.noninteractive.weak_bg_fill = SURFACE;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+    w.noninteractive.bg_fill = surface;
+    w.noninteractive.weak_bg_fill = surface;
+    w.noninteractive.bg_stroke = Stroke::new(1.0, border);
+    w.noninteractive.fg_stroke = Stroke::new(1.0, text);
     w.noninteractive.corner_radius = rounding;
     for (wv, fill, text) in [
-        (&mut w.inactive, RAISED, TEXT),
-        (&mut w.hovered, HOVER, TEXT_STRONG),
-        (&mut w.active, PRESSED, TEXT_STRONG),
-        (&mut w.open, HOVER, TEXT_STRONG),
+        (&mut w.inactive, raised, text),
+        (&mut w.hovered, hover, text_strong),
+        (&mut w.active, pressed, text_strong),
+        (&mut w.open, hover, text_strong),
     ] {
         wv.bg_fill = fill;
         wv.weak_bg_fill = fill;
@@ -236,30 +381,30 @@ pub fn icon(glyph: &str) -> RichText {
 
 /// Section caption: small, semi-bold, muted, upper case.
 pub fn caption(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text.to_uppercase()).font(font_strong(size::CAPTION)).color(color::TEXT_FAINT));
+    ui.label(RichText::new(text.to_uppercase()).font(font_strong(size::CAPTION)).color(color::text_faint()));
 }
 
 /// Screen or section heading.
 pub fn heading(text: impl Into<String>) -> RichText {
-    RichText::new(text).font(font_strong(size::HEADING)).color(color::TEXT_STRONG)
+    RichText::new(text).font(font_strong(size::HEADING)).color(color::text_strong())
 }
 
 pub fn title(text: impl Into<String>) -> RichText {
-    RichText::new(text).font(font_strong(size::TITLE)).color(color::TEXT_STRONG)
+    RichText::new(text).font(font_strong(size::TITLE)).color(color::text_strong())
 }
 
 pub fn muted(text: impl Into<String>) -> RichText {
-    RichText::new(text).color(color::TEXT_MUTED)
+    RichText::new(text).color(color::text_muted())
 }
 
 /// The main action of a screen or dialog.
 pub fn primary_button(text: impl Into<WidgetText>) -> Button<'static> {
-    Button::new(text.into().color(color::ON_ACCENT)).fill(color::ACCENT)
+    Button::new(text.into().color(color::on_accent())).fill(color::accent())
 }
 
 /// An irreversible action.
 pub fn danger_button(text: impl Into<WidgetText>) -> Button<'static> {
-    Button::new(text.into().color(color::ON_ACCENT)).fill(color::DANGER)
+    Button::new(text.into().color(color::on_accent())).fill(color::danger())
 }
 
 /// Buttons without a fill at rest (toolbars, menus, headers). Only the
@@ -295,7 +440,7 @@ pub fn inline_edit(
         egui::TextEdit::singleline(text)
             .id(id)
             .font(font)
-            .text_color(if focused || hovered { color::TEXT_STRONG } else { idle })
+            .text_color(if focused || hovered { color::text_strong() } else { idle })
             .hint_text(hint)
             .horizontal_align(align)
             .vertical_align(egui::Align::Center)
@@ -305,9 +450,9 @@ pub fn inline_edit(
     );
     let rounding = CornerRadius::from(radius::SMALL);
     let fill = if resp.has_focus() {
-        Some(color::INPUT)
+        Some(color::input())
     } else if resp.hovered() {
-        Some(color::HOVER)
+        Some(color::hover())
     } else {
         None
     };
@@ -315,7 +460,7 @@ pub fn inline_edit(
         ui.painter().set(background, egui::Shape::rect_filled(rect, rounding, fill));
     }
     if resp.has_focus() {
-        ui.painter().rect_stroke(rect, rounding, Stroke::new(1.0, color::ACCENT), StrokeKind::Middle);
+        ui.painter().rect_stroke(rect, rounding, Stroke::new(1.0, color::accent()), StrokeKind::Middle);
     }
     resp
 }
@@ -341,14 +486,14 @@ pub fn list_row(ui: &mut Ui, glyph: &str, label: &str, selected: bool, actions: 
     if selected {
         p.rect_filled(rect, radius::SMALL, color::accent_alpha(46));
         let bar = Rect::from_min_size(rect.left_top() + vec2(0.0, 6.0), vec2(3.0, rect.height() - 12.0));
-        p.rect_filled(bar, 1.5, color::ACCENT);
+        p.rect_filled(bar, 1.5, color::accent());
     } else if hovered {
-        p.rect_filled(rect, radius::SMALL, color::HOVER);
+        p.rect_filled(rect, radius::SMALL, color::hover());
     }
     let (icon_color, text_color) = match (selected, hovered) {
-        (true, _) => (color::ACCENT_HOVER, color::TEXT_STRONG),
-        (false, true) => (color::TEXT, color::TEXT_STRONG),
-        (false, false) => (color::TEXT_MUTED, color::TEXT),
+        (true, _) => (color::accent_hover(), color::text_strong()),
+        (false, true) => (color::text(), color::text_strong()),
+        (false, false) => (color::text_muted(), color::text()),
     };
     let y = rect.center().y;
     p.text(pos2(rect.left() + space::M, y), egui::Align2::LEFT_CENTER, glyph, font(size::BODY), icon_color);
@@ -376,12 +521,12 @@ pub fn row_button(
     let rect = Rect::from_center_size(center, vec2(ROW_BUTTON - 2.0, ROW_BUTTON - 2.0));
     let resp = ui.interact(rect, id, egui::Sense::click());
     let fg = match (resp.hovered(), danger) {
-        (true, true) => color::DANGER,
-        (true, false) => color::TEXT_STRONG,
-        (false, _) => color::TEXT_MUTED,
+        (true, true) => color::danger(),
+        (true, false) => color::text_strong(),
+        (false, _) => color::text_muted(),
     };
     if resp.hovered() {
-        ui.painter().rect_filled(rect, radius::SMALL, color::PRESSED);
+        ui.painter().rect_filled(rect, radius::SMALL, color::pressed());
     }
     ui.painter().text(center, egui::Align2::CENTER_CENTER, glyph, font(size::BODY), fg);
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -392,9 +537,9 @@ pub fn row_button(
 pub fn add_tile(ui: &mut Ui, rect: Rect, id: egui::Id, label: &str) -> egui::Response {
     let resp = ui.interact(rect, id, egui::Sense::click());
     let (line, text, fill) = if resp.hovered() {
-        (color::ACCENT, color::ACCENT_HOVER, color::accent_alpha(18))
+        (color::accent(), color::accent_hover(), color::accent_alpha(18))
     } else {
-        (color::BORDER_STRONG, color::TEXT_MUTED, Color32::TRANSPARENT)
+        (color::border_strong(), color::text_muted(), Color32::TRANSPARENT)
     };
     let p = ui.painter();
     p.rect_filled(rect, radius::SMALL, fill);
@@ -408,13 +553,13 @@ pub fn add_tile(ui: &mut Ui, rect: Rect, id: egui::Id, label: &str) -> egui::Res
 
 /// A short message pill (saved, exported, errors, drag labels) centred on `center`.
 pub fn paint_toast(painter: &Painter, center: Pos2, text: &str) -> Rect {
-    let galley = painter.layout_no_wrap(text.to_owned(), font(size::BODY), color::TEXT_STRONG);
+    let galley = painter.layout_no_wrap(text.to_owned(), font(size::BODY), color::text_strong());
     let rect = Rect::from_center_size(center, galley.size() + vec2(2.0 * space::L, 2.0 * space::S + 2.0));
     painter.add(
         Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(110) }
             .as_shape(rect, CornerRadius::from(radius::MEDIUM)),
     );
-    painter.rect(rect, radius::MEDIUM, color::SURFACE, Stroke::new(1.0, color::BORDER), StrokeKind::Middle);
-    painter.galley(rect.center() - galley.size() * 0.5, galley, color::TEXT_STRONG);
+    painter.rect(rect, radius::MEDIUM, color::surface(), Stroke::new(1.0, color::border()), StrokeKind::Middle);
+    painter.galley(rect.center() - galley.size() * 0.5, galley, color::text_strong());
     rect
 }
