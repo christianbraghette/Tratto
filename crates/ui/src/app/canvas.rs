@@ -34,6 +34,12 @@ const NAV_BACK_MAX: usize = 50;
 const AUTOSCROLL_EDGE: f32 = 48.0;
 /// ...up to this fast, at the edge and past it (points per second).
 const AUTOSCROLL_SPEED: f32 = 1400.0;
+/// One mouse wheel notch (points on screen): Windows' three lines.
+const WHEEL_NOTCH_PT: f32 = 100.0;
+/// Touchpad scrolling relative to the deltas it reports...
+const TOUCHPAD_GAIN: f32 = 0.6;
+/// ...doubled (at acceleration 1) for deltas this large (points per event).
+const TOUCHPAD_FAST_PT: f32 = 40.0;
 
 impl InkApp {
     pub(super) fn undo(&mut self) {
@@ -186,9 +192,6 @@ impl InkApp {
         (rect, scale, hbar)
     }
 
-    /// Mouse wheel and touchpad scrolling over the canvas. Wheel notches
-    /// glide and accelerate; precise touchpad deltas are applied directly.
-    /// Ctrl / Cmd + wheel is zoom and is handled elsewhere.
     /// Scrolls to `target`: eased with smooth scrolling, at once without.
     fn ease_scroll(&mut self, target: Vec2) {
         if self.settings.smooth_scroll {
@@ -199,6 +202,9 @@ impl InkApp {
         }
     }
 
+    /// Mouse wheel and touchpad scrolling over the canvas. Wheel notches
+    /// glide and accelerate; touchpad deltas are applied directly.
+    /// Ctrl / Cmd + wheel is zoom and is handled elsewhere.
     fn wheel_input(&mut self, ui: &egui::Ui, canvas: Rect, scale: f32, now: f64) {
         let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
         let wheel: Vec<_> = ui.input(|i| {
@@ -214,9 +220,12 @@ impl InkApp {
             if m.ctrl || m.command || m.mac_cmd {
                 continue;
             }
-            // Same conversion as egui's own scroll delta.
+            let notch = is_wheel_notch(unit, delta);
+            // egui's line (40 pt) is less than half the step of a notch in
+            // other Windows apps: notches get their own.
             let mut d = match unit {
                 MouseWheelUnit::Point => delta,
+                MouseWheelUnit::Line if notch => delta * WHEEL_NOTCH_PT,
                 MouseWheelUnit::Line => delta * line,
                 MouseWheelUnit::Page => delta * canvas.height(),
             };
@@ -225,13 +234,20 @@ impl InkApp {
             }
             // Positive deltas move the content down/right, i.e. scroll up/left.
             let content = -d * self.settings.scroll_speed / scale;
-            if unit == MouseWheelUnit::Point && d.length() < 8.0 || !self.settings.smooth_scroll {
+            if notch && self.settings.smooth_scroll {
+                self.kinetic.notch(content, now, self.settings.mouse_accel);
+            } else if notch || unit == MouseWheelUnit::Page {
                 self.kinetic.stop();
                 self.scroll += content;
             } else {
-                let accel =
-                    if is_wheel_notch(unit, delta) { self.settings.mouse_accel } else { self.settings.touchpad_accel };
-                self.kinetic.notch(content, now, accel);
+                // A touchpad streams small deltas many times a second: as
+                // notches every swipe hit the maximum boost. Applied as they
+                // come (the OS adds its own inertia), with a gentle gain that
+                // grows with the swipe's speed.
+                self.kinetic.stop();
+                let fast = (d.length() / TOUCHPAD_FAST_PT).min(1.0);
+                let accel = if self.settings.smooth_scroll { self.settings.touchpad_accel } else { 0.0 };
+                self.scroll += content * TOUCHPAD_GAIN * (1.0 + accel * fast);
             }
         }
     }
@@ -275,6 +291,9 @@ impl InkApp {
         if idle && ui.input(|i| i.pointer.any_pressed()) {
             self.finger_nav = self.finger(ui.ctx()) && !(self.tool == Tool::Pen && self.finger_ink);
         }
+        // A swipe in from a fullscreen edge (see `edge_swipe`) neither
+        // writes nor pans.
+        self.swallow_press |= self.edge_touch;
 
         // Reading also takes taps (to follow links); a drag then starts only
         // past the click threshold, which is why writing senses drags only.
@@ -799,10 +818,6 @@ impl InkApp {
     }
 }
 
-/// A wheel event from a mouse wheel's notches rather than a touchpad. Both
-/// arrive as lines on Windows: a notch is whole lines, a touchpad sends
-/// fractions (so does a high-resolution wheel, which then counts as a
-/// touchpad). Pixel deltas come from touchpads.
 /// Hides the system pointer this frame (the tool paints its own cursor).
 ///
 /// With a transparent cursor image, not a hidden cursor: winit hides it with
@@ -832,6 +847,10 @@ fn autoscroll_velocity(canvas: Rect, pointer: Pos2) -> Vec2 {
     vec2(axis(pointer.x, canvas.left(), canvas.right()), axis(pointer.y, canvas.top(), canvas.bottom()))
 }
 
+/// A wheel event from a mouse wheel's notches rather than a touchpad. Both
+/// arrive as lines on Windows: a notch is whole lines, a touchpad sends
+/// fractions (so does a high-resolution wheel, which then counts as a
+/// touchpad). Pixel deltas come from touchpads.
 fn is_wheel_notch(unit: MouseWheelUnit, delta: Vec2) -> bool {
     let whole = |v: f32| (v - v.round()).abs() < 1e-3;
     unit == MouseWheelUnit::Line && delta != Vec2::ZERO && whole(delta.x) && whole(delta.y)

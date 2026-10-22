@@ -5,9 +5,8 @@
 //!
 //! * the tools (tools, styles, undo / redo) centred on the top or bottom edge;
 //!   for a PDF in the reader the reading bar (import, pages, zoom) in their place
-//! * the sidebar (notebook, pages, contents, search) and the note settings
-//!   in notches in the top and bottom corners on the sidebar's side, which
-//!   become part of the sidebar when it is open
+//! * the joins of the sidebar's strip (notebook, pages, contents, search,
+//!   note settings) with the title bar and the bottom edge
 //!
 //! Buttons show Phosphor icons with the name as a tooltip. Colours and sizes
 //! come from [`crate::theme`].
@@ -91,8 +90,8 @@ const HIGHLIGHTER_PALETTE: [[u8; 3]; 5] =
 /// bar) or on the bottom edge of the canvas; returns a clicked action.
 ///
 /// Call with the root `ui` after the title bar and the side panels, so it is
-/// centred over the canvas (what is left of `ui`). When the window is too narrow for it to fit between the corner
-/// notches at the chosen edge, it moves to the other edge.
+/// centred over the canvas (what is left of `ui`). When the window is too
+/// narrow for it to fit at the chosen edge, it moves to the other edge.
 /// `bottom_inset` keeps it clear of the horizontal scrollbar when that is visible.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
@@ -257,80 +256,68 @@ fn edge_notch_shape(rect: Rect, at: Edge, fill: Color32) -> Shape {
     Shape::convex_polygon(clockwise(pts), fill, Stroke::NONE)
 }
 
-/// The editor's corner buttons, on the sidebar's side:
-///
-/// * a notch in the top corner that shows the sidebar again, with the view
-///   it last showed
-/// * note settings in a notch in the bottom corner
-///
-/// While the sidebar is open, its buttons live in its strip instead (see
-/// [`pages_button`], [`settings_button`]) at the same positions, and the
-/// sidebar gets the same concave joins as the notches, so it reads as the
-/// two notches grown into a sidebar.
+/// The concave joins of the sidebar's strip with the title bar and the
+/// bottom edge, so the strip reads as a notch grown along the window edge.
 ///
 /// Call with the root `ui` after the sidebar: what is left of it is the
-/// canvas area then.
-/// `note_settings`: the settings notch is shown (not for a PDF in the
-/// reader). `bottom_inset` keeps the bottom notch above the horizontal
-/// scrollbar.
-pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool, bottom_inset: f32) {
+/// canvas area then. `bottom_inset` keeps the bottom join above the
+/// horizontal scrollbar.
+pub fn show_joins(ui: &egui::Ui, side: SidebarSide, bottom_inset: f32) {
     let ctx = ui.ctx();
     let free = ui.available_rect_before_wrap();
 
-    // Panel joins: above the canvas, but below menus and popups (which are
-    // foreground areas).
+    // Above the canvas, but below menus and popups (which are foreground
+    // areas).
     let joins = ctx.layer_painter(egui::LayerId::new(Order::Middle, egui::Id::new("panel_joins")));
 
     // On the right, against the vertical scrollbar, which always occupies the
     // right edge of the canvas (and, being the same surface, joins the
     // sidebar).
-    let right = settings.sidebar_side == SidebarSide::Right;
-    let (top, bottom, top_at, bottom_at) = if right {
+    let right = side == SidebarSide::Right;
+    let (top, bottom) = if right {
         let x = free.right() - scrollbar::THICKNESS;
-        (pos2(x, free.top()), pos2(x, free.bottom() - bottom_inset), Corner::TopRight, Corner::BottomRight)
+        (pos2(x, free.top()), pos2(x, free.bottom() - bottom_inset))
     } else {
-        (free.left_top(), pos2(free.left(), free.bottom() - bottom_inset), Corner::TopLeft, Corner::BottomLeft)
+        (free.left_top(), free.left_bottom())
     };
-
-    if settings.sidebar != Sidebar::Closed {
-        // Join the sidebar to the title bar and to the bottom edge.
-        let sx = if right { -1.0 } else { 1.0 };
-        joins.add(fillet(top, sx, 1.0, color::chrome()));
-        joins.add(fillet(if right { bottom } else { free.left_bottom() }, sx, -1.0, color::chrome()));
-    } else {
-        notch(ctx, "corner_notch_sidebar", top_at, top, |ui| {
-            if sidebar_button(ui, settings.sidebar_last) {
-                settings.sidebar = settings.sidebar_last;
-            }
-        });
-        if note_settings {
-            notch(ctx, "corner_notch_settings", bottom_at, bottom, |ui| {
-                if settings_button(ui, false) {
-                    settings.sidebar = Sidebar::Settings;
-                }
-            });
-        }
-    }
+    let sx = if right { -1.0 } else { 1.0 };
+    joins.add(fillet(top, sx, 1.0, color::chrome()));
+    joins.add(fillet(bottom, sx, -1.0, color::chrome()));
 }
 
-/// Width of the sidebar's button strip: a corner notch's width, so its
-/// buttons sit exactly where they are in the notches.
-pub const STRIP_WIDTH: f32 = 2.0 * space::S + NOTCH_BUTTON;
-/// Size of a notch's buttons.
-const NOTCH_BUTTON: f32 = 32.0;
+/// Fullscreen, with the sidebar hidden: a notch in the top corner on the
+/// sidebar's `side` that shows it again, with `last`, the view it last
+/// showed. Returns true when clicked. Its button sits where the strip's
+/// first button is.
+pub fn show_sidebar_notch(ui: &egui::Ui, side: SidebarSide, last: Sidebar) -> bool {
+    let free = ui.available_rect_before_wrap();
+    let (at, corner) = match side {
+        SidebarSide::Left => (Corner::TopLeft, free.left_top()),
+        SidebarSide::Right => (Corner::TopRight, pos2(free.right() - scrollbar::THICKNESS, free.top())),
+    };
+    let mut clicked = false;
+    notch(ui.ctx(), "fullscreen_sidebar_notch", at, corner, |ui| clicked = sidebar_button(ui, last));
+    clicked
+}
 
-/// Shows the closed sidebar again (in its notch), with `last`, the view it
-/// last showed. Returns true when clicked.
-pub fn sidebar_button(ui: &mut egui::Ui, last: Sidebar) -> bool {
+/// Shows the hidden sidebar again, with `last`, the view it last showed.
+/// Returns true when clicked.
+fn sidebar_button(ui: &mut egui::Ui, last: Sidebar) -> bool {
     let view = match last {
         Sidebar::Notebook => "the notebook",
         Sidebar::Outline => "the contents",
         Sidebar::Search => "the search",
-        Sidebar::Pages | Sidebar::Settings | Sidebar::Closed => "the pages",
+        Sidebar::Settings => "the note settings",
+        Sidebar::Pages | Sidebar::Closed => "the pages",
     };
     let tip = format!("Show the sidebar ({view})");
     ui.add(egui::Button::new(theme::icon(icon::SIDEBAR_SIMPLE))).on_hover_text(tip).clicked()
 }
+
+/// Width of the sidebar's button strip: one button and its margins.
+pub const STRIP_WIDTH: f32 = 2.0 * space::S + NOTCH_BUTTON;
+/// Size of a notch's buttons.
+const NOTCH_BUTTON: f32 = 32.0;
 
 /// Toggles the notebook view of the sidebar. Returns true when clicked;
 /// `shown` highlights it.
@@ -386,56 +373,39 @@ pub fn notch_buttons_style(ui: &mut egui::Ui) {
     tool_buttons_style(ui);
 }
 
+/// Radius of the notches' free corners.
+const NOTCH_ROUNDING: f32 = radius::LARGE;
+/// Width kept free at each side of the tool notch (the joins of the sidebar,
+/// the scrollbar).
+const CORNER_ZONE: f32 = 32.0;
+/// Radius of the concave joins between the notch and the window edges.
+const NOTCH_FILLET: f32 = 10.0;
+
 /// The window corner a notch is attached to.
 #[derive(Clone, Copy, PartialEq)]
 enum Corner {
     TopLeft,
     TopRight,
-    BottomLeft,
-    BottomRight,
 }
 
-impl Corner {
-    /// Mirroring of the top-left shape: (x, y), each 1.0 or -1.0.
-    fn signs(self) -> (f32, f32) {
-        match self {
-            Corner::TopLeft => (1.0, 1.0),
-            Corner::TopRight => (-1.0, 1.0),
-            Corner::BottomLeft => (1.0, -1.0),
-            Corner::BottomRight => (-1.0, -1.0),
-        }
-    }
-}
-
-/// Radius of the notches' free corners.
-const NOTCH_ROUNDING: f32 = radius::LARGE;
-/// Width kept free for the corner notches (plus the scrollbar) at each side
-/// of the tool notch.
-const CORNER_ZONE: f32 = 80.0;
-/// Radius of the concave joins between the notch and the window edges.
-const NOTCH_FILLET: f32 = 10.0;
-
-/// A tab attached to the top or bottom edge, flush with the side edge, with
-/// its outer corner at `corner`.
+/// A tab attached to the top edge, flush with the side edge, with its outer
+/// corner at `corner`.
 fn notch(ctx: &egui::Context, id: &str, at: Corner, corner: Pos2, add_contents: impl FnOnce(&mut egui::Ui)) {
     let pivot = match at {
         Corner::TopLeft => Align2::LEFT_TOP,
         Corner::TopRight => Align2::RIGHT_TOP,
-        Corner::BottomLeft => Align2::LEFT_BOTTOM,
-        Corner::BottomRight => Align2::RIGHT_BOTTOM,
     };
     egui::Area::new(egui::Id::new(id)).order(Order::Foreground).pivot(pivot).fixed_pos(corner).show(ctx, |ui| {
         // Reserve the background slot first so it is painted below the buttons.
         let background = ui.painter().add(Shape::Noop);
         let rect = egui::Frame::NONE
-            .inner_margin(notch_margin(matches!(at, Corner::TopLeft | Corner::TopRight)))
+            .inner_margin(notch_margin(true))
             .show(ui, |ui| {
                 tool_buttons_style(ui);
                 ui.horizontal(add_contents);
             })
             .response
             .rect;
-        // Same surface as the title bar it hangs from.
         ui.painter().set(background, notch_shape(rect, at, color::chrome()));
     });
 }
@@ -450,21 +420,15 @@ fn notch_shape(rect: Rect, at: Corner, fill: Color32) -> Shape {
     let (big, small) = (NOTCH_ROUNDING, NOTCH_FILLET);
     let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
     // Outline of the top-left notch, clockwise. The edge along the side of the
-    // window reaches 1 px past it, so its anti-aliasing fringe is not visible;
-    // the attached edge stops at it, not to cover the title bar's buttons.
+    // window reaches 1 px past it, so its anti-aliasing fringe is not visible.
     let mut pts = vec![pos2(l - 1.0, t), pos2(r + small, t)];
     arc(&mut pts, pos2(r + small, t + small), small, -90.0, -180.0);
     arc(&mut pts, pos2(r - big, b - big), big, 0.0, 90.0);
     arc(&mut pts, pos2(l + small, b + small), small, -90.0, -180.0);
     pts.push(pos2(l - 1.0, b + small));
-
-    let (sx, sy) = at.signs();
-    for p in &mut pts {
-        if sx < 0.0 {
+    if at == Corner::TopRight {
+        for p in &mut pts {
             p.x = l + r - p.x;
-        }
-        if sy < 0.0 {
-            p.y = t + b - p.y;
         }
     }
     Shape::convex_polygon(clockwise(pts), fill, Stroke::NONE)

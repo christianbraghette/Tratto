@@ -241,6 +241,11 @@ struct WindowChrome {
     title_focused: bool,
     /// A menu of the title bar was open last frame (keeps the fullscreen bar shown).
     menu_open: bool,
+    /// Fullscreen: the sidebar was opened from its notch (it starts hidden).
+    fullscreen_sidebar: bool,
+    /// The sidebar's view last frame: a view opened from elsewhere (Ctrl+F,
+    /// the menus) shows the sidebar in fullscreen.
+    sidebar_seen: Option<Sidebar>,
 }
 
 pub struct InkApp {
@@ -358,6 +363,10 @@ pub struct InkApp {
     context_menu: Option<ContextMenu>,
     /// The press that closed the context menu must not reach the canvas.
     swallow_press: bool,
+    /// Fullscreen: the finger down started on the top edge or the sidebar's
+    /// edge, a swipe that shows the title bar or the sidebar; the canvas
+    /// ignores it until it lifts.
+    edge_touch: bool,
     /// Menu commands collected this frame, run after drawing.
     pending: Vec<Command>,
     help: HelpWindows,
@@ -500,6 +509,7 @@ impl InkApp {
             search_panel: search_panel::SearchPanel::default(),
             context_menu: None,
             swallow_press: false,
+            edge_touch: false,
             pending: Vec::new(),
             help: HelpWindows::default(),
             chrome: WindowChrome {
@@ -713,7 +723,11 @@ impl InkApp {
         // moved up so it never covers the horizontal scrollbar.
         let bottom_inset = if self.hbar_visible { scrollbar::THICKNESS } else { 0.0 };
         let notebook_was_open = self.settings.sidebar == Sidebar::Notebook;
-        self.sidebar(ui);
+        // Full screen is the page alone: no toolbar, the sidebar behind a
+        // notch (the title bar still slides in from the top edge).
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
+        self.edge_swipe(ctx, fullscreen);
+        self.sidebar(ui, fullscreen);
         if self.screen != Screen::Editor {
             // A note was picked in the notebook view and the editor closed.
             return;
@@ -727,7 +741,9 @@ impl InkApp {
             laser: self.laser,
         };
         let selected = self.selection_color();
-        let event = if self.reading() {
+        let event = if fullscreen {
+            None
+        } else if self.reading() {
             toolbar::show_reader(ui, &mut self.settings, &nav, bottom_inset)
         } else {
             toolbar::show(
@@ -741,9 +757,12 @@ impl InkApp {
                 bottom_inset,
             )
         };
-        // After the sidebar, so the corner buttons sit next to it.
-        let note_settings = !self.reading();
-        toolbar::show_corners(ui, &mut self.settings, note_settings, bottom_inset);
+        // After the sidebar, so the joins (or its notch) sit next to it.
+        if fullscreen && !self.chrome.fullscreen_sidebar {
+            self.fullscreen_sidebar_notch(ui);
+        } else {
+            toolbar::show_joins(ui, self.settings.sidebar_side, bottom_inset);
+        }
         // Before the canvas, which must not see the press that closes it.
         self.context_menu_ui(ctx);
         // Rename / delete / new section from the notebook view.

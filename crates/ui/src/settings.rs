@@ -266,7 +266,7 @@ pub struct Settings {
     pub smooth_scroll: bool,
     /// Multiplier for wheel and touchpad scrolling.
     pub scroll_speed: f32,
-    /// Acceleration of quick wheel notches, mouse wheel and touchpad
+    /// Acceleration of quick wheel notches and of fast touchpad swipes
     /// (`0`: none, `1`: the default; with `smooth_scroll`).
     pub mouse_accel: f32,
     pub touchpad_accel: f32,

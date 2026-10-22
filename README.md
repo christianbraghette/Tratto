@@ -77,7 +77,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 - Dark or light interface, or the same as the system (Settings > Appearance)
 - Context menu on right-click, adapted to what is under the pointer
 - Icon buttons, with names and shortcuts in tooltips
-- Controls in notches attached to the canvas edges; each sidebar view resizable
+- Tools in a notch attached to the canvas edge, views in an always-visible sidebar strip; each sidebar view resizable
 - Rename the note from the title bar and the notebook from the sidebar
 
 **Organisation**
@@ -154,28 +154,29 @@ resize.
 
 ### Editor
 
-All editor controls sit in notches attached to the edges of the canvas. All
-buttons are icons; hover over one to see its name.
+The tools sit in a notch attached to the edge of the canvas, the views in
+the sidebar's strip along the window edge. All buttons are icons; hover over
+one to see its name.
 
 | Where | Buttons |
 | --- | --- |
 | Top-centre notch (or bottom, see **View**) | Pointer, Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size (for the pointer: contents, Back and the pages), Undo, Redo, zoom out / zoom level / zoom in |
-| Top-left notch | **Sidebar** (shows it again, with the view it last showed) |
-| Bottom-left notch | **Note settings** (paper, pages, export) |
+| Sidebar strip | **Notebook**, **Pages**, **Contents** (for a note written on a PDF), **Search**, **Note settings** (paper, pages, export) |
 
-The corner notches and the sidebar are on the left by default. Left-handed
-writers can move them to the right, out from under their hand (**View >
-Sidebar on the right**, or **Settings > Appearance > Sidebar**).
+The sidebar is on the left by default. Left-handed writers can move it to the
+right, out from under their hand (**View > Sidebar on the right**, or
+**Settings > Appearance > Sidebar**).
 
-If the window is too narrow for the tool notch to fit between the corner
-notches, it moves to the other edge.
+If the window is too narrow for the tool notch to fit at its edge, it moves
+to the other edge.
 
-The corner notches grow into a sidebar, like the one in VS Code. A strip
-along the window edge joins the two notches, with a button per view at the
-top (**Notebook**, **Pages**, **Contents** for a note written on a PDF, and
-**Search**) and **Note settings** at the bottom, in the same places as their
-notches. Click a button to switch view, or the highlighted one to close the
-sidebar; closed, only the notches are left, for writing without distraction.
+The sidebar works like the one in VS Code: its strip is always there, with a
+button per view. Click a button to show that view next to the strip, or the
+highlighted one to hide it again. In full screen the tool notch is hidden
+and the sidebar waits behind a small notch in its top corner: click it to
+show the sidebar, and the highlighted view to hide it again. The title bar
+slides in from the top edge. On a touch screen, swipe down from the top edge
+for the title bar, or in from the sidebar's edge for the sidebar.
 Each view keeps its own width (drag its inner edge), and has a context menu
 (right-click):
 
@@ -220,7 +221,7 @@ mouse wheel or a touchpad. Flick the drag and the view keeps gliding.
 
 There are two kinds of settings:
 
-- **Note settings** (the gear button in the editor's bottom corner) are
+- **Note settings** (the gear button in the sidebar's strip) are
   stored in the note: paper size and orientation, paper style and line
   spacing, and the pages. They also show when the note was created and
   modified and where it is, with **Save now** and **Export PDF**.

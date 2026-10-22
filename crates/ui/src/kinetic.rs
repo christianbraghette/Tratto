@@ -9,14 +9,14 @@
 //!   glides instead of jumping. Notches in quick succession in the same
 //!   direction are amplified (up to [`MAX_BOOST`]), which makes long
 //!   distances fast while single notches stay precise. How much is a
-//!   setting, separate for the mouse wheel and the touchpad.
+//!   setting.
 //! * **Flings**: releasing a pan drag keeps the release velocity (scaled by
 //!   a setting) and lets it decay with lower friction.
 //! * **Targets** (Page Up / Down, Home / End, jump to page) are approached with
 //!   exponential easing.
 //!
-//! Precise touchpad deltas are *not* routed through here: they are applied
-//! 1:1 because the OS already provides their inertia where it exists.
+//! Touchpad deltas are *not* routed through here: they are applied directly
+//! because the OS already provides their inertia where it exists.
 //!
 //! All quantities are in content units (seconds for time). With exponential
 //! decay `v(t) = v0·e^(-k·t)` the total travel is `v0 / k`, so an impulse of

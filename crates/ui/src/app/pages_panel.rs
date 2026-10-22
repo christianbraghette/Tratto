@@ -26,6 +26,11 @@ const PAGES_WIDTH: f32 = 164.0;
 const PAGES_WIDTHS: std::ops::RangeInclusive<f32> = 150.0..=360.0;
 /// Page previews never get wider than this, however wide the panel.
 const THUMB_MAX_W: f32 = 200.0;
+/// Fullscreen: a swipe that shows the sidebar starts this close to its
+/// window edge (as the title bar's from the top edge) and goes at least
+/// this far in.
+const SWIPE_EDGE: f32 = 24.0;
+const SWIPE_IN: f32 = 48.0;
 
 impl InkApp {
     /// Inserts an empty page so that it gets `index` (undoable).
@@ -41,13 +46,29 @@ impl InkApp {
         self.toast(format!("Page {} deleted (Ctrl+Z restores it)", index + 1));
     }
 
-    /// The sidebar: a strip of view buttons (the two corner notches joined)
-    /// along the window edge, and the shown view next to it. Each view is
-    /// its own resizable panel, so each keeps its own width.
-    pub(super) fn sidebar(&mut self, ui: &mut egui::Ui) {
-        let view = self.settings.sidebar;
+    /// The sidebar: a strip of view buttons along the window edge, always
+    /// shown, and the shown view, if any, next to it. Each view is its own
+    /// resizable panel, so each keeps its own width.
+    ///
+    /// In fullscreen it starts hidden behind a notch in the top corner
+    /// ([`Self::fullscreen_sidebar_notch`]); clicking the highlighted view
+    /// hides it there again.
+    pub(super) fn sidebar(&mut self, ui: &mut egui::Ui, fullscreen: bool) {
+        if !fullscreen {
+            self.chrome.fullscreen_sidebar = false;
+        } else if self.chrome.sidebar_seen.is_some_and(|s| s != self.settings.sidebar)
+            && self.settings.sidebar != Sidebar::Closed
+        {
+            self.chrome.fullscreen_sidebar = true;
+        }
+        let hidden = fullscreen && !self.chrome.fullscreen_sidebar;
+        let view = if hidden { Sidebar::Closed } else { self.settings.sidebar };
         if view != Sidebar::Pages {
             self.page_drag = None;
+        }
+        if hidden {
+            self.chrome.sidebar_seen = Some(self.settings.sidebar);
+            return;
         }
         // Only a note written on a PDF has an outline; a reader-only window
         // has no library.
@@ -58,19 +79,16 @@ impl InkApp {
             || view == Sidebar::Notebook && !library;
         if wrong_view {
             self.settings.sidebar = Sidebar::Pages;
-            return self.sidebar(ui);
+            return self.sidebar(ui, fullscreen);
         }
         let last = self.settings.sidebar_last;
         if last == Sidebar::Outline && !on_pdf || last == Sidebar::Notebook && !library {
             self.settings.sidebar_last = Sidebar::Pages;
         }
-        let note_settings = !self.reading();
-        if view == Sidebar::Closed {
-            return;
-        }
-        if view != Sidebar::Settings {
+        if view != Sidebar::Closed {
             self.settings.sidebar_last = view;
         }
+        let note_settings = !self.reading();
         let (top, bottom) = (toolbar::notch_margin(true), toolbar::notch_margin(false));
         // On the right the canvas scrollbar (same surface) sits next to the
         // sidebar, so the extra margin keeps the buttons exactly where they
@@ -92,25 +110,21 @@ impl InkApp {
             }))
             .show(ui, |ui| {
                 toolbar::notch_buttons_style(ui);
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    if note_settings && toolbar::settings_button(ui, view == Sidebar::Settings) {
-                        clicked = Some(Sidebar::Settings);
-                    }
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        if library && toolbar::notebook_button(ui, view == Sidebar::Notebook) {
-                            clicked = Some(Sidebar::Notebook);
-                        }
-                        if toolbar::pages_button(ui, view == Sidebar::Pages) {
-                            clicked = Some(Sidebar::Pages);
-                        }
-                        if on_pdf && toolbar::outline_button(ui, view == Sidebar::Outline) {
-                            clicked = Some(Sidebar::Outline);
-                        }
-                        if toolbar::search_button(ui, view == Sidebar::Search) {
-                            clicked = Some(Sidebar::Search);
-                        }
-                    });
-                });
+                if library && toolbar::notebook_button(ui, view == Sidebar::Notebook) {
+                    clicked = Some(Sidebar::Notebook);
+                }
+                if toolbar::pages_button(ui, view == Sidebar::Pages) {
+                    clicked = Some(Sidebar::Pages);
+                }
+                if on_pdf && toolbar::outline_button(ui, view == Sidebar::Outline) {
+                    clicked = Some(Sidebar::Outline);
+                }
+                if toolbar::search_button(ui, view == Sidebar::Search) {
+                    clicked = Some(Sidebar::Search);
+                }
+                if note_settings && toolbar::settings_button(ui, view == Sidebar::Settings) {
+                    clicked = Some(Sidebar::Settings);
+                }
             });
         match view {
             Sidebar::Notebook => self.notebook_view(ui),
@@ -121,11 +135,74 @@ impl InkApp {
             Sidebar::Closed => {}
         }
         if let Some(v) = clicked {
-            self.settings.sidebar.toggle(v);
+            if fullscreen && v == view {
+                // Back behind the notch, keeping the view for next time.
+                self.chrome.fullscreen_sidebar = false;
+            } else {
+                self.settings.sidebar.toggle(v);
+            }
             if self.settings.sidebar == Sidebar::Search {
                 self.search_panel.focus = true;
             }
         }
+        self.chrome.sidebar_seen = Some(self.settings.sidebar);
+    }
+
+    /// Fullscreen, with the sidebar hidden: the notch in its top corner that
+    /// shows it again, with the view it last showed.
+    pub(super) fn fullscreen_sidebar_notch(&mut self, ui: &egui::Ui) {
+        if toolbar::show_sidebar_notch(ui, self.settings.sidebar_side, self.settings.sidebar_last) {
+            self.show_fullscreen_sidebar();
+        }
+    }
+
+    /// Fullscreen, touch screens: a finger swiping in from the sidebar's
+    /// window edge shows the sidebar, like its notch. The swipe down from
+    /// the top edge shows the title bar (see `chrome`); either way the
+    /// canvas ignores the finger (`edge_touch`) until it lifts.
+    pub(super) fn edge_swipe(&mut self, ctx: &egui::Context, fullscreen: bool) {
+        let (origin, pos, down, pressed) = ctx.input(|i| {
+            (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down(), i.pointer.any_pressed())
+        });
+        if !down {
+            self.edge_touch = false;
+            return;
+        }
+        let screen = ctx.viewport_rect();
+        let right = self.settings.sidebar_side == SidebarSide::Right;
+        let from_side = |p: egui::Pos2| {
+            let d = if right { screen.right() - p.x } else { p.x - screen.left() };
+            d <= SWIPE_EDGE
+        };
+        let hidden = !self.chrome.fullscreen_sidebar;
+        if pressed {
+            self.edge_touch = fullscreen
+                && self.finger(ctx)
+                && origin.is_some_and(|o| o.y - screen.top() <= SWIPE_EDGE || hidden && from_side(o));
+        }
+        if self.edge_touch
+            && hidden
+            && let (Some(o), Some(p)) = (origin, pos)
+            && from_side(o)
+        {
+            let inward = if right { o.x - p.x } else { p.x - o.x };
+            if inward >= SWIPE_IN && inward > (p.y - o.y).abs() {
+                self.show_fullscreen_sidebar();
+            }
+        }
+    }
+
+    /// Fullscreen: shows the hidden sidebar, with the view it last showed.
+    fn show_fullscreen_sidebar(&mut self) {
+        self.chrome.fullscreen_sidebar = true;
+        if self.settings.sidebar == Sidebar::Closed {
+            self.settings.sidebar = match self.settings.sidebar_last {
+                Sidebar::Closed => Sidebar::Pages,
+                last => last,
+            };
+        }
+        // Not taken as a view opened from elsewhere.
+        self.chrome.sidebar_seen = Some(self.settings.sidebar);
     }
 
     /// A panel of the sidebar, on its `side` of the window.
@@ -203,7 +280,7 @@ impl InkApp {
         let side = self.settings.sidebar_side;
 
         // The concave joins with the title bar and the bottom edge are drawn
-        // by `toolbar::show_corners`.
+        // by `toolbar::show_joins`.
         Self::side_panel(side, "sidebar_pages")
             .resizable(true)
             .default_size(PAGES_WIDTH)
