@@ -53,6 +53,10 @@ pub enum ToolbarEvent {
     Recolor([u8; 3]),
     /// Turn the pointer tool's laser on or off.
     Laser,
+    /// Start presentation mode.
+    Present,
+    /// End presentation mode.
+    EndPresentation,
 }
 
 impl Tool {
@@ -105,7 +109,7 @@ pub fn show(
     bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
     let position = settings.toolbar_position;
-    edge_bar(ui, "tool_notch", position, bottom_inset, |ui| {
+    edge_bar(ui, "tool_notch", position, bottom_inset, 1.0, |ui| {
         contents(ui, tool, settings, can_undo, can_redo, nav, selected)
     })
 }
@@ -122,6 +126,8 @@ pub struct Navigation {
     pub can_go_back: bool,
     /// The pointer tool's laser is on.
     pub laser: bool,
+    /// Presentation mode is on (its bar has its own way out).
+    pub presenting: bool,
 }
 
 /// The reader's bar, in the tool bar's place: import (to write on the PDF),
@@ -134,7 +140,7 @@ pub fn show_reader(
     bottom_inset: f32,
 ) -> Option<ToolbarEvent> {
     let position = settings.toolbar_position;
-    edge_bar(ui, "reader_notch", position, bottom_inset, |ui| {
+    edge_bar(ui, "reader_notch", position, bottom_inset, 1.0, |ui| {
         let mut event = None;
         let import = egui::Button::new(format!("{}  Import", icon::FILE_ARROW_DOWN));
         let tip = "Make it a note to write on, in the notebook or section open in the library";
@@ -144,8 +150,91 @@ pub fn show_reader(
         ui.separator();
         let pages = page_controls(ui, settings, nav, true);
         ui.separator();
-        zoom_controls(ui, settings).or(pages).or(event)
+        zoom_controls(ui, &mut settings.zoom).or(pages).or(event)
     })
+}
+
+/// Presentation mode's bar, on the tool bar's edge: the laser, Back after a
+/// link, the pages, its own `zoom` and the way out. Hidden, it slides in like the title bar
+/// in full screen: when the pointer touches that edge of the screen, or on a
+/// swipe in from it, and stays while the pointer is on it.
+pub fn show_presenting(
+    ui: &egui::Ui,
+    settings: &mut Settings,
+    zoom: &mut ZoomMode,
+    nav: &Navigation,
+) -> Option<ToolbarEvent> {
+    let position = settings.toolbar_position;
+    let reveal = presenting_reveal(ui.ctx(), position);
+    if reveal <= 0.0 {
+        return None;
+    }
+    edge_bar(ui, PRESENTING_BAR, position, 0.0, reveal, |ui| {
+        let pages = page_controls(ui, settings, nav, true);
+        ui.separator();
+        let zoomed = zoom_controls(ui, zoom);
+        ui.separator();
+        let end = egui::Button::new(theme::icon(icon::X));
+        if ui.add(end).on_hover_text("End presentation (Escape)").clicked() {
+            return Some(ToolbarEvent::EndPresentation);
+        }
+        zoomed.or(pages)
+    })
+}
+
+/// Presentation mode's bar (its area's id).
+const PRESENTING_BAR: &str = "presenting_notch";
+/// How close to its edge the pointer reveals the presentation bar, and how
+/// far past the bar it stays (points).
+const REVEAL_EDGE: f32 = 2.0;
+const KEEP_PAST: f32 = 12.0;
+/// A swipe that reveals it starts this close to its edge (points) and goes
+/// at least this far in.
+pub const SWIPE_EDGE: f32 = 24.0;
+const SWIPE_IN: f32 = 48.0;
+/// Its slide in / out time, in seconds.
+const REVEAL_TIME: f32 = 0.15;
+
+/// How far `p` is from the screen edge of the presentation bar.
+pub fn from_bar_edge(ctx: &egui::Context, position: ToolbarPosition, p: Pos2) -> f32 {
+    let screen = ctx.viewport_rect();
+    match position {
+        ToolbarPosition::Top => p.y - screen.top(),
+        ToolbarPosition::Bottom => screen.bottom() - p.y,
+    }
+}
+
+/// How far the presentation bar is shown (0 hidden, 1 fully in); see
+/// `show_presenting`. A finger leaves no pointer to stay near it: after a
+/// swipe it stays until a press away from it. It also stays while a field
+/// in it (the page number) is being typed into.
+fn presenting_reveal(ctx: &egui::Context, position: ToolbarPosition) -> f32 {
+    let id = egui::Id::new("presenting_bar_reveal");
+    let swipe_id = egui::Id::new("presenting_bar_swiped");
+    let shown = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let mut swiped = ctx.data(|d| d.get_temp::<bool>(swipe_id)).unwrap_or(false);
+    let height = ctx.memory(|m| m.area_rect(egui::Id::new(PRESENTING_BAR))).map_or(48.0, |r| r.height());
+    let edge = |p: Pos2| from_bar_edge(ctx, position, p);
+    let (pointer, origin, down, pressed) = ctx.input(|i| {
+        (i.pointer.hover_pos(), i.pointer.press_origin(), i.pointer.primary_down(), i.pointer.any_pressed())
+    });
+    let reach = if shown { height + KEEP_PAST } else { REVEAL_EDGE };
+    let near = pointer.is_some_and(|p| edge(p) <= reach);
+    if let (Some(o), Some(p), true) = (origin, pointer, down)
+        && edge(o) <= SWIPE_EDGE
+        && edge(p) - edge(o) >= SWIPE_IN
+    {
+        swiped = true;
+    } else if pressed && origin.is_some_and(|o| edge(o) > height + KEEP_PAST) {
+        swiped = false;
+    }
+    let typing = ctx.memory(|m| m.focused().is_some());
+    let show = near || swiped || typing;
+    ctx.data_mut(|d| {
+        d.insert_temp(id, show);
+        d.insert_temp(swipe_id, swiped);
+    });
+    ctx.animate_bool_with_time(id, show, REVEAL_TIME)
 }
 
 /// The laser (the pointer tool, `laser`) or else the table of contents (if
@@ -153,6 +242,12 @@ pub fn show_reader(
 /// type or drag), next.
 fn page_controls(ui: &mut egui::Ui, settings: &mut Settings, nav: &Navigation, laser: bool) -> Option<ToolbarEvent> {
     let mut event = None;
+    if laser && !nav.presenting {
+        let present = egui::Button::new(theme::icon(icon::PRESENTATION));
+        if ui.add(present).on_hover_text("Present: the page alone, full screen (F5)").clicked() {
+            event = Some(ToolbarEvent::Present);
+        }
+    }
     if laser {
         let tip = if nav.laser { "Laser pointer: on (drag on the page to point)" } else { "Laser pointer, to present" };
         if ui.add(egui::Button::selectable(nav.laser, theme::icon(icon::RECORD))).on_hover_text(tip).clicked() {
@@ -186,32 +281,37 @@ fn page_controls(ui: &mut egui::Ui, settings: &mut Settings, nav: &Navigation, l
 }
 
 /// A bar in a notch centred on the top or bottom edge of what is left of the
-/// root `ui` (see `show`).
+/// root `ui` (see `show`). `slide` is how far it is in from that edge (1:
+/// all of it).
 fn edge_bar<R>(
     ui: &egui::Ui,
     id: &str,
     position: ToolbarPosition,
     bottom_inset: f32,
+    slide: f32,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let ctx = ui.ctx();
     let free = ui.available_rect_before_wrap();
     let id = egui::Id::new(id);
-    // Size from the previous frame.
-    let width = ctx.memory(|m| m.area_rect(id)).map_or(0.0, |r| r.width());
+    // Size from the previous frame (its height a guess the first time).
+    let size = ctx.memory(|m| m.area_rect(id)).map_or(vec2(0.0, 48.0), |r| r.size());
+    let (width, hidden) = (size.x, size.y * (1.0 - slide));
     let fits = width + 2.0 * CORNER_ZONE <= free.width();
     let top = match position {
         ToolbarPosition::Top => fits,
         ToolbarPosition::Bottom => !fits,
     };
     let (at, pos) = if top {
-        (Edge::Top, pos2(free.center().x, free.top()))
+        (Edge::Top, pos2(free.center().x, free.top() - hidden))
     } else {
-        (Edge::Bottom, pos2(free.center().x, free.bottom() - bottom_inset))
+        (Edge::Bottom, pos2(free.center().x, free.bottom() - bottom_inset + hidden))
     };
 
     egui::Area::new(id)
         .order(Order::Foreground)
+        // Sliding in, it starts past the edge of the screen.
+        .constrain(false)
         .pivot(if top { Align2::CENTER_TOP } else { Align2::CENTER_BOTTOM })
         .fixed_pos(pos)
         .show(ctx, |ui| {
@@ -558,21 +658,21 @@ fn contents(
         event = Some(ToolbarEvent::Redo);
     }
     ui.separator();
-    zoom_controls(ui, settings).or(event).or(picked)
+    zoom_controls(ui, &mut settings.zoom).or(event).or(picked)
 }
 
 /// Zoom: out, the presets, in.
-fn zoom_controls(ui: &mut egui::Ui, settings: &mut Settings) -> Option<ToolbarEvent> {
+fn zoom_controls(ui: &mut egui::Ui, zoom: &mut ZoomMode) -> Option<ToolbarEvent> {
     let mut event = None;
     if ui.button(theme::icon(icon::MAGNIFYING_GLASS_MINUS)).on_hover_text("Zoom out (Ctrl+Minus)").clicked() {
         event = Some(ToolbarEvent::ZoomOut);
     }
     egui::ComboBox::from_id_salt("toolbar_zoom")
-        .selected_text(settings.zoom.label())
+        .selected_text(zoom.label())
         .width(84.0)
         .show_ui(ui, |ui| {
             for z in ZoomMode::PRESETS {
-                ui.selectable_value(&mut settings.zoom, z, z.label());
+                ui.selectable_value(zoom, z, z.label());
             }
         })
         .response

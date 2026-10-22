@@ -88,6 +88,10 @@ pub(super) enum Command {
     ZoomOut,
     Zoom(ZoomMode),
     Fullscreen,
+    /// Start or end presentation mode.
+    Present,
+    /// Turn the laser pointer on or off.
+    Laser,
     ToolbarAt(ToolbarPosition),
     SidebarAt(SidebarSide),
     /// Global settings window.
@@ -225,7 +229,12 @@ impl InkApp {
 
         let mut cmds = Vec::new();
         let state = self.window_state(ctx);
-        if self.screen == Screen::Editor {
+        if self.presenting.is_some() {
+            // Presenting: no title bar. The note was closed meanwhile: done.
+            if self.screen != Screen::Editor {
+                cmds.push(Command::Present);
+            }
+        } else if self.screen == Screen::Editor {
             // The note title is editable in place. While the field has focus
             // it keeps what is typed; otherwise it follows the note.
             let mut buf = std::mem::take(&mut self.chrome.title_buf);
@@ -424,6 +433,13 @@ impl InkApp {
                 ui,
                 Command::Fullscreen,
             );
+            if editor {
+                push(
+                    entry(ui, icon::PRESENTATION, "Present", &shortcut(&ctx, Modifiers::NONE, Key::F5), true),
+                    ui,
+                    Command::Present,
+                );
+            }
         });
 
         if editor && !self.reading() {
@@ -617,6 +633,19 @@ impl InkApp {
                     // Flat rows, like egui's own menus.
                     ui.visuals_mut().button_frame = false;
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    // Presenting: the laser and the way out (there is no title bar).
+                    if self.presenting.is_some() {
+                        let ctx = ui.ctx().clone();
+                        let key = |k| shortcut(&ctx, Modifiers::NONE, k);
+                        if check(ui, self.laser, "Laser pointer", &key(Key::L)) {
+                            push(ui, Command::Laser);
+                        }
+                        ui.separator();
+                        if entry(ui, icon::X, "End presentation", &key(Key::Escape), true) {
+                            push(ui, Command::Present);
+                        }
+                        return;
+                    }
                     // The reader: only its text; a note: copying a selection first.
                     if self.reading() {
                         self.text_entries(ui, menu.page.unwrap_or(self.current_page), &mut push);
@@ -778,6 +807,16 @@ impl InkApp {
                 } else if i.consume_key(Modifiers::NONE, Key::F3) {
                     out.push(Command::FindNext(true));
                 }
+                // Presenting: F5 or Escape ends it, L turns the laser on or off.
+                let presenting = self.presenting.is_some();
+                if i.consume_key(Modifiers::NONE, Key::F5)
+                    || presenting && self.context_menu.is_none() && i.consume_key(Modifiers::NONE, Key::Escape)
+                {
+                    out.push(Command::Present);
+                }
+                if presenting && !typing && i.consume_key(Modifiers::NONE, Key::L) {
+                    out.push(Command::Laser);
+                }
                 if !typing {
                     // The reader selects text; a note, its ink.
                     if i.consume_key(cmd, Key::A) {
@@ -928,8 +967,37 @@ impl InkApp {
                 };
                 self.zoom_request = Some(next as f32 / now.max(1) as f32);
             }
-            Command::Zoom(z) => self.settings.zoom = z,
+            Command::Zoom(z) => *self.zoom_mut() = z,
+            Command::Present => match self.presenting.take() {
+                Some(p) => {
+                    let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                    if p.entered_fullscreen && fullscreen {
+                        self.run_command(ctx, Command::Fullscreen);
+                    }
+                }
+                None if !editor => {}
+                None => {
+                    // Nothing being typed, selected or open over the page.
+                    self.commit_edit(ctx);
+                    self.clear_selection();
+                    self.context_menu = None;
+                    let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                    if !fullscreen {
+                        self.run_command(ctx, Command::Fullscreen);
+                    }
+                    self.presenting = Some(super::Presentation {
+                        entered_fullscreen: !fullscreen,
+                        seen_fullscreen: fullscreen,
+                        zoom: ZoomMode::FitPage,
+                    });
+                    // From the top of the page being read.
+                    self.scroll_to = Some(self.layout().page_stop(self.current_page));
+                }
+            },
+            Command::Laser => self.laser = !self.laser,
             Command::Fullscreen => {
+                // Leaving full screen ends presenting too.
+                self.presenting = None;
                 // On Windows, going fullscreen straight from a maximized window
                 // resizes the window without a resize event, so egui keeps
                 // drawing at the maximized size. Un-maximize first and
@@ -1063,6 +1131,8 @@ impl InkApp {
                             ("PgUp / PgDn".to_owned(), "Scroll by a screen"),
                             ("Home / End".to_owned(), "First / last page"),
                             (key(none, Key::F11), "Full screen"),
+                            (or(key(none, Key::F5), key(none, Key::Escape)), "Present / end presenting"),
+                            (key(none, Key::L), "Laser pointer, while presenting"),
                         ],
                     ),
                     (

@@ -149,7 +149,7 @@ resize.
 | --- | --- |
 | **File** | New note, new notebook, import, open a PDF to read, write on a PDF, save, export as PDF, print, close note, library folder, settings, exit |
 | **Edit** | Undo, redo, cut, copy, paste, select all on page, delete selection, deselect |
-| **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen |
+| **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen, present |
 | **Page** | Insert a page before / after the current one, delete it, copy, cut or paste a page, save it as PNG, paper style, page setup |
 | **Help** | Keyboard shortcuts, about Tratto |
 
@@ -178,6 +178,7 @@ the sidebar waits behind a small notch in its top corner: click it to
 show the sidebar, and the highlighted view to hide it again. The title bar
 slides in from the top edge. On a touch screen, swipe down from the top edge
 for the title bar, or in from the sidebar's edge for the sidebar.
+
 Each view keeps its own width (drag its inner edge), and has a context menu
 (right-click):
 
@@ -217,6 +218,16 @@ the note; Enter or clicking elsewhere saves, Escape cancels.
 
 To pan, drag on the grey area around the pages, or use the scrollbars, the
 mouse wheel or a touchpad. Flick the drag and the view keeps gliding.
+
+**View > Present** (`F5`) shows the note or the PDF to an audience: full
+screen with the page alone, fitted whole (no sidebar or title bar). Turn the
+pages with the arrow keys, `Space`, `Page Up` / `Page Down`, the wheel or a
+tap on either side of the page; nothing is written. A small bar, on the
+toolbar's edge, slides in when the pointer touches that edge of the screen
+(or on a swipe in from it): the laser pointer, Back, the pages, the zoom and
+**End presentation**. Presenting starts at **Fit page**; zooming there
+(also with `Ctrl` + wheel or a pinch) leaves the note's own zoom as it was. `L` turns the laser on or off, and `Escape`, `F5` or the
+right-click menu end it too.
 
 ### Settings
 
@@ -263,6 +274,8 @@ note and goes back to the library screen.
 | `Page Up` / `Page Down` | Scroll by one screen (animated) |
 | `Home` / `End` | Go to the first / last page |
 | `F11` | Toggle fullscreen |
+| `F5` / `Escape` | Present / end presenting |
+| `L` | Laser pointer, while presenting |
 | `Ctrl+,` | Settings |
 | `Ctrl+Q` | Exit |
 

@@ -50,7 +50,7 @@ use crate::pdf_view::PdfTextures;
 use crate::render::{LiveStroke, PictureTextures, StrokeCache};
 use crate::saver::Saver;
 use crate::scrollbar;
-use crate::settings::{BatterySaver, NoteView, Settings, Sidebar, UpdateMode};
+use crate::settings::{BatterySaver, NoteView, Settings, Sidebar, UpdateMode, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::update::{self, Updater};
@@ -135,6 +135,18 @@ struct EditState {
 
 /// A press with the text tool: tap = edit / create, drag = move / size, or
 /// resize the box being edited.
+/// Presentation mode: full screen with the page alone, fitted whole, one
+/// page per step (keys, taps, the wheel); no toolbar, sidebar or title bar.
+/// Nothing is written: the pen moves around, or points with the laser.
+struct Presentation {
+    /// Presenting made the window full screen: ending it leaves full screen.
+    entered_fullscreen: bool,
+    /// The window has been full screen since: leaving it ends presenting.
+    seen_fullscreen: bool,
+    /// Its own zoom (fit page at first), apart from the note's.
+    zoom: ZoomMode,
+}
+
 struct TextPress {
     /// Existing text box under the pen.
     hit: Option<u64>,
@@ -374,6 +386,8 @@ pub struct InkApp {
     /// edge, a swipe that shows the title bar or the sidebar; the canvas
     /// ignores it until it lifts.
     edge_touch: bool,
+    /// Presentation mode (see `Presentation`).
+    presenting: Option<Presentation>,
     /// Menu commands collected this frame, run after drawing.
     pending: Vec<Command>,
     help: HelpWindows,
@@ -517,6 +531,7 @@ impl InkApp {
             context_menu: None,
             swallow_press: false,
             edge_touch: false,
+            presenting: None,
             pending: Vec::new(),
             help: HelpWindows::default(),
             chrome: WindowChrome {
@@ -666,7 +681,7 @@ impl InkApp {
     /// the pointer tool, or a finger on a note (see `finger_ink`). Drag to
     /// scroll, tap to follow a PDF link.
     fn navigating(&self) -> bool {
-        self.reading() || self.tool == Tool::Pointer || self.finger_nav
+        self.reading() || self.tool == Tool::Pointer || self.finger_nav || self.presenting.is_some()
     }
 
     /// The pointer is a finger on a touch screen, not the mouse or a pen.
@@ -681,6 +696,19 @@ impl InkApp {
     pub(super) fn pick_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.finger_ink = tool == Tool::Pen;
+    }
+
+    /// The zoom the view follows: presentation mode's while presenting,
+    /// else the note's.
+    fn zoom(&self) -> ZoomMode {
+        self.presenting.as_ref().map_or(self.settings.zoom, |p| p.zoom)
+    }
+
+    fn zoom_mut(&mut self) -> &mut ZoomMode {
+        match &mut self.presenting {
+            Some(p) => &mut p.zoom,
+            None => &mut self.settings.zoom,
+        }
     }
 
     /// The pages of the open note, stacked.
@@ -733,8 +761,31 @@ impl InkApp {
         // Full screen: the page and the toolbar, the sidebar behind a notch
         // (the title bar still slides in from the top edge).
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
-        self.edge_swipe(ctx, fullscreen);
-        self.sidebar(ui, fullscreen);
+        // Presenting: the page alone. Leaving full screen (F11, the system)
+        // ends it.
+        if let Some(p) = self.presenting.as_mut() {
+            if fullscreen {
+                p.seen_fullscreen = true;
+            } else if p.seen_fullscreen {
+                self.presenting = None;
+            }
+        }
+        let presenting = self.presenting.is_some();
+        if presenting {
+            // A finger swiping in for the presentation bar does not scroll.
+            let (origin, down, pressed) =
+                ctx.input(|i| (i.pointer.press_origin(), i.pointer.primary_down(), i.pointer.any_pressed()));
+            let position = self.settings.toolbar_position;
+            if !down {
+                self.edge_touch = false;
+            } else if pressed {
+                self.edge_touch = self.finger(ctx)
+                    && origin.is_some_and(|o| toolbar::from_bar_edge(ctx, position, o) <= toolbar::SWIPE_EDGE);
+            }
+        } else {
+            self.edge_swipe(ctx, fullscreen);
+            self.sidebar(ui, fullscreen);
+        }
         if self.screen != Screen::Editor {
             // A note was picked in the notebook view and the editor closed.
             return;
@@ -746,9 +797,13 @@ impl InkApp {
             contents: self.doc.pdf.is_some(),
             can_go_back: !self.nav_back.is_empty(),
             laser: self.laser,
+            presenting,
         };
         let selected = self.selection_color();
-        let event = if self.reading() {
+        let event = if presenting {
+            let zoom = self.presenting.as_mut().map(|p| &mut p.zoom);
+            zoom.and_then(|zoom| toolbar::show_presenting(ui, &mut self.settings, zoom, &nav))
+        } else if self.reading() {
             toolbar::show_reader(ui, &mut self.settings, &nav, bottom_inset)
         } else {
             toolbar::show(
@@ -764,7 +819,9 @@ impl InkApp {
         };
         // After the sidebar, so the joins (or its notch) sit next to it.
         // Neither while the sidebar slides.
-        if self.chrome.sidebar_reveal <= 0.0 {
+        if presenting {
+            // Nothing beside the page.
+        } else if self.chrome.sidebar_reveal <= 0.0 {
             self.fullscreen_sidebar_notch(ui);
         } else if self.chrome.sidebar_reveal >= 1.0 {
             toolbar::show_joins(ui, self.settings.sidebar_side, bottom_inset);
@@ -791,6 +848,7 @@ impl InkApp {
             Some(ToolbarEvent::GoToPage(i)) => self.scroll_to = Some(self.layout().page_stop(i)),
             Some(ToolbarEvent::Back) => self.go_back(),
             Some(ToolbarEvent::Laser) => self.laser = !self.laser,
+            Some(ToolbarEvent::Present | ToolbarEvent::EndPresentation) => self.pending.push(Command::Present),
             Some(ToolbarEvent::Tool(t)) => self.pick_tool(t),
             Some(ToolbarEvent::Recolor(rgb)) => self.recolor_selection(rgb),
             None => {}

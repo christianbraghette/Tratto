@@ -178,8 +178,12 @@ impl InkApp {
     }
 
     /// Writing-area rectangle, zoom scale and whether a horizontal scrollbar
-    /// is needed. The vertical scrollbar always occupies the right edge.
+    /// is needed. The vertical scrollbar always occupies the right edge,
+    /// except while presenting: then the page has it all (no scroll bars).
     fn canvas_geometry(&self, full: Rect, layout: &Layout) -> (Rect, f32, bool) {
+        if self.presenting.is_some() {
+            return (full, View::scale_for(self.zoom(), full, layout), false);
+        }
         let sb = scrollbar::THICKNESS;
         let w = (full.width() - sb).max(50.0);
         let mut rect = Rect::from_min_size(full.min, vec2(w, full.height()));
@@ -275,7 +279,7 @@ impl InkApp {
                 let before = View::new(canvas, self.scroll, scale, layout);
                 let c = before.screen_to_content(anchor);
                 let pct = (scale * zd * 100.0).round().clamp(25.0, 400.0) as u32;
-                self.settings.zoom = ZoomMode::Percent(pct);
+                *self.zoom_mut() = ZoomMode::Percent(pct);
                 (canvas, scale, hbar) = self.canvas_geometry(full, &layout);
                 let pad = View::pad_x_for(canvas.width(), layout.content_w(), scale);
                 self.scroll.x = c.x - (anchor.x - canvas.left() - pad) / scale;
@@ -820,7 +824,10 @@ impl InkApp {
         self.current_page = cur;
         let label = format!("Page {} / {}", cur + 1, layout.count);
         let full_painter = ui.painter();
-        scrollbar::paint(full_painter, vbar_rect, true, &vstate, Some(&label));
+        // Presenting: no scroll bar (its track has no width then).
+        if self.presenting.is_none() {
+            scrollbar::paint(full_painter, vbar_rect, true, &vstate, Some(&label));
+        }
         if let Some(h) = &hstate {
             scrollbar::paint(full_painter, hbar_rect, false, h, None);
         }
