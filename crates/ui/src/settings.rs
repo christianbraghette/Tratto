@@ -94,6 +94,32 @@ impl UpdateMode {
     }
 }
 
+/// Which releases the updater follows, by the pre-release suffix of their
+/// tag; a release flagged as a pre-release on GitHub is never Stable.
+/// Each channel also gets those of the steadier ones, whichever is newest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum UpdateChannel {
+    /// Releases only ("1.2.0").
+    #[default]
+    Stable,
+    /// Betas too ("1.2.0-beta1"): new features before their release.
+    Testing,
+    /// Alphas too ("1.2.0-alpha3"), and any other pre-release.
+    Unstable,
+}
+
+impl UpdateChannel {
+    pub const ALL: [UpdateChannel; 3] = [Self::Stable, Self::Testing, Self::Unstable];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "Stable",
+            Self::Testing => "Testing (betas)",
+            Self::Unstable => "Unstable (alphas)",
+        }
+    }
+}
+
 /// When Tratto presents with vsync to save power, whatever `Settings::vsync`
 /// says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +267,8 @@ pub struct Settings {
     pub reopen_last_note: bool,
     /// Checking for, and installing, new versions at startup.
     pub updates: UpdateMode,
+    /// Which releases count as new versions.
+    pub update_channel: UpdateChannel,
     /// The order of the notes in the library.
     pub library_sort: LibrarySort,
     /// The note (or PDF in the reader) open when the app was last closed
@@ -376,6 +404,7 @@ impl Default for Settings {
             pdf_open_after: false,
             reopen_last_note: true,
             updates: UpdateMode::Install,
+            update_channel: UpdateChannel::Stable,
             library_sort: LibrarySort::Manual,
             last_note: None,
             note_views: Vec::new(),

@@ -10,7 +10,7 @@ use egui_phosphor::regular as icon;
 
 use super::InkApp;
 use super::settings_ui::{hint, row, rows, section};
-use crate::settings::UpdateMode;
+use crate::settings::{UpdateChannel, UpdateMode};
 use crate::theme;
 use crate::update::{self, State as UpdateState};
 
@@ -21,7 +21,7 @@ impl InkApp {
         self.help.updates = true;
         if !matches!(self.updater.state(), UpdateState::Installed(_)) {
             let install = self.settings.updates == UpdateMode::Install;
-            self.updater.check(ctx, install);
+            self.updater.check(ctx, self.settings.update_channel, install);
         }
     }
 
@@ -46,6 +46,7 @@ impl InkApp {
     fn updates(&mut self, ui: &mut Ui) {
         let state = self.updater.state().clone();
         let mut check = false;
+        let mut recheck = false;
         let mut install = false;
         let mut restart = false;
         let s = &mut self.settings;
@@ -66,6 +67,19 @@ impl InkApp {
                         ui.selectable_value(&mut s.updates, mode, mode.label());
                     }
                 });
+            });
+            row(ui, "Channel", |ui| {
+                egui::ComboBox::from_id_salt("update_channel").selected_text(s.update_channel.label()).show_ui(
+                    ui,
+                    |ui| {
+                        for channel in UpdateChannel::ALL {
+                            // Another channel: look again, without installing.
+                            if ui.selectable_value(&mut s.update_channel, channel, channel.label()).changed() {
+                                recheck = true;
+                            }
+                        }
+                    },
+                );
             });
         });
 
@@ -105,9 +119,12 @@ impl InkApp {
             UpdateState::Failed(e) => hint(ui, e),
         }
 
+        let channel = self.settings.update_channel;
         if check {
             let install = self.settings.updates == UpdateMode::Install;
-            self.updater.check(ui.ctx(), install);
+            self.updater.check(ui.ctx(), channel, install);
+        } else if recheck && !matches!(state, UpdateState::Installed(_)) {
+            self.updater.check(ui.ctx(), channel, false);
         }
         if install {
             self.updater.install(ui.ctx());

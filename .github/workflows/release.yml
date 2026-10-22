@@ -1,8 +1,11 @@
 # Builds Tratto for each platform when a version tag (v1.2.3, or a
 # pre-release such as v1.2.3-beta1) is pushed and
 # attaches one archive per platform, `tratto-<target>.zip`, to a draft
-# release. Publishing the draft makes it the latest release: the app's
-# updater (crates/ui/src/update.rs) finds it by that name.
+# release. Once the draft is published, the app's updater
+# (crates/ui/src/update.rs) offers it on a channel picked by the tag's
+# suffix (none: stable, -beta<n>: testing, -alpha<n>: unstable) and finds
+# the archive by that name. A tag with a suffix is flagged as a pre-release
+# here, so GitHub never shows it as the latest release.
 #
 # Run by hand (Actions > Release > Run workflow), it only builds: the
 # archives are in the run's artifacts (e.g. the macOS one, which cannot be
@@ -91,4 +94,7 @@ jobs:
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "Tratto ${GITHUB_REF_NAME#v}"
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --draft "${prerelease[@]}" --generate-notes --title "Tratto ${GITHUB_REF_NAME#v}"

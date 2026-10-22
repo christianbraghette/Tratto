@@ -6,8 +6,9 @@
 //! Each release carries one archive per platform, `tratto-<target>.zip`
 //! (see `.github/workflows/release.yml`), holding what goes next to the
 //! executable: `tratto(.exe)`, the PDFium library and the licenses. At
-//! startup the latest release is asked for in the background; if it is
-//! newer, its archive is downloaded, checked against the SHA-256 digest
+//! startup the releases are asked for in the background and the newest one
+//! of the chosen channel is picked (`UpdateChannel`: by the tag's suffix,
+//! releases, `-beta<n>` or `-alpha<n>`); if it is newer, its archive is downloaded, checked against the SHA-256 digest
 //! GitHub publishes for it, and swapped in: each file is renamed to
 //! `<name>.old` (a running executable or loaded library cannot be
 //! overwritten on Windows, but it can be renamed) and the new one takes its
@@ -28,6 +29,8 @@ use eframe::egui;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::settings::UpdateChannel;
+
 /// `owner/name` of the GitHub repository the releases come from.
 const REPO: &str = "christianbraghette/Tratto";
 /// This version, with the pre-release suffix of the tag it was built from
@@ -39,6 +42,8 @@ const TARGET: &str = env!("TRATTO_TARGET");
 const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
 const OLD: &str = ".old";
 const NEW: &str = ".new";
+/// Releases looked at, most recent first (one page of the GitHub API).
+const RELEASES: u32 = 100;
 
 /// Set to start the app again once the window has closed (after an update).
 pub static RESTART: AtomicBool = AtomicBool::new(false);
@@ -71,6 +76,11 @@ struct Asset {
 struct GhRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    draft: bool,
+    /// GitHub's pre-release flag: keeps the release off the Stable channel.
+    #[serde(default)]
+    prerelease: bool,
     #[serde(default)]
     assets: Vec<Asset>,
 }
@@ -107,14 +117,14 @@ impl Updater {
         &self.state
     }
 
-    /// Asks for the latest release; with `install`, a newer one is also
-    /// downloaded and installed when possible.
-    pub fn check(&mut self, ctx: &egui::Context, install: bool) {
+    /// Asks for the latest release of `channel`; with `install`, a newer one
+    /// is also downloaded and installed when possible.
+    pub fn check(&mut self, ctx: &egui::Context, channel: UpdateChannel, install: bool) {
         if self.state.busy() {
             return;
         }
         self.state = State::Checking;
-        self.run(ctx, move |send| match latest_release() {
+        self.run(ctx, move |send| match latest_release(channel) {
             Err(e) => send(State::Failed(e)),
             Ok(None) => send(State::UpToDate),
             Ok(Some(release)) if install && release.installable => download_and_install(release, send),
@@ -184,20 +194,26 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
-/// The latest release if it is newer than this version (`None`: up to date,
-/// or no release published yet).
-fn latest_release() -> Result<Option<Release>, String> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+/// The latest release of `channel` if it is newer than this version
+/// (`None`: up to date, or no release published yet).
+fn latest_release(channel: UpdateChannel) -> Result<Option<Release>, String> {
+    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page={RELEASES}");
     let mut response = match agent().get(&url).header("Accept", "application/vnd.github+json").call() {
         Ok(r) => r,
         Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(e) => return Err(format!("Cannot check for updates: {e}")),
     };
-    let gh: GhRelease = response.body_mut().read_json().map_err(|e| format!("Unexpected reply from GitHub: {e}"))?;
-    let version = gh.tag_name.trim_start_matches('v').to_owned();
-    if !is_newer(&version, CURRENT) {
+    let releases: Vec<GhRelease> =
+        response.body_mut().read_json().map_err(|e| format!("Unexpected reply from GitHub: {e}"))?;
+    let newest = releases
+        .into_iter()
+        .filter(|r| !r.draft)
+        .map(|r| (r.tag_name.trim_start_matches('v').to_owned(), r))
+        .filter(|(v, r)| channel_of(v, r.prerelease).is_some_and(|c| c <= channel))
+        .reduce(|a, b| if is_newer(&b.0, &a.0) { b } else { a });
+    let Some((version, gh)) = newest.filter(|(v, _)| is_newer(v, CURRENT)) else {
         return Ok(None);
-    }
+    };
     let name = archive_name();
     let archive = gh.assets.into_iter().find(|a| a.name == name);
     let installable = archive.is_some() && install_dir().is_some();
@@ -213,20 +229,36 @@ fn archive_name() -> String {
 /// < "1.0.0-alpha10" < "1.0.0-beta0" < "1.0.0"); build suffixes are ignored,
 /// unparsable versions are never newer.
 fn is_newer(a: &str, b: &str) -> bool {
-    /// (major, minor, patch, is release, pre-release name, pre-release number)
-    fn parse(v: &str) -> Option<(u64, u64, u64, bool, String, u64)> {
-        let v = v.split('+').next()?;
-        let (core, pre) = v.split_once('-').unwrap_or((v, ""));
-        let mut parts = core.split('.').map(|p| p.parse::<u64>());
-        let major = parts.next()?.ok()?;
-        let minor = parts.next().unwrap_or(Ok(0)).ok()?;
-        let patch = parts.next().unwrap_or(Ok(0)).ok()?;
-        let name = pre.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-        let number = pre[name.len()..].trim_start_matches('.');
-        let number = if number.is_empty() { 0 } else { number.parse().ok()? };
-        Some((major, minor, patch, pre.is_empty(), name.to_owned(), number))
-    }
-    matches!((parse(a), parse(b)), (Some(a), Some(b)) if a > b)
+    matches!((parse_version(a), parse_version(b)), (Some(a), Some(b)) if a > b)
+}
+
+/// (major, minor, patch, is release, pre-release name, pre-release number)
+fn parse_version(v: &str) -> Option<(u64, u64, u64, bool, String, u64)> {
+    let v = v.split('+').next()?;
+    let (core, pre) = v.split_once('-').unwrap_or((v, ""));
+    let mut parts = core.split('.').map(|p| p.parse::<u64>());
+    let major = parts.next()?.ok()?;
+    let minor = parts.next().unwrap_or(Ok(0)).ok()?;
+    let patch = parts.next().unwrap_or(Ok(0)).ok()?;
+    let name = pre.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let number = pre[name.len()..].trim_start_matches('.');
+    let number = if number.is_empty() { 0 } else { number.parse().ok()? };
+    Some((major, minor, patch, pre.is_empty(), name.to_owned(), number))
+}
+
+/// The steadiest channel a version is offered on, by its tag: releases on
+/// Stable, betas on Testing, alphas (and any other pre-release) on
+/// Unstable. GitHub's pre-release flag (set by the release workflow from
+/// the tag) only keeps a release off Stable, should it be set by hand.
+/// `None` for an unparsable version.
+fn channel_of(version: &str, prerelease: bool) -> Option<UpdateChannel> {
+    let (_, _, _, release, name, _) = parse_version(version)?;
+    Some(match name.as_str() {
+        _ if release && prerelease => UpdateChannel::Testing,
+        _ if release => UpdateChannel::Stable,
+        "beta" => UpdateChannel::Testing,
+        _ => UpdateChannel::Unstable,
+    })
 }
 
 fn download(asset: &Asset) -> Result<Vec<u8>, String> {
@@ -408,6 +440,21 @@ mod tests {
         assert!(is_newer("0.2.0-alpha0", "0.1.0"));
         assert!(!is_newer("0.0.9", "0.1.0"));
         assert!(!is_newer("nightly", "0.1.0"));
+    }
+
+    #[test]
+    fn versions_have_channels() {
+        assert_eq!(channel_of("1.2.0", false), Some(UpdateChannel::Stable));
+        assert_eq!(channel_of("1.2.0+build5", false), Some(UpdateChannel::Stable));
+        assert_eq!(channel_of("1.2.0-beta1", false), Some(UpdateChannel::Testing));
+        assert_eq!(channel_of("1.2.0-beta.2", false), Some(UpdateChannel::Testing));
+        assert_eq!(channel_of("1.2.0-alpha0", false), Some(UpdateChannel::Unstable));
+        assert_eq!(channel_of("1.2.0-rc1", false), Some(UpdateChannel::Unstable));
+        assert_eq!(channel_of("nightly", false), None);
+        // Flagged as a pre-release on GitHub: never Stable, else by the tag.
+        assert_eq!(channel_of("1.2.0", true), Some(UpdateChannel::Testing));
+        assert_eq!(channel_of("1.2.0-beta1", true), Some(UpdateChannel::Testing));
+        assert_eq!(channel_of("1.2.0-alpha0", true), Some(UpdateChannel::Unstable));
     }
 
     fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {

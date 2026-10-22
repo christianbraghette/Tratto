@@ -508,7 +508,8 @@ impl InkApp {
             return app;
         }
         if app.settings.updates != UpdateMode::Off {
-            app.updater.check(&cc.egui_ctx, app.settings.updates == UpdateMode::Install);
+            let install = app.settings.updates == UpdateMode::Install;
+            app.updater.check(&cc.egui_ctx, app.settings.update_channel, install);
         }
         app.refresh_library();
         if let Some(path) = open {
