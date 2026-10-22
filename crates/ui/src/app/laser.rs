@@ -47,10 +47,10 @@ fn red(alpha: f32) -> Color32 {
 }
 
 impl InkApp {
-    /// The laser is on and points: the pointer tool on a note, not a finger
-    /// moving around.
+    /// The laser is on and points: the pointer tool on a note, or a PDF in
+    /// the reader, not a finger moving around.
     pub(super) fn lasering(&self) -> bool {
-        self.laser && self.tool == Tool::Pointer && !self.reading() && !self.finger_nav
+        self.laser && (self.tool == Tool::Pointer || self.reading()) && !self.finger_nav
     }
 
     /// Adds where the pointer went this frame (`moves`) to the trail while

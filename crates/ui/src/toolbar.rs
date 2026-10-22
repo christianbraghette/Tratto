@@ -125,7 +125,8 @@ pub struct Navigation {
 }
 
 /// The reader's bar, in the tool bar's place: import (to write on the PDF),
-/// the table of contents, back after a link, the pages and the zoom.
+/// the laser, back after a link, the pages and the zoom (the table of
+/// contents is in the sidebar).
 pub fn show_reader(
     ui: &egui::Ui,
     settings: &mut Settings,
@@ -141,7 +142,7 @@ pub fn show_reader(
             event = Some(ToolbarEvent::Import);
         }
         ui.separator();
-        let pages = page_controls(ui, settings, nav, false);
+        let pages = page_controls(ui, settings, nav, true);
         ui.separator();
         zoom_controls(ui, settings).or(pages).or(event)
     })

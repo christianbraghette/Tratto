@@ -3,7 +3,8 @@
 
 //! Text boxes: picking, editing in place, committing, moving and resizing
 //! them. The box being edited has a handle on either side: dragging one
-//! changes its width, and the text wraps again as it goes.
+//! changes its width, and the text wraps again as it goes. A knob above it
+//! moves it.
 
 use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::{self, CursorIcon, Key, Margin, Modifiers, PointerButton, Pos2, Rect, Vec2, pos2, vec2};
@@ -19,16 +20,30 @@ use super::{EditState, InkApp, TextPress};
 /// Margin of the in-place editor around its text (points). The text inside
 /// is where it is painted once committed, wrapped at the box's width.
 pub(super) const EDIT_MARGIN: Margin = Margin::symmetric(4, 2);
-/// How far outside the editor's frame a press still takes a handle (points).
-const HANDLE_REACH: f32 = 10.0;
+/// How far either side of the editor's frame a press takes a side handle
+/// (points): centred on the handle drawn there, and inside the frame only as
+/// far as its margin, never over the text.
+const HANDLE_REACH: f32 = 6.0;
 /// The narrowest a text box gets (document units).
 const MIN_WIDTH: f32 = 40.0;
+/// How far above the editor's frame the move knob is, and how close to it a
+/// press takes it (points): as the selection's rotate knob.
+const MOVE_GAP: f32 = 28.0;
+const KNOB_REACH: f32 = 12.0;
 
-/// A side of the box being edited, whose handle resizes it.
+/// A handle of the box being edited.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum Side {
+pub(super) enum EditHandle {
+    /// A side, which resizes it.
     Left,
     Right,
+    /// The knob above it, which moves it.
+    Move,
+}
+
+/// Where the move knob of the editor whose frame is `frame` (screen) is.
+pub(super) fn move_knob(frame: Rect) -> Pos2 {
+    frame.center_top() - vec2(0.0, MOVE_GAP)
 }
 
 /// The Markdown keys of the editor `id`, which writes `buf`, taken before it
@@ -86,16 +101,18 @@ impl InkApp {
         Some(editor.expand(2.0))
     }
 
-    /// The resize handle of the box being edited at the screen point `pos`.
+    /// The handle of the box being edited at the screen point `pos`.
     /// Handles reach out from the frame, never over the text (the editor's).
-    pub(super) fn edit_handle_at(&self, view: &View, pos: Pos2) -> Option<Side> {
+    pub(super) fn edit_handle_at(&self, view: &View, pos: Pos2) -> Option<EditHandle> {
         let f = self.edit_frame(view)?;
-        if pos.y < f.top() - 2.0 || pos.y > f.bottom() + 2.0 {
+        if move_knob(f).distance(pos) <= KNOB_REACH {
+            Some(EditHandle::Move)
+        } else if pos.y < f.top() - 2.0 || pos.y > f.bottom() + 2.0 {
             None
-        } else if (f.left() - HANDLE_REACH..=f.left() + 2.0).contains(&pos.x) {
-            Some(Side::Left)
-        } else if (f.right() - 2.0..=f.right() + HANDLE_REACH).contains(&pos.x) {
-            Some(Side::Right)
+        } else if (f.left() - HANDLE_REACH..=f.left() + HANDLE_REACH).contains(&pos.x) {
+            Some(EditHandle::Left)
+        } else if (f.right() - HANDLE_REACH..=f.right() + HANDLE_REACH).contains(&pos.x) {
+            Some(EditHandle::Right)
         } else {
             None
         }
@@ -194,14 +211,15 @@ impl InkApp {
         if resp.drag_started_by(PointerButton::Primary) {
             if let Some(pos) = press.or(resp.interact_pointer_pos()) {
                 let c = view.screen_to_content(pos);
-                let resize = self.edit_handle_at(view, pos).zip(self.edit.as_ref()).map(|(s, e)| (s, e.x, e.width));
+                let handle =
+                    (self.edit_handle_at(view, pos).zip(self.edit.as_ref())).map(|(h, e)| (h, pos2(e.x, e.y), e.width));
                 self.text_press = Some(TextPress {
-                    hit: if resize.is_some() { None } else { self.text_at(&view.layout, c) },
+                    hit: if handle.is_some() { None } else { self.text_at(&view.layout, c) },
                     start: c,
                     now: c,
                     page: view.layout.page_at(c),
                     moved: false,
-                    resize,
+                    handle,
                 });
             }
         } else if (resp.dragged() || resp.drag_stopped())
@@ -212,15 +230,22 @@ impl InkApp {
                 tp.moved = true;
             }
             // Resizing: the editor wraps the text at the new width at once.
-            if let (Some((side, x0, w0)), Some(e)) = (tp.resize, self.edit.as_mut()) {
-                let dx = tp.now.x - tp.start.x;
+            // Moving: the box follows, kept on its page.
+            if let (Some((handle, at, w0)), Some(e)) = (tp.handle, self.edit.as_mut()) {
+                let d = tp.now - tp.start;
+                let x0 = at.x;
                 let room = (view.layout.page_w - x0).max(MIN_WIDTH);
-                match side {
-                    Side::Right => e.width = (w0 + dx).clamp(MIN_WIDTH, room),
-                    Side::Left => {
+                match handle {
+                    EditHandle::Right => e.width = (w0 + d.x).clamp(MIN_WIDTH, room),
+                    EditHandle::Left => {
                         let right = x0 + w0;
-                        e.x = (x0 + dx).clamp(0.0, (right - MIN_WIDTH).max(0.0));
+                        e.x = (x0 + d.x).clamp(0.0, (right - MIN_WIDTH).max(0.0));
                         e.width = right - e.x;
+                    }
+                    EditHandle::Move => {
+                        let h = e.last_h / view.scale;
+                        e.x = (at.x + d.x).clamp(0.0, (view.layout.page_w - e.width).max(0.0));
+                        e.y = (at.y + d.y).clamp(0.0, (view.layout.page_h - h).max(0.0));
                     }
                 }
             }
@@ -232,13 +257,17 @@ impl InkApp {
         }
 
         // The cursor tells what a press does: resize, move a box, or type.
+        let handle_icon = |h: EditHandle| match h {
+            EditHandle::Move => CursorIcon::Move,
+            EditHandle::Left | EditHandle::Right => CursorIcon::ResizeHorizontal,
+        };
         let icon = match &self.text_press {
-            Some(tp) if tp.resize.is_some() => Some(CursorIcon::ResizeHorizontal),
+            Some(TextPress { handle: Some((h, ..)), .. }) => Some(handle_icon(*h)),
             Some(tp) if tp.hit.is_some() && tp.moved => Some(CursorIcon::Move),
             _ => resp.hover_pos().and_then(|p| {
                 let c = view.screen_to_content(p);
-                if self.edit_handle_at(view, p).is_some() {
-                    Some(CursorIcon::ResizeHorizontal)
+                if let Some(h) = self.edit_handle_at(view, p) {
+                    Some(handle_icon(h))
                 } else if self.text_at(&view.layout, c).is_some() {
                     Some(CursorIcon::Move)
                 } else {
@@ -252,7 +281,7 @@ impl InkApp {
     }
 
     fn finish_text_press(&mut self, tp: TextPress, layout: Layout) {
-        if tp.resize.is_some() {
+        if tp.handle.is_some() {
             // Already applied to the box being edited.
             return;
         }

@@ -711,7 +711,7 @@ impl InkApp {
         // Rubber band while dragging out a new text box.
         if let Some(tp) = &self.text_press
             && tp.hit.is_none()
-            && tp.resize.is_none()
+            && tp.handle.is_none()
             && tp.moved
             && tp.page.is_some()
         {
@@ -737,9 +737,17 @@ impl InkApp {
                 let handle = Rect::from_center_size(pos2(x, frame.center().y), size);
                 painter.rect(handle, 3.0, Color32::WHITE, egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
             }
+            // The move knob above it, like the selection's rotate knob.
+            let knob = super::text::move_knob(frame);
+            painter.line_segment([frame.center_top(), knob], egui::Stroke::new(1.5, blue));
+            painter.circle(knob, 6.0, Color32::WHITE, egui::Stroke::new(1.5, blue));
 
-            // The editor: the frame without its room for the outline.
-            let editor = frame.shrink(2.0);
+            // The editor: the frame without its room for the outline, nor its
+            // margin on the sides, where the side handles take the presses
+            // (it would get them first). The text stays where it was.
+            let side_margin = f32::from(EDIT_MARGIN.left);
+            let editor = frame.shrink2(vec2(2.0 + side_margin, 2.0));
+            let margin = egui::Margin { left: 0, right: 0, ..EDIT_MARGIN };
 
             let id = Id::new(("text_edit", e.id));
             let color = Color32::from_rgb(e.color[0], e.color[1], e.color[2]);
@@ -759,8 +767,8 @@ impl InkApp {
                 .desired_width(editor.width())
                 .desired_rows(1)
                 // No background; the text wraps at the box's width.
-                .margin(EDIT_MARGIN)
-                .frame(egui::Frame::NONE.inner_margin(EDIT_MARGIN))
+                .margin(margin)
+                .frame(egui::Frame::NONE.inner_margin(margin))
                 .lock_focus(true);
             let max_rect = Rect::from_min_size(editor.min, vec2(editor.width(), 10.0));
             let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(max_rect), |ui| ui.add(widget)).inner;

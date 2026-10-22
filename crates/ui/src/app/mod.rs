@@ -142,9 +142,9 @@ struct TextPress {
     now: Pos2,
     page: Option<u32>,
     moved: bool,
-    /// A handle of the box being edited: its side, and the box's `x` and
+    /// A handle of the box being edited, and the box's top-left corner and
     /// width when the press started.
-    resize: Option<(text::Side, f32, f32)>,
+    handle: Option<(text::EditHandle, Pos2, f32)>,
 }
 
 /// Strokes, text boxes and pictures picked with the select tool (all on one

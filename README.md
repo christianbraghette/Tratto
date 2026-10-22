@@ -55,7 +55,8 @@ It runs natively on Windows, macOS and Linux, built with Rust,
   ink, and pick a colour in the toolbar to recolour it
 - Cut, copy and paste what is selected, within a note or into another one;
   other apps get the copied text, or a picture of the copied ink
-- Text boxes for typed notes
+- Text boxes for typed notes; while typing, drag a side of the box to change
+  its width, or the knob above it to move it
 - A pointer tool to move around a note as in the PDF reader: drag to scroll,
   tap to turn pages or follow the links of the PDF it is written on;
   its laser pointer, to present, leaves a fading red trail where you drag
@@ -278,8 +279,11 @@ can be written on it, and it is not copied into the library.
   quarter of the page, or press `Left` / `Right`, `Space` / `Shift+Space` or
   `Page Up` / `Page Down`, to turn the page. A page taller than the window is
   shown in steps first, so nothing is skipped.
-- **Contents** (in the bar, or in the sidebar) shows the PDF's outline;
-  a click goes there, and the part being read is marked.
+- **Contents** (in the sidebar) shows the PDF's outline; a click goes
+  there, and the part being read is marked.
+- The **laser pointer** in the bar, to present: with it on, drag on the page
+  to leave a fading red trail (dragging no longer scrolls; a finger still
+  does).
 - Links in the PDF can be tapped: to another page, or a web address (opened
   in the browser). **Back** (`Alt+Left` or `Backspace`) returns to where you
   were.

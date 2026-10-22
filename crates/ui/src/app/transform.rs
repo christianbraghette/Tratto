@@ -253,12 +253,76 @@ impl InkApp {
         let icon = match dragging.or_else(|| hover.and_then(|p| self.handle_at(view, p))) {
             Some(Handle::Corner(0 | 2)) => CursorIcon::ResizeNwSe,
             Some(Handle::Corner(_)) => CursorIcon::ResizeNeSw,
-            Some(Handle::Rotate) if dragging.is_some() => CursorIcon::Grabbing,
-            Some(Handle::Rotate) => CursorIcon::Grab,
+            Some(Handle::Rotate) => {
+                // No system cursor says "rotate": a drawn one.
+                painter.ctx().set_cursor_image(Some(rotate_cursor().clone()));
+                return;
+            }
             None => return,
         };
         painter.ctx().set_cursor_icon(icon);
     }
+}
+
+/// The cursor over the rotate handle: a circular arrow, black with a white
+/// outline (seen on the paper and on the dark desk), made once. Its
+/// hotspot is the circle's centre.
+fn rotate_cursor() -> &'static egui::CustomCursorImage {
+    static CURSOR: std::sync::OnceLock<egui::CustomCursorImage> = std::sync::OnceLock::new();
+    CURSOR.get_or_init(|| {
+        const SIZE: usize = 32;
+        const SAMPLES: usize = 4;
+        let center = egui::pos2(16.0, 16.0);
+        let radius = 8.0;
+        // The arc goes clockwise (y down) from `from` to `to`, leaving a gap
+        // at the top right, and ends in the arrow head.
+        let (from, to) = (-30f32.to_radians(), 240f32.to_radians());
+        let on_arc = |p: Pos2| {
+            let d = p - center;
+            let a = d.y.atan2(d.x);
+            let a = if a < from { a + std::f32::consts::TAU } else { a };
+            (a <= to, (d.length() - radius).abs())
+        };
+        let end = center + radius * vec2(to.cos(), to.sin());
+        let (along, out) = (vec2(-to.sin(), to.cos()), vec2(to.cos(), to.sin()));
+        // The head: a triangle pointing along the arc, `grow` outlines it.
+        let in_head = |p: Pos2, grow: f32| {
+            let tip = end + along * (5.0 + grow);
+            let (b1, b2) = (end - along * grow + out * (4.5 + grow), end - along * grow - out * (4.5 + grow));
+            let side = |a: Pos2, b: Pos2| (b - a).x * (p - a).y - (b - a).y * (p - a).x;
+            let (s1, s2, s3) = (side(tip, b1), side(b1, b2), side(b2, tip));
+            (s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)
+        };
+        let mut rgba = vec![0u8; SIZE * SIZE * 4];
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let (mut core, mut outline) = (0.0, 0.0);
+                for sy in 0..SAMPLES {
+                    for sx in 0..SAMPLES {
+                        let p = egui::pos2(
+                            x as f32 + (sx as f32 + 0.5) / SAMPLES as f32,
+                            y as f32 + (sy as f32 + 0.5) / SAMPLES as f32,
+                        );
+                        let (along_arc, off) = on_arc(p);
+                        if along_arc && off <= 1.1 || in_head(p, 0.0) {
+                            core += 1.0;
+                            outline += 1.0;
+                        } else if along_arc && off <= 2.6 || in_head(p, 1.6) {
+                            outline += 1.0;
+                        }
+                    }
+                }
+                let n = (SAMPLES * SAMPLES) as f32;
+                let (core, outline) = (core / n, outline / n);
+                if outline > 0.0 {
+                    let grey = (255.0 * (1.0 - core / outline)).round() as u8;
+                    let i = (y * SIZE + x) * 4;
+                    rgba[i..i + 4].copy_from_slice(&[grey, grey, grey, (255.0 * outline).round() as u8]);
+                }
+            }
+        }
+        egui::CustomCursorImage { rgba: rgba.into(), size: [SIZE as u16; 2], hotspot: [16, 16] }
+    })
 }
 
 /// Where the rotate handle of a selection whose box is `rect` (screen) is.
