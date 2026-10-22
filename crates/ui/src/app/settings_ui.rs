@@ -3,7 +3,7 @@
 
 //! The two settings views:
 //!
-//! * **Note settings** (the gear button, left panel): what is stored in the
+//! * **Note settings** (the gear button, sidebar): what is stored in the
 //!   open note (paper, pages, title) and actions on it (save, export).
 //! * **Settings** (File > Settings, `Ctrl+,`): global preferences, in a
 //!   floating window, on the library screen too.
@@ -16,10 +16,10 @@ use tratto_core::model::{PAPERS, PageKind, paper_label};
 use super::InkApp;
 use super::library_ui::{Dialog, location, when};
 use crate::file_assoc;
-use crate::settings::{BatterySaver, EraserMode, ToolbarPosition};
+use crate::settings::{BatterySaver, EraserMode, SidebarSide, ToolbarPosition};
 use crate::theme::{self, ThemeMode, color, space};
 
-/// Note settings in the left panel: default width and resize range.
+/// Note settings in the sidebar: default width and resize range.
 const NOTE_WIDTH: f32 = 340.0;
 
 // ------------------------------------------------------------- helpers
@@ -82,15 +82,16 @@ fn paper_rows(ui: &mut Ui, id: &str, width: &mut f32, height: &mut f32, kind: &m
 impl InkApp {
     // ----------------------------------------------------- note settings
 
-    /// The note settings view of the left panel.
+    /// The note settings view of the sidebar.
     pub(super) fn note_settings_view(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("left_panel_settings")
+        let side = self.settings.sidebar_side;
+        Self::side_panel(side, "sidebar_settings")
             .resizable(false)
             .exact_size(NOTE_WIDTH)
             .show_separator_line(false)
             .frame(Self::view_frame(true))
             .show(ui, |ui| {
-                Self::view_divider(ui, true);
+                Self::view_divider(ui, true, side);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.note_settings(ui));
             });
     }
@@ -247,6 +248,12 @@ impl InkApp {
                 for (pos, label) in [(ToolbarPosition::Top, "Top"), (ToolbarPosition::Bottom, "Bottom")] {
                     ui.selectable_value(&mut s.toolbar_position, pos, label);
                 }
+            });
+            row(ui, "Sidebar", |ui| {
+                for (side, label) in [(SidebarSide::Left, "Left"), (SidebarSide::Right, "Right")] {
+                    ui.selectable_value(&mut s.sidebar_side, side, label);
+                }
+                ui.label(theme::muted("Right: out from under a left hand"));
             });
         });
 
@@ -421,8 +428,8 @@ impl InkApp {
         if reset {
             let old = std::mem::take(&mut self.settings);
             self.settings.library_root = old.library_root;
-            self.settings.left_panel = old.left_panel;
-            self.settings.library_panel_open = old.library_panel_open;
+            self.settings.sidebar = old.sidebar;
+            self.settings.sidebar_last = old.sidebar_last;
         }
     }
 }

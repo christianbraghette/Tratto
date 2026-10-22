@@ -5,9 +5,9 @@
 //!
 //! * the tools (tools, styles, undo / redo) centred on the top or bottom edge;
 //!   for a PDF in the reader the reading bar (import, pages, zoom) in their place
-//! * library in a notch in the top-right corner
-//! * pages panel toggle and settings in notches in the top-left and
-//!   bottom-left corners, which become part of the pages panel when it is open
+//! * the sidebar (notebook, pages, contents, search) and the note settings
+//!   in notches in the top and bottom corners on the sidebar's side, which
+//!   become part of the sidebar when it is open
 //!
 //! Buttons show Phosphor icons with the name as a tooltip. Colours and sizes
 //! come from [`crate::theme`].
@@ -18,7 +18,7 @@ use eframe::egui::{self, Align2, Color32, Margin, Order, Pos2, Rect, Sense, Shap
 use egui_phosphor::regular as icon;
 
 use crate::scrollbar;
-use crate::settings::{EraserMode, LeftPanel, SelectMode, Settings, ToolStyle, ToolbarPosition, ZoomMode};
+use crate::settings::{EraserMode, SelectMode, Settings, Sidebar, SidebarSide, ToolStyle, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color, radius, space};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,8 +148,8 @@ pub fn show_reader(
 /// previous, the current one (to type or drag), next.
 fn page_controls(ui: &mut egui::Ui, settings: &mut Settings, nav: &Navigation) -> Option<ToolbarEvent> {
     let mut event = None;
-    if nav.contents && outline_button(ui, settings.left_panel == LeftPanel::Outline) {
-        settings.left_panel.toggle(LeftPanel::Outline);
+    if nav.contents && outline_button(ui, settings.sidebar == Sidebar::Outline) {
+        settings.sidebar.toggle(Sidebar::Outline);
     }
     if nav.can_go_back && ui.button(theme::icon(icon::ARROW_BEND_UP_LEFT)).on_hover_text("Back (Alt+Left)").clicked() {
         event = Some(ToolbarEvent::Back);
@@ -247,24 +247,23 @@ fn edge_notch_shape(rect: Rect, at: Edge, fill: Color32) -> Shape {
     Shape::convex_polygon(clockwise(pts), fill, Stroke::NONE)
 }
 
-/// The editor's corner buttons:
+/// The editor's corner buttons, on the sidebar's side:
 ///
-/// * library panel toggle in a notch in the top-right corner (against the
-///   scrollbar); it becomes part of the library panel when that is open
-/// * pages panel toggle in a notch in the top-left corner
-/// * settings in a notch in the bottom-left corner
+/// * a notch in the top corner that shows the sidebar again, with the view
+///   it last showed
+/// * note settings in a notch in the bottom corner
 ///
-/// While the pages panel is open, the pages and settings buttons live in the
-/// panel instead (see [`pages_button`], [`settings_button`]) at the same
-/// positions, and the panel gets the same concave joins as the notches, so it
-/// reads as the two notches grown into a sidebar.
+/// While the sidebar is open, its buttons live in its strip instead (see
+/// [`pages_button`], [`settings_button`]) at the same positions, and the
+/// sidebar gets the same concave joins as the notches, so it reads as the
+/// two notches grown into a sidebar.
 ///
-/// Call with the root `ui` after the side panels: what is left of it is the
+/// Call with the root `ui` after the sidebar: what is left of it is the
 /// canvas area then.
 /// `note_settings`: the settings notch is shown (not for a PDF in the
-/// reader); `library`: the library notch (not in a reader-only window). `bottom_inset` keeps the bottom notch above the horizontal
+/// reader). `bottom_inset` keeps the bottom notch above the horizontal
 /// scrollbar.
-pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool, library: bool, bottom_inset: f32) {
+pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool, bottom_inset: f32) {
     let ctx = ui.ctx();
     let free = ui.available_rect_before_wrap();
 
@@ -272,54 +271,67 @@ pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool,
     // foreground areas).
     let joins = ctx.layer_painter(egui::LayerId::new(Order::Middle, egui::Id::new("panel_joins")));
 
-    // Against the vertical scrollbar, which always occupies the right edge of
-    // the canvas (and, being the same surface, joins the library panel).
-    let right = pos2(free.right() - scrollbar::THICKNESS, free.top());
-    if library && settings.library_panel_open {
-        joins.add(fillet(right, -1.0, 1.0, color::chrome()));
-        joins.add(fillet(pos2(right.x, free.bottom() - bottom_inset), -1.0, -1.0, color::chrome()));
-    } else if library {
-        notch(ctx, "corner_notch_library", Corner::TopRight, right, |ui| {
-            library_button(ui, &mut settings.library_panel_open);
-        });
-    }
-
-    if settings.left_panel != LeftPanel::Closed {
-        // Join the panel to the title bar and to the bottom edge.
-        joins.add(fillet(free.left_top(), 1.0, 1.0, color::chrome()));
-        joins.add(fillet(free.left_bottom(), 1.0, -1.0, color::chrome()));
+    // On the right, against the vertical scrollbar, which always occupies the
+    // right edge of the canvas (and, being the same surface, joins the
+    // sidebar).
+    let right = settings.sidebar_side == SidebarSide::Right;
+    let (top, bottom, top_at, bottom_at) = if right {
+        let x = free.right() - scrollbar::THICKNESS;
+        (pos2(x, free.top()), pos2(x, free.bottom() - bottom_inset), Corner::TopRight, Corner::BottomRight)
     } else {
-        notch(ctx, "corner_notch_pages", Corner::TopLeft, free.left_top(), |ui| {
-            if pages_button(ui, false) {
-                settings.left_panel = LeftPanel::Pages;
+        (free.left_top(), pos2(free.left(), free.bottom() - bottom_inset), Corner::TopLeft, Corner::BottomLeft)
+    };
+
+    if settings.sidebar != Sidebar::Closed {
+        // Join the sidebar to the title bar and to the bottom edge.
+        let sx = if right { -1.0 } else { 1.0 };
+        joins.add(fillet(top, sx, 1.0, color::chrome()));
+        joins.add(fillet(if right { bottom } else { free.left_bottom() }, sx, -1.0, color::chrome()));
+    } else {
+        notch(ctx, "corner_notch_sidebar", top_at, top, |ui| {
+            if sidebar_button(ui, settings.sidebar_last) {
+                settings.sidebar = settings.sidebar_last;
             }
         });
         if note_settings {
-            let bottom_left = pos2(free.left(), free.bottom() - bottom_inset);
-            notch(ctx, "corner_notch_settings", Corner::BottomLeft, bottom_left, |ui| {
+            notch(ctx, "corner_notch_settings", bottom_at, bottom, |ui| {
                 if settings_button(ui, false) {
-                    settings.left_panel = LeftPanel::Settings;
+                    settings.sidebar = Sidebar::Settings;
                 }
             });
         }
     }
 }
 
-/// Width of the left panel's button strip: a corner notch's width, so its
+/// Width of the sidebar's button strip: a corner notch's width, so its
 /// buttons sit exactly where they are in the notches.
 pub const STRIP_WIDTH: f32 = 2.0 * space::S + 32.0;
 
-/// Toggles the library panel (in its notch, or in the panel header).
-pub fn library_button(ui: &mut egui::Ui, open: &mut bool) {
-    let tip = if *open { "Hide the library" } else { "Library: your notebooks and notes" };
-    ui.toggle_value(open, theme::icon(icon::BOOKS)).on_hover_text(tip);
+/// Shows the closed sidebar again (in its notch), with `last`, the view it
+/// last showed. Returns true when clicked.
+pub fn sidebar_button(ui: &mut egui::Ui, last: Sidebar) -> bool {
+    let view = match last {
+        Sidebar::Notebook => "the notebook",
+        Sidebar::Outline => "the contents",
+        Sidebar::Search => "the search",
+        Sidebar::Pages | Sidebar::Settings | Sidebar::Closed => "the pages",
+    };
+    let tip = format!("Show the sidebar ({view})");
+    ui.add(egui::Button::new(theme::icon(icon::SIDEBAR_SIMPLE))).on_hover_text(tip).clicked()
 }
 
-/// Toggles the pages panel (in its notch, or in the panel header).
-/// Returns true when clicked; `shown` highlights it.
+/// Toggles the notebook view of the sidebar. Returns true when clicked;
+/// `shown` highlights it.
+pub fn notebook_button(ui: &mut egui::Ui, shown: bool) -> bool {
+    let tip = if shown { "Hide the notebook" } else { "Notebook: its sections and notes" };
+    ui.add(egui::Button::selectable(shown, theme::icon(icon::BOOKS))).on_hover_text(tip).clicked()
+}
+
+/// Toggles the pages view of the sidebar. Returns true when clicked;
+/// `shown` highlights it.
 pub fn pages_button(ui: &mut egui::Ui, shown: bool) -> bool {
     let tip = if shown { "Hide pages" } else { "Pages: jump, reorder, delete" };
-    ui.add(egui::Button::selectable(shown, theme::icon(icon::SIDEBAR_SIMPLE))).on_hover_text(tip).clicked()
+    ui.add(egui::Button::selectable(shown, theme::icon(icon::FILES))).on_hover_text(tip).clicked()
 }
 
 /// Toggles the outline (table of contents) of a note written on a PDF.
@@ -343,7 +355,7 @@ pub fn settings_button(ui: &mut egui::Ui, shown: bool) -> bool {
 }
 
 /// Margins around the buttons of a notch attached to the top edge (`top`) or
-/// to the bottom edge. The pages panel uses the same ones, so its buttons sit
+/// to the bottom edge. The sidebar uses the same ones, so its buttons sit
 /// exactly where the notch buttons were.
 pub fn notch_margin(top: bool) -> Margin {
     // A little more room on the attached side keeps the buttons clear of the
@@ -357,7 +369,7 @@ pub fn notch_margin(top: bool) -> Margin {
     }
 }
 
-/// Button style of the notches, for the same buttons inside the pages panel.
+/// Button style of the notches, for the same buttons inside the sidebar.
 pub fn notch_buttons_style(ui: &mut egui::Ui) {
     tool_buttons_style(ui);
 }
@@ -368,6 +380,7 @@ enum Corner {
     TopLeft,
     TopRight,
     BottomLeft,
+    BottomRight,
 }
 
 impl Corner {
@@ -377,6 +390,7 @@ impl Corner {
             Corner::TopLeft => (1.0, 1.0),
             Corner::TopRight => (-1.0, 1.0),
             Corner::BottomLeft => (1.0, -1.0),
+            Corner::BottomRight => (-1.0, -1.0),
         }
     }
 }
@@ -396,12 +410,13 @@ fn notch(ctx: &egui::Context, id: &str, at: Corner, corner: Pos2, add_contents: 
         Corner::TopLeft => Align2::LEFT_TOP,
         Corner::TopRight => Align2::RIGHT_TOP,
         Corner::BottomLeft => Align2::LEFT_BOTTOM,
+        Corner::BottomRight => Align2::RIGHT_BOTTOM,
     };
     egui::Area::new(egui::Id::new(id)).order(Order::Foreground).pivot(pivot).fixed_pos(corner).show(ctx, |ui| {
         // Reserve the background slot first so it is painted below the buttons.
         let background = ui.painter().add(Shape::Noop);
         let rect = egui::Frame::NONE
-            .inner_margin(notch_margin(at != Corner::BottomLeft))
+            .inner_margin(notch_margin(matches!(at, Corner::TopLeft | Corner::TopRight)))
             .show(ui, |ui| {
                 tool_buttons_style(ui);
                 ui.horizontal(add_contents);

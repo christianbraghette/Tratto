@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The notebook panel of the editor, on the right: the sections and notes of
-//! the open note's notebook, to switch notes without leaving the editor.
+//! The notebook view of the editor's sidebar: the sections and notes of the
+//! open note's notebook, to switch notes without leaving the editor.
 //!
 //! * the header is the notebook's name, editable in place (renames the
 //!   notebook folder; the open note moves with it)
@@ -12,10 +12,6 @@
 //! * drag a note within its group to reorder it (saved per folder; the
 //!   default order is the order of creation)
 //! * a quick note (outside any notebook) shows the quick notes instead
-//!
-//! Like the pages panel it is a corner notch (top right) grown into a
-//! sidebar: same surface, the library button at the same position, and the
-//! concave joins drawn by `toolbar::show_corners`.
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +24,6 @@ use tratto_core::library::{self, NoteInfo, NotebookInfo, SectionInfo, TrashItem}
 use super::InkApp;
 use super::library_ui::{Act, Dialog, when};
 use super::menus::{button_menu, entry};
-use crate::scrollbar;
 use crate::theme::{self, color, radius, size, space};
 use crate::toolbar;
 
@@ -57,12 +52,9 @@ pub(super) struct NoteDrag {
 }
 
 impl InkApp {
-    pub(super) fn library_panel(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn notebook_view(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
-        if !self.settings.library_panel_open {
-            return;
-        }
-        let top = toolbar::notch_margin(true);
+        let side = self.settings.sidebar_side;
         let current = self.note_path.clone();
         let notebook: Option<NotebookInfo> =
             current.as_ref().and_then(|p| self.library.notebooks.iter().find(|nb| p.starts_with(&nb.path))).cloned();
@@ -74,31 +66,22 @@ impl InkApp {
             name = notebook.as_ref().map(|nb| nb.name.clone()).unwrap_or_default();
         }
         let mut name_resp = None;
-        let mut open = true;
         let mut picks: Vec<Pick> = Vec::new();
         let mut drag = self.note_drag.take();
         let mut drop_to: Option<(PathBuf, String)> = None;
         let root = self.library_root();
 
-        egui::Panel::right("library_panel")
+        Self::side_panel(side, "sidebar_notebook")
             .resizable(true)
             .default_size(PANEL_WIDTH)
             .size_range(PANEL_WIDTHS)
             .show_separator_line(false)
-            // The canvas scrollbar (same surface) sits just left of the panel,
-            // so the extra right margin keeps the library button exactly
-            // where it is in the notch, and the padding visually symmetric.
-            .frame(egui::Frame::NONE.fill(color::chrome()).inner_margin(egui::Margin {
-                left: top.left,
-                right: top.right + scrollbar::THICKNESS as i8,
-                top: top.top,
-                bottom: space::S as i8,
-            }))
+            .frame(Self::view_frame(false))
             .show(ui, |ui| {
+                Self::view_divider(ui, false, side);
                 ui.horizontal(|ui| {
                     toolbar::notch_buttons_style(ui);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        toolbar::library_button(ui, &mut open);
                         if ui
                             .button(theme::icon(icon::ARROW_SQUARE_OUT))
                             .on_hover_text("Open the library screen (Ctrl+W)")
@@ -231,9 +214,6 @@ impl InkApp {
         }
         self.note_drag = drag;
 
-        if !open {
-            self.settings.library_panel_open = false;
-        }
         for pick in picks {
             match pick {
                 Pick::Open(path) => {

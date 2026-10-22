@@ -63,7 +63,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 **Pages**
 - A3, A4, A5, Letter, Legal or custom paper sizes, in portrait or landscape
 - Blank, ruled or grid paper with adjustable line spacing
-- A page panel with previews for navigating, reordering, inserting and deleting pages
+- A sidebar (left, or right for left-handed writers) with the notebook, page previews for navigating, reordering, inserting and deleting pages, the PDF's contents and search
 - Zoom presets, plus zooming with Ctrl + wheel or a touchpad pinch
 - Smooth scrolling: wheel notches glide and speed up when you spin the wheel
   quickly, a pan flicked on the grey area keeps moving, and page jumps ease
@@ -74,8 +74,8 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 - Dark or light interface, or the same as the system (Settings > Appearance)
 - Context menu on right-click, adapted to what is under the pointer
 - Icon buttons, with names and shortcuts in tooltips
-- Controls in notches attached to the canvas edges; resizable page and notebook panels
-- Rename the note from the title bar and the notebook from the notebook panel
+- Controls in notches attached to the canvas edges; each sidebar view resizable
+- Rename the note from the title bar and the notebook from the sidebar
 
 **Organisation**
 - A library of notebooks (with colour covers), sections and quick notes
@@ -156,35 +156,41 @@ buttons are icons; hover over one to see its name.
 | Where | Buttons |
 | --- | --- |
 | Top-centre notch (or bottom, see **View**) | Pointer, Pen, Highlighter, Eraser, Select, Text, the active tool's colours and size (for the pointer: contents, Back and the pages), Undo, Redo, zoom out / zoom level / zoom in |
-| Top-left notch | **Pages** (page panel) |
+| Top-left notch | **Sidebar** (shows it again, with the view it last showed) |
 | Bottom-left notch | **Note settings** (paper, pages, export) |
-| Top-right notch | **Library** (toggle the notebook panel) |
+
+The corner notches and the sidebar are on the left by default. Left-handed
+writers can move them to the right, out from under their hand (**View >
+Sidebar on the right**, or **Settings > Appearance > Sidebar**).
 
 If the window is too narrow for the tool notch to fit between the corner
 notches, it moves to the other edge.
 
-The corner notches grow into side panels. Both panels can be resized by
-dragging their inner edge, and both have a context menu (right-click):
+The corner notches grow into a sidebar, like the one in VS Code. A strip
+along the window edge joins the two notches, with a button per view at the
+top (**Notebook**, **Pages**, **Contents** for a note written on a PDF, and
+**Search**) and **Note settings** at the bottom, in the same places as their
+notches. Click a button to switch view, or the highlighted one to close the
+sidebar; closed, only the notches are left, for writing without distraction.
+Each view keeps its own width (drag its inner edge), and has a context menu
+(right-click):
 
-- **Left panel**: a strip along its left edge joins the two left notches,
-  with **Pages** at the top and **Settings** at the bottom, in the same places
-  as their notches. Next to it, the panel shows either the page previews (drag
-  to reorder; right-click a page to go to it, insert a page before or after
-  it, copy or cut it, paste copied pages after it, or delete it) or the note
-  settings. Click the other button to switch, or the
-  highlighted one to close the panel. Each view keeps its own width. The page
-  list follows the page you are on, and the dashed tile at its end adds a page.
-- **Notebook panel** (right): the sections and notes of the open note's
-  notebook, with the open note highlighted. Click a note to switch to it (the
-  current one is saved first). The header is the notebook's name: click it to
-  rename the notebook. Right-click a note to open, rename, duplicate or delete
-  it, a section to add a note to it, rename or delete it, and the empty space
-  to add a note or a section. A quick note (outside any notebook) shows the
-  quick notes instead. Each group shows how many notes it holds; the dashed
-  tile adds a note next to the open one. Notes are listed in the order they
-  were created; drag a note within its group to reorder it (the order is saved
-  in a hidden `.order` file in the folder, and the library screen uses it
-  too). The button next to **Library** opens the full library screen.
+- **Notebook**: the sections and notes of the open note's notebook, with the
+  open note highlighted. Click a note to switch to it (the current one is
+  saved first). The header is the notebook's name: click it to rename the
+  notebook. Right-click a note to open, rename, duplicate or delete it, a
+  section to add a note to it, rename or delete it, and the empty space to add
+  a note or a section. A quick note (outside any notebook) shows the quick
+  notes instead. Each group shows how many notes it holds; the dashed tile
+  adds a note next to the open one. Notes are listed in the order they were
+  created; drag a note within its group to reorder it (the order is saved in a
+  hidden `.order` file in the folder, and the library screen uses it too). The
+  button in the header opens the full library screen.
+- **Pages**: the page previews (drag to reorder; right-click a page to go to
+  it, insert a page before or after it, copy or cut it, paste copied pages
+  after it, or delete it). The list follows the page you are on, and the
+  dashed tile at its end adds a page.
+- **Note settings**: see **Settings** below.
 
 The note's title is shown in the middle of the title bar. Click it to rename
 the note; Enter or clicking elsewhere saves, Escape cancels.
@@ -196,12 +202,12 @@ mouse wheel or a touchpad. Flick the drag and the view keeps gliding.
 
 There are two kinds of settings:
 
-- **Note settings** (the gear button in the editor's bottom-left corner) are
+- **Note settings** (the gear button in the editor's bottom corner) are
   stored in the note: paper size and orientation, paper style and line
   spacing, and the pages. They also show when the note was created and
   modified and where it is, with **Save now** and **Export PDF**.
 - **Settings** (**File > Settings**, `Ctrl+,`, also on the library screen)
-  apply to every note: interface size, title bar and toolbar position; smooth
+  apply to every note: interface size, title bar, toolbar position and sidebar side; smooth
   scrolling and scroll speed; pen tip prediction, pressure sensitivity, the
   pen side button and the eraser size; the paper of new notes; the autosave
   delay; the library folder and the number of recent notes. **Reset to defaults** restores them (the library
@@ -249,7 +255,7 @@ can be written on it, and it is not copied into the library.
   quarter of the page, or press `Left` / `Right`, `Space` / `Shift+Space` or
   `Page Up` / `Page Down`, to turn the page. A page taller than the window is
   shown in steps first, so nothing is skipped.
-- **Contents** (in the bar, or in the left panel) shows the PDF's outline;
+- **Contents** (in the bar, or in the sidebar) shows the PDF's outline;
   a click goes there, and the part being read is marked.
 - Links in the PDF can be tapped: to another page, or a web address (opened
   in the browser). **Back** (`Alt+Left` or `Backspace`) returns to where you
@@ -272,7 +278,7 @@ opens the export dialog, with a live preview of the exported pages:
 
 - **Export**: this note (all pages, the current one, or a range), every note of
   its section, or a selection of the notebook's notes. Several notes go into
-  one PDF, in the notebook panel's order, with a bookmark per note
+  one PDF, in the notebook view's order, with a bookmark per note
 - **Content**: ruled lines and grid (not over a PDF's pages), highlighter
   strokes, text boxes, and for notes written on a PDF its pages under the ink
 - **Ink colours**: as drawn, black (highlighter in grey) or grayscale

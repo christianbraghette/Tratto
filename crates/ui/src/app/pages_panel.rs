@@ -1,15 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The left panel: its strip of view buttons and the pages view (previews to
-//! jump to, reorder and delete pages).
+//! The sidebar, on the left or (for left-handed writers) on the right: its
+//! strip of view buttons and the pages view (previews to jump to, reorder and
+//! delete pages).
 
 use eframe::egui::{self, Align2, Color32, Id, Rect, Sense, pos2, vec2};
 
 use tratto_core::history::Action;
 
 use crate::render;
-use crate::settings::LeftPanel;
+use crate::scrollbar;
+use crate::settings::{Sidebar, SidebarSide};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar;
 use crate::view::{Layout, MARGIN};
@@ -17,7 +19,7 @@ use crate::view::{Layout, MARGIN};
 use super::InkApp;
 use super::menus;
 
-/// Default width of the pages view (points); every view of the left panel
+/// Default width of the pages view (points); every view of the sidebar
 /// remembers its own width.
 const PAGES_WIDTH: f32 = 164.0;
 /// The narrowest width still fits the "Add page" tile's label.
@@ -39,74 +41,102 @@ impl InkApp {
         self.toast(format!("Page {} deleted (Ctrl+Z restores it)", index + 1));
     }
 
-    /// Collapsible left panel: previews of all pages. Click = jump to the page,
-    /// drag = reorder, "x" (on hover) = delete. Everything is undoable.
-    /// The left panel: a strip with the pages and settings buttons (the two
-    /// left notches joined), and the shown view to its right. Each view is
+    /// The sidebar: a strip of view buttons (the two corner notches joined)
+    /// along the window edge, and the shown view next to it. Each view is
     /// its own resizable panel, so each keeps its own width.
-    pub(super) fn left_panel(&mut self, ui: &mut egui::Ui) {
-        let view = self.settings.left_panel;
-        if view != LeftPanel::Pages {
+    pub(super) fn sidebar(&mut self, ui: &mut egui::Ui) {
+        let view = self.settings.sidebar;
+        if view != Sidebar::Pages {
             self.page_drag = None;
         }
-        // Only a note written on a PDF has an outline.
+        // Only a note written on a PDF has an outline; a reader-only window
+        // has no library.
         let on_pdf = self.doc.pdf.is_some();
-        let wrong_view = view == LeftPanel::Outline && !on_pdf || view == LeftPanel::Settings && self.reading();
+        let library = self.standalone.is_none();
+        let wrong_view = view == Sidebar::Outline && !on_pdf
+            || view == Sidebar::Settings && self.reading()
+            || view == Sidebar::Notebook && !library;
         if wrong_view {
-            self.settings.left_panel = LeftPanel::Pages;
-            return self.left_panel(ui);
+            self.settings.sidebar = Sidebar::Pages;
+            return self.sidebar(ui);
+        }
+        let last = self.settings.sidebar_last;
+        if last == Sidebar::Outline && !on_pdf || last == Sidebar::Notebook && !library {
+            self.settings.sidebar_last = Sidebar::Pages;
         }
         let note_settings = !self.reading();
-        if view == LeftPanel::Closed {
+        if view == Sidebar::Closed {
             return;
         }
+        if view != Sidebar::Settings {
+            self.settings.sidebar_last = view;
+        }
         let (top, bottom) = (toolbar::notch_margin(true), toolbar::notch_margin(false));
+        // On the right the canvas scrollbar (same surface) sits next to the
+        // sidebar, so the extra margin keeps the buttons exactly where they
+        // are in the notches.
+        let (width, outer) = match self.settings.sidebar_side {
+            SidebarSide::Left => (toolbar::STRIP_WIDTH, 0),
+            SidebarSide::Right => (toolbar::STRIP_WIDTH + scrollbar::THICKNESS, scrollbar::THICKNESS as i8),
+        };
         let mut clicked = None;
-        egui::Panel::left("left_panel_strip")
+        Self::side_panel(self.settings.sidebar_side, "sidebar_strip")
             .resizable(false)
-            .exact_size(toolbar::STRIP_WIDTH)
+            .exact_size(width)
             .show_separator_line(false)
             .frame(egui::Frame::NONE.fill(color::chrome()).inner_margin(egui::Margin {
                 left: top.left,
-                right: top.right,
+                right: top.right + outer,
                 top: top.top,
                 bottom: bottom.bottom,
             }))
             .show(ui, |ui| {
                 toolbar::notch_buttons_style(ui);
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    if note_settings && toolbar::settings_button(ui, view == LeftPanel::Settings) {
-                        clicked = Some(LeftPanel::Settings);
+                    if note_settings && toolbar::settings_button(ui, view == Sidebar::Settings) {
+                        clicked = Some(Sidebar::Settings);
                     }
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        if toolbar::pages_button(ui, view == LeftPanel::Pages) {
-                            clicked = Some(LeftPanel::Pages);
+                        if library && toolbar::notebook_button(ui, view == Sidebar::Notebook) {
+                            clicked = Some(Sidebar::Notebook);
                         }
-                        if on_pdf && toolbar::outline_button(ui, view == LeftPanel::Outline) {
-                            clicked = Some(LeftPanel::Outline);
+                        if toolbar::pages_button(ui, view == Sidebar::Pages) {
+                            clicked = Some(Sidebar::Pages);
                         }
-                        if toolbar::search_button(ui, view == LeftPanel::Search) {
-                            clicked = Some(LeftPanel::Search);
+                        if on_pdf && toolbar::outline_button(ui, view == Sidebar::Outline) {
+                            clicked = Some(Sidebar::Outline);
+                        }
+                        if toolbar::search_button(ui, view == Sidebar::Search) {
+                            clicked = Some(Sidebar::Search);
                         }
                     });
                 });
             });
         match view {
-            LeftPanel::Pages => self.pages_view(ui),
-            LeftPanel::Settings => self.note_settings_view(ui),
-            LeftPanel::Outline => self.outline_view(ui),
-            LeftPanel::Search => self.search_view(ui),
-            LeftPanel::Closed => {}
+            Sidebar::Notebook => self.notebook_view(ui),
+            Sidebar::Pages => self.pages_view(ui),
+            Sidebar::Settings => self.note_settings_view(ui),
+            Sidebar::Outline => self.outline_view(ui),
+            Sidebar::Search => self.search_view(ui),
+            Sidebar::Closed => {}
         }
         if let Some(v) = clicked {
-            self.settings.left_panel.toggle(v);
-            if self.settings.left_panel == LeftPanel::Search {
+            self.settings.sidebar.toggle(v);
+            if self.settings.sidebar == Sidebar::Search {
                 self.search.focus = true;
             }
         }
     }
 
-    /// Margin of a left panel view: content starting level with the top
+    /// A panel of the sidebar, on its `side` of the window.
+    pub(super) fn side_panel(side: SidebarSide, id: &'static str) -> egui::Panel {
+        match side {
+            SidebarSide::Left => egui::Panel::left(id),
+            SidebarSide::Right => egui::Panel::right(id),
+        }
+    }
+
+    /// Margin of a sidebar view: content starting level with the top
     /// button; `padded` (views of text: search, contents, settings) leaves
     /// more room around it.
     fn view_margin(padded: bool) -> egui::Margin {
@@ -123,16 +153,19 @@ impl InkApp {
         }
     }
 
-    /// Frame of a left panel view: the strip's surface, with `view_margin`.
+    /// Frame of a sidebar view: the strip's surface, with `view_margin`.
     pub(super) fn view_frame(padded: bool) -> egui::Frame {
         egui::Frame::NONE.fill(color::chrome()).inner_margin(Self::view_margin(padded))
     }
 
-    /// Hairline between the button strip and a left panel view (framed with
-    /// the same `padded`).
-    pub(super) fn view_divider(ui: &egui::Ui, padded: bool) {
+    /// Hairline between the button strip and a sidebar view (framed with
+    /// the same `padded`) on the sidebar's `side`.
+    pub(super) fn view_divider(ui: &egui::Ui, padded: bool, side: SidebarSide) {
         let r = ui.max_rect();
-        let x = r.left() - f32::from(Self::view_margin(padded).left) + 0.5;
+        let x = match side {
+            SidebarSide::Left => r.left() - f32::from(Self::view_margin(padded).left) + 0.5,
+            SidebarSide::Right => r.right() + f32::from(Self::view_margin(padded).right) - 0.5,
+        };
         let y = (r.top() + space::XS)..=(r.bottom() - space::XS);
         ui.painter().vline(x, y, egui::Stroke::new(1.0, color::border()));
     }
@@ -167,17 +200,18 @@ impl InkApp {
         let mut reorder: Option<(u32, u32)> = None;
         // Copy, cut or paste pages (see `clipboard`).
         let mut clip: Option<menus::Command> = None;
+        let side = self.settings.sidebar_side;
 
         // The concave joins with the title bar and the bottom edge are drawn
         // by `toolbar::show_corners`.
-        egui::Panel::left("left_panel_pages")
+        Self::side_panel(side, "sidebar_pages")
             .resizable(true)
             .default_size(PAGES_WIDTH)
             .size_range(PAGES_WIDTHS)
             .show_separator_line(false)
             .frame(Self::view_frame(false))
             .show(ui, |ui| {
-                Self::view_divider(ui, false);
+                Self::view_divider(ui, false, side);
 
                 // Page cards, centred; the scroll bar floats over the content,
                 // so the full width is usable.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Searching the text of the note or PDF (`Ctrl+F`): the search view of the
-//! left panel, with the matches listed by page; the matches are marked on
+//! sidebar, with the matches listed by page; the matches are marked on
 //! the pages, the current one more strongly.
 //!
 //! The pages are searched a few at a time, frame after frame, as their text
@@ -114,16 +114,16 @@ impl InkApp {
     /// Opens the search view and puts the cursor in its field; the selected
     /// text, if short, becomes the query. Closes the view if already open.
     pub(super) fn find(&mut self) {
-        use crate::settings::LeftPanel;
-        if self.settings.left_panel == LeftPanel::Search {
-            self.settings.left_panel = LeftPanel::Closed;
+        use crate::settings::Sidebar;
+        if self.settings.sidebar == Sidebar::Search {
+            self.settings.sidebar = Sidebar::Closed;
             return;
         }
         let selected = self.selected_text();
         if !selected.is_empty() && selected.chars().count() <= 100 && !selected.contains('\n') {
             self.search.query = selected;
         }
-        self.settings.left_panel = LeftPanel::Search;
+        self.settings.sidebar = Sidebar::Search;
         self.search.focus = true;
         self.search.select_query = true;
     }
@@ -161,18 +161,19 @@ impl InkApp {
         }
     }
 
-    /// The search view of the left panel.
+    /// The search view of the sidebar.
     pub(super) fn search_view(&mut self, ui: &mut egui::Ui) {
         let mut go = None;
         let mut step = None;
-        egui::Panel::left("left_panel_search")
+        let side = self.settings.sidebar_side;
+        Self::side_panel(side, "sidebar_search")
             .resizable(true)
             .default_size(SEARCH_WIDTH)
             .size_range(SEARCH_WIDTHS)
             .show_separator_line(false)
             .frame(Self::view_frame(true))
             .show(ui, |ui| {
-                Self::view_divider(ui, true);
+                Self::view_divider(ui, true, side);
                 let s = &mut self.search;
                 let field = egui::TextEdit::singleline(&mut s.query)
                     .hint_text(format!("{}  Search the text", icon::MAGNIFYING_GLASS))

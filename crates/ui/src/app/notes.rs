@@ -16,7 +16,7 @@ use tratto_core::model::Document;
 use tratto_core::pdf_pages::{self, PdfFile};
 use tratto_core::storage::{self, NoteMeta, NoteWriter};
 
-use crate::settings::{LeftPanel, NoteView};
+use crate::settings::{NoteView, Sidebar};
 use crate::theme;
 
 use crate::saver::Saved;
@@ -264,8 +264,8 @@ impl InkApp {
             self.settings.zoom = view.zoom;
         }
         // The note settings change a note; a PDF is read as it is.
-        if self.settings.left_panel == LeftPanel::Settings {
-            self.settings.left_panel = LeftPanel::Pages;
+        if self.settings.sidebar == Sidebar::Settings {
+            self.settings.sidebar = Sidebar::Pages;
         }
         self.settings.pdf_opened(&key);
         if let Some(s) = &mut self.standalone {

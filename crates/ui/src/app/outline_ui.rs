@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The outline view of the left panel: the table of contents of a note
+//! The outline view of the sidebar: the table of contents of a note
 //! written on a PDF. A click on an entry goes there; entries with entries
 //! under them open and close; the part being read is marked.
 
@@ -48,14 +48,15 @@ impl InkApp {
         let mut clicked = None;
         let mut target = None;
 
-        egui::Panel::left("left_panel_outline")
+        let side = self.settings.sidebar_side;
+        Self::side_panel(side, "sidebar_outline")
             .resizable(true)
             .default_size(OUTLINE_WIDTH)
             .size_range(OUTLINE_WIDTHS)
             .show_separator_line(false)
             .frame(Self::view_frame(true))
             .show(ui, |ui| {
-                Self::view_divider(ui, true);
+                Self::view_divider(ui, true, side);
                 let Some(file) = file else { return };
                 let entries = match nav.outline(&file) {
                     Read::Reading => {

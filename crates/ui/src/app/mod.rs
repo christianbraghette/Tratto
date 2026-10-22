@@ -13,13 +13,13 @@
 //! - `clipboard`      copy, cut and paste (note content, pages, library notes)
 //! - `text`           text boxes
 //! - `text_select`    the text of the pages: selecting and copying it
-//! - `search`         searching the text (the left panel's search view)
+//! - `search`         searching the text (the sidebar's search view)
 //! - `pen_input`      native pen and drop events, pressure, the pen's eraser
-//! - `pages_panel`    the left panel strip and its pages view
-//! - `outline_ui`     the left panel's outline view (a PDF's contents)
-//! - `settings_ui`    the left panel's note settings and the Settings window
+//! - `pages_panel`    the sidebar strip and its pages view
+//! - `outline_ui`     the sidebar's outline view (a PDF's contents)
+//! - `settings_ui`    the sidebar's note settings and the Settings window
 //! - `library_ui`     the library screen and its dialogs
-//! - `library_panel`  the notebook panel next to the editor
+//! - `library_panel`  the sidebar's notebook view
 //! - `menus`          title bar menus, context menu, shortcuts, help windows
 //! - `export_ui`      the Export PDF dialog
 //! - `update_ui`      the updates window
@@ -49,7 +49,7 @@ use crate::pdf_view::PdfTextures;
 use crate::render::{LiveStroke, PictureTextures, StrokeCache};
 use crate::saver::Saver;
 use crate::scrollbar;
-use crate::settings::{BatterySaver, NoteView, Settings, UpdateMode};
+use crate::settings::{BatterySaver, NoteView, Settings, Sidebar, UpdateMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::update::{self, Updater};
@@ -699,17 +699,13 @@ impl InkApp {
         // automatically keeps pen strokes from starting underneath it. It is
         // moved up so it never covers the horizontal scrollbar.
         let bottom_inset = if self.hbar_visible { scrollbar::THICKNESS } else { 0.0 };
-        let library_was_open = self.settings.library_panel_open;
-        self.left_panel(ui);
-        // A reader-only window has no library.
-        if self.standalone.is_none() {
-            self.library_panel(ui);
-        }
+        let notebook_was_open = self.settings.sidebar == Sidebar::Notebook;
+        self.sidebar(ui);
         if self.screen != Screen::Editor {
-            // A note was picked in the library panel and the editor closed.
+            // A note was picked in the notebook view and the editor closed.
             return;
         }
-        // After the side panels, so the toolbar is centred over the canvas.
+        // After the sidebar, so the toolbar is centred over the canvas.
         let nav = toolbar::Navigation {
             page: self.current_page,
             count: self.doc.page_count.max(1),
@@ -731,18 +727,17 @@ impl InkApp {
                 bottom_inset,
             )
         };
-        // After the pages panel, so the corner buttons sit next to it.
+        // After the sidebar, so the corner buttons sit next to it.
         let note_settings = !self.reading();
-        let library = self.standalone.is_none();
-        toolbar::show_corners(ui, &mut self.settings, note_settings, library, bottom_inset);
+        toolbar::show_corners(ui, &mut self.settings, note_settings, bottom_inset);
         // Before the canvas, which must not see the press that closes it.
         self.context_menu_ui(ctx);
-        // Rename / delete / new section from the notebook panel.
+        // Rename / delete / new section from the notebook view.
         self.editor_dialogs(ctx);
         self.export_window(ctx);
 
         // Show the library as it is on disk now (it may have changed).
-        if self.settings.library_panel_open && !library_was_open {
+        if self.settings.sidebar == Sidebar::Notebook && !notebook_was_open {
             self.refresh_library();
         }
 

@@ -23,10 +23,12 @@ pub enum SelectMode {
     Rectangle,
 }
 
-/// What the left panel of the editor shows.
+/// What the sidebar of the editor shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LeftPanel {
+pub enum Sidebar {
     Closed,
+    /// The sections and notes of the open note's notebook.
+    Notebook,
     Pages,
     Settings,
     /// The table of contents of a note written on a PDF.
@@ -35,11 +37,20 @@ pub enum LeftPanel {
     Search,
 }
 
-impl LeftPanel {
-    /// Shows `view`, or closes the panel if `view` is already shown.
-    pub fn toggle(&mut self, view: LeftPanel) {
-        *self = if *self == view { LeftPanel::Closed } else { view };
+impl Sidebar {
+    /// Shows `view`, or closes the sidebar if `view` is already shown.
+    pub fn toggle(&mut self, view: Sidebar) {
+        *self = if *self == view { Sidebar::Closed } else { view };
     }
+}
+
+/// The edge of the window the sidebar is attached to (right for left-handed
+/// writers, whose hand would cover a sidebar on the left).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SidebarSide {
+    #[default]
+    Left,
+    Right,
 }
 
 /// Where a note (or a PDF in the reader) was left: the scroll position
@@ -234,10 +245,13 @@ pub struct Settings {
     /// Frames per second at most, without vsync (`0`: no limit).
     pub fps_limit: u32,
     pub zoom: ZoomMode,
-    /// Left panel: page previews or settings.
-    pub left_panel: LeftPanel,
-    /// Right panel with the notebook hierarchy.
-    pub library_panel_open: bool,
+    /// What the sidebar shows (the notebook, pages, settings...).
+    #[serde(alias = "left_panel")]
+    pub sidebar: Sidebar,
+    /// The view the sidebar's notch reopens: the last one shown (not the
+    /// note settings, which have their own notch).
+    pub sidebar_last: Sidebar,
+    pub sidebar_side: SidebarSide,
     /// Draw the ruled/grid lines into the exported PDF.
     pub pdf_rules: bool,
     /// Folder that holds all notebooks and notes.
@@ -351,11 +365,13 @@ impl Settings {
     /// left them (`self`): where the `pdfs` it read were left, the PDFs as
     /// recently opened, and its preferences if they were changed in that
     /// window (`reader` now, `start` when it opened). The rest (the open
-    /// note, the library) is the other windows'.
+    /// note, the library, what the sidebar shows) is the other windows'.
     pub fn merge_reader(&mut self, reader: &Settings, start: &Settings, pdfs: &[String]) {
         if reader.preferences() != start.preferences() {
             let state = std::mem::replace(self, reader.clone());
             self.zoom = state.zoom;
+            self.sidebar = state.sidebar;
+            self.sidebar_last = state.sidebar_last;
             self.last_note = state.last_note;
             self.note_views = state.note_views;
             self.recent_pdfs = state.recent_pdfs;
@@ -369,10 +385,13 @@ impl Settings {
     }
 
     /// The settings without what changes by itself while reading (the zoom
-    /// of the PDF, the open note, places, recent PDFs), for comparing.
+    /// of the PDF, the sidebar's view, the open note, places, recent PDFs),
+    /// for comparing.
     fn preferences(&self) -> String {
         let prefs = Settings {
             zoom: ZoomMode::Percent(100),
+            sidebar: Sidebar::Closed,
+            sidebar_last: Sidebar::Closed,
             last_note: None,
             note_views: Vec::new(),
             recent_pdfs: Vec::new(),
@@ -398,8 +417,9 @@ impl Default for Settings {
             battery_saver: BatterySaver::default(),
             fps_limit: crate::frame_limit::DEFAULT_FPS,
             zoom: ZoomMode::Percent(100),
-            left_panel: LeftPanel::Closed,
-            library_panel_open: false,
+            sidebar: Sidebar::Closed,
+            sidebar_last: Sidebar::Notebook,
+            sidebar_side: SidebarSide::Left,
             pdf_rules: true,
             library_root: tratto_core::library::default_root().to_string_lossy().into_owned(),
             custom_title_bar: true,
@@ -474,12 +494,16 @@ mod tests {
         // The reader read a PDF, zooming as it went.
         let mut reader = start.clone();
         reader.zoom = ZoomMode::FitWidth;
+        // A reader window has no notebook view.
+        reader.sidebar = Sidebar::Pages;
+        reader.sidebar_last = Sidebar::Pages;
         reader.set_note_view("a.pdf", view(4.0));
         reader.pdf_opened("a.pdf");
         reader.last_note = Some("a.pdf".into());
         let mut saved = disk.clone();
         saved.merge_reader(&reader, &start, &["a.pdf".into()]);
         assert_eq!((saved.last_note.as_deref(), saved.scroll_speed), (Some("lib/Plan.ink"), 2.0));
+        assert_eq!((saved.sidebar, saved.sidebar_last), (Sidebar::Closed, Sidebar::Notebook));
         assert_eq!(
             (saved.note_view("a.pdf"), saved.recent_pdfs.as_slice()),
             (Some(view(4.0)), ["a.pdf".into()].as_slice())
@@ -490,6 +514,7 @@ mod tests {
         let mut saved = disk.clone();
         saved.merge_reader(&reader, &start, &["a.pdf".into()]);
         assert_eq!((saved.ui_scale, saved.last_note.as_deref()), (1.5, Some("lib/Plan.ink")));
+        assert_eq!(saved.sidebar_last, Sidebar::Notebook);
         assert_eq!(saved.note_view("a.pdf"), Some(view(4.0)));
     }
 

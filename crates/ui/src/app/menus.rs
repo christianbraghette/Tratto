@@ -18,7 +18,7 @@ use tratto_core::model::PageKind;
 use super::library_ui::Dialog;
 use super::{InkApp, Screen};
 use crate::chrome::{self, WindowState};
-use crate::settings::{LeftPanel, ToolbarPosition, ZoomMode};
+use crate::settings::{Sidebar, SidebarSide, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color};
 use crate::toolbar::Tool;
 
@@ -85,9 +85,10 @@ pub(super) enum Command {
     Zoom(ZoomMode),
     Fullscreen,
     ToolbarAt(ToolbarPosition),
+    SidebarAt(SidebarSide),
     /// Global settings window.
     Settings,
-    /// The open note's settings (left panel).
+    /// The open note's settings (sidebar).
     NoteSettings,
     InsertPage(u32),
     DeletePage(u32),
@@ -395,6 +396,17 @@ impl InkApp {
                     check(ui, pos == ToolbarPosition::Bottom, "Toolbar at bottom", ""),
                     ui,
                     Command::ToolbarAt(ToolbarPosition::Bottom),
+                );
+                let side = self.settings.sidebar_side;
+                push(
+                    check(ui, side == SidebarSide::Left, "Sidebar on the left", ""),
+                    ui,
+                    Command::SidebarAt(SidebarSide::Left),
+                );
+                push(
+                    check(ui, side == SidebarSide::Right, "Sidebar on the right", ""),
+                    ui,
+                    Command::SidebarAt(SidebarSide::Right),
                 );
                 ui.separator();
             }
@@ -906,8 +918,9 @@ impl InkApp {
                 }
             }
             Command::ToolbarAt(p) => self.settings.toolbar_position = p,
+            Command::SidebarAt(side) => self.settings.sidebar_side = side,
             Command::Settings => self.global_settings_open = true,
-            Command::NoteSettings if editor => self.settings.left_panel = LeftPanel::Settings,
+            Command::NoteSettings if editor => self.settings.sidebar = Sidebar::Settings,
             Command::InsertPage(i) if editor => self.insert_page(i),
             Command::DeletePage(i) if editor => self.delete_page(i),
             Command::PaperStyle(k) if editor => self.doc.page.kind = k,
