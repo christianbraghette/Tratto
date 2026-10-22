@@ -315,7 +315,9 @@ pub fn show_corners(ui: &egui::Ui, settings: &mut Settings, note_settings: bool,
 
 /// Width of the sidebar's button strip: a corner notch's width, so its
 /// buttons sit exactly where they are in the notches.
-pub const STRIP_WIDTH: f32 = 2.0 * space::S + 32.0;
+pub const STRIP_WIDTH: f32 = 2.0 * space::S + NOTCH_BUTTON;
+/// Size of a notch's buttons.
+const NOTCH_BUTTON: f32 = 32.0;
 
 /// Shows the closed sidebar again (in its notch), with `last`, the view it
 /// last showed. Returns true when clicked.
@@ -351,10 +353,10 @@ pub fn outline_button(ui: &mut egui::Ui, shown: bool) -> bool {
     ui.add(egui::Button::selectable(shown, theme::icon(icon::LIST_BULLETS))).on_hover_text(tip).clicked()
 }
 
-/// Toggles the search view (searching the text). Returns true when
+/// Toggles the search view. Returns true when
 /// clicked; `shown` highlights it.
 pub fn search_button(ui: &mut egui::Ui, shown: bool) -> bool {
-    let tip = if shown { "Hide the search" } else { "Search the text (Ctrl+F)" };
+    let tip = if shown { "Hide the search" } else { "Search: the note, its section or notebook (Ctrl+F)" };
     ui.add(egui::Button::selectable(shown, theme::icon(icon::MAGNIFYING_GLASS))).on_hover_text(tip).clicked()
 }
 
@@ -510,7 +512,7 @@ fn tool_buttons_style(ui: &mut egui::Ui) {
     let s = ui.spacing_mut();
     s.item_spacing = vec2(space::XS, space::XS);
     s.button_padding = vec2(7.0, 5.0);
-    s.interact_size = vec2(32.0, 32.0);
+    s.interact_size = vec2(NOTCH_BUTTON, NOTCH_BUTTON);
 }
 
 fn contents(

@@ -65,6 +65,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 - A3, A4, A5, Letter, Legal or custom paper sizes, in portrait or landscape
 - Blank, ruled or grid paper with adjustable line spacing
 - A sidebar (left, or right for left-handed writers) with the notebook, page previews for navigating, reordering, inserting and deleting pages, the PDF's contents and search
+- Search like VS Code, in the open note, its section or the whole notebook (`Ctrl+F`, `Ctrl+Shift+F`)
 - Zoom presets, plus zooming with Ctrl + wheel or a touchpad pinch
 - Smooth scrolling: wheel notches glide and speed up when you spin the wheel
   quickly, a pan flicked on the grey area keeps moving, and page jumps ease
@@ -191,6 +192,20 @@ Each view keeps its own width (drag its inner edge), and has a context menu
   it, insert a page before or after it, copy or cut it, paste copied pages
   after it, or delete it). The list follows the page you are on, and the
   dashed tile at its end adds a page.
+- **Search** (`Ctrl+F` for the note, `Ctrl+Shift+F` for the notebook): one
+  field, and radio buttons for where to search: the open **Note**, its
+  **Section** (for a note directly in the notebook, the notes of "General")
+  or its whole **Notebook** (for a quick note, the quick notes). It searches
+  the typed text and the text of the PDF a note is written on, as you type;
+  handwriting is not searchable. While the view is shown, the open note's
+  matches are highlighted on its pages, the current one stronger, and Enter
+  or `F3` goes to the next one, Shift+Enter or `Shift+F3` to the previous.
+  The note lists its matches by page. A section or notebook lists them by
+  note, each with its page and the words around it; click a note's header to
+  fold it, and a result to open its note at that match (the open note is
+  saved first). The open note is searched as it is now, saved or not; the
+  refresh button searches again after you change other notes. Text selected
+  when you press `Ctrl+F` becomes the query.
 - **Note settings**: see **Settings** below.
 
 The note's title is shown in the middle of the title bar. Click it to rename
@@ -234,6 +249,9 @@ note and goes back to the library screen.
 | `Ctrl+V` | Paste: at the pointer when it is over a page, else on the current page |
 | `Delete` or `Backspace` | Delete the selection |
 | `Escape` | Clear the selection, or close the context menu |
+| `Ctrl+F` | Search the note |
+| `F3` / `Shift+F3` | Next / previous match |
+| `Ctrl+Shift+F` | Search the notebook |
 | `Ctrl+Plus` / `Ctrl+Minus` | Zoom in / out |
 | `Ctrl+0` | Actual size (100 %) |
 | `Ctrl` + mouse wheel, or pinch | Zoom around the pointer |

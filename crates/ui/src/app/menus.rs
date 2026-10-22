@@ -16,6 +16,7 @@ use tratto_core::library;
 use tratto_core::model::PageKind;
 
 use super::library_ui::Dialog;
+use super::search_panel::Scope;
 use super::{InkApp, Screen};
 use crate::chrome::{self, WindowState};
 use crate::settings::{Sidebar, SidebarSide, ToolbarPosition, ZoomMode};
@@ -59,8 +60,10 @@ pub(super) enum Command {
     PasteNote,
     /// Select all the text of that page.
     SelectAllText(u32),
-    /// The search view, its field focused.
+    /// The search view on the note, its field focused.
     Find,
+    /// The search view on the whole notebook, its field focused.
+    FindInNotebook,
     /// The next (true) or previous search match.
     FindNext(bool),
     LibraryFolder,
@@ -477,6 +480,18 @@ impl InkApp {
         if entry(ui, icon::MAGNIFYING_GLASS, "Find...", &shortcut(&ctx, cmd, Key::F), true) {
             push(ui, Command::Find);
         }
+        if self.standalone.is_none()
+            && !self.reading()
+            && entry(
+                ui,
+                icon::FILE_MAGNIFYING_GLASS,
+                "Find in notebook...",
+                &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::F),
+                true,
+            )
+        {
+            push(ui, Command::FindInNotebook);
+        }
     }
 
     /// Copying the selected text (the reader; a note has it with the ink
@@ -741,7 +756,10 @@ impl InkApp {
                 if i.consume_key(cmd, Key::W) {
                     out.push(Command::CloseNote);
                 }
-                if i.consume_key(cmd, Key::F) {
+                // Before Ctrl+F, which would also match Ctrl+Shift+F.
+                if i.consume_key(cmd | Modifiers::SHIFT, Key::F) {
+                    out.push(Command::FindInNotebook);
+                } else if i.consume_key(cmd, Key::F) {
                     out.push(Command::Find);
                 }
                 if i.consume_key(Modifiers::SHIFT, Key::F3) {
@@ -820,7 +838,9 @@ impl InkApp {
                 self.paste_note(dir);
             }
             Command::SelectAllText(page) if editor => self.select_all_text(page),
-            Command::Find if editor => self.find(),
+            Command::Find if editor => self.find(Scope::Note),
+            // A PDF in the reader has no notebook: it is searched by itself.
+            Command::FindInNotebook if editor => self.find(Scope::Notebook),
             Command::FindNext(forward) if editor => self.find_next(forward),
             Command::NewNote => {
                 let dir = match (&self.note_path, editor) {
@@ -1035,7 +1055,8 @@ impl InkApp {
                     (
                         "Search and PDF reader",
                         vec![
-                            (key(c, Key::F), "Search the text"),
+                            (key(c, Key::F), "Find in the note"),
+                            (key(c | shift, Key::F), "Find in the notebook"),
                             (or(key(none, Key::F3), key(shift, Key::F3)), "Next / previous match"),
                             ("Left / Right / Space".to_owned(), "Previous / next page"),
                             ("Alt+Left / Backspace".to_owned(), "Back after a link"),

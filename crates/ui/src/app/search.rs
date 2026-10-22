@@ -1,26 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Christian Braghette
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Searching the text of the note or PDF (`Ctrl+F`): the search view of the
-//! sidebar, with the matches listed by page; the matches are marked on
-//! the pages, the current one more strongly.
+//! Finding text in the open note or PDF, while the sidebar's search view
+//! (`search_panel`) is shown, whatever it searches: the matches are marked
+//! on the pages, the current one more strongly, and `F3` / `Shift+F3` go
+//! from one to the next. A result of another note opens that note at its
+//! match (`Jump`).
 //!
 //! The pages are searched a few at a time, frame after frame, as their text
 //! is read (`text_select`), so a long book never holds up the window. Any
 //! change to the query or the note starts the search over.
 
-use std::ops::{Range, RangeInclusive};
+use std::ops::Range;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Key, Sense, Ui, text::LayoutJob};
-use egui_phosphor::regular as icon;
+use eframe::egui::{self, Id, Ui};
 
 use super::InkApp;
 use super::text_select::{Glyph, find_all, is_blank, line_rects, normalize_query, searchable};
-use crate::theme::{self, color, radius, space};
+use crate::settings::Sidebar;
 
-const SEARCH_WIDTH: f32 = 280.0;
-const SEARCH_WIDTHS: RangeInclusive<f32> = 200.0..=480.0;
 /// Matches kept at most.
 const MAX_HITS: usize = 5000;
 /// Pages whose text is asked for ahead of the search.
@@ -35,29 +35,36 @@ pub(super) struct Hit {
     pub page: u32,
     pub glyphs: Range<usize>,
     /// The text before, of and after the match, for the list.
-    snippet: (String, String, String),
+    pub snippet: (String, String, String),
+}
+
+/// A match to show once the note at `path` is open and searched that far:
+/// the `nth` match on `page` (a result of another note).
+pub(super) struct Jump {
+    pub path: PathBuf,
+    pub page: u32,
+    pub nth: usize,
 }
 
 #[derive(Default)]
 pub(super) struct Search {
-    /// What is typed in the field.
+    /// What is typed in the search view's field (every scope searches it).
     pub query: String,
     /// The query and note (history version, page count) the matches are for.
     searched: (Vec<char>, u64, u32),
     /// The next page to search.
     next_page: u32,
     pub hits: Vec<Hit>,
-    /// The match shown (see `go_to_hit`).
+    /// The match shown (see `show_hit`).
     pub current: Option<usize>,
-    /// Focus the field next frame; `select_query`: and select what is in it.
-    pub focus: bool,
-    select_query: bool,
     /// Scroll the list to the current match next frame.
-    focus_row: bool,
+    pub focus_row: bool,
+    /// Kept by `reset`: it waits for another note to open.
+    pub jump: Option<Jump>,
 }
 
 impl Search {
-    /// Starts over (another note was opened).
+    /// Starts over (another note was opened, or the search view closed).
     pub fn reset(&mut self) {
         self.searched = (Vec::new(), u64::MAX, 0);
         self.hits.clear();
@@ -71,11 +78,26 @@ impl Search {
         let end = self.hits.partition_point(|h| h.page <= page);
         (start, &self.hits[start..end])
     }
+
+    /// Something is searched for.
+    pub fn typed(&self) -> bool {
+        !self.searched.0.is_empty()
+    }
+
+    /// The note is still being searched.
+    pub fn searching(&self) -> bool {
+        self.typed() && self.next_page < self.searched.2
+    }
 }
 
 impl InkApp {
-    /// Searches on, a few pages per frame. Call once per frame.
+    /// Searches on, a few pages per frame, while the search view is shown.
+    /// Call once per frame.
     pub(super) fn search_step(&mut self, ctx: &egui::Context) {
+        if self.settings.sidebar != Sidebar::Search {
+            self.search.reset();
+            return;
+        }
         let wanted = (normalize_query(&self.search.query), self.history.version(), self.doc.page_count.max(1));
         if wanted != self.search.searched {
             let s = &mut self.search;
@@ -84,6 +106,7 @@ impl InkApp {
             s.hits.clear();
             s.current = None;
         }
+        self.take_jump();
         let (query, _, count) = self.search.searched.clone();
         if query.is_empty() {
             return;
@@ -111,21 +134,25 @@ impl InkApp {
         }
     }
 
-    /// Opens the search view and puts the cursor in its field; the selected
-    /// text, if short, becomes the query. Closes the view if already open.
-    pub(super) fn find(&mut self) {
-        use crate::settings::Sidebar;
-        if self.settings.sidebar == Sidebar::Search {
-            self.settings.sidebar = Sidebar::Closed;
+    /// Shows the match a result of another note asked for, once that note
+    /// is open and searched past its page.
+    fn take_jump(&mut self) {
+        let s = &self.search;
+        let Some(jump) = &s.jump else { return };
+        let searched_past = s.next_page > jump.page || s.next_page >= s.searched.2;
+        if self.note_path.as_ref() != Some(&jump.path) || !searched_past {
             return;
         }
-        let selected = self.selected_text();
-        if !selected.is_empty() && selected.chars().count() <= 100 && !selected.contains('\n') {
-            self.search.query = selected;
+        let (first, hits) = s.on_page(jump.page);
+        let (page, i) = (jump.page, first + jump.nth.min(hits.len().saturating_sub(1)));
+        let found = !hits.is_empty();
+        self.search.jump = None;
+        if found {
+            self.show_hit(i, true);
+        } else {
+            // The note changed since it was searched: its page, at least.
+            self.scroll_to = Some(self.layout().page_stop(page));
         }
-        self.settings.sidebar = Sidebar::Search;
-        self.search.focus = true;
-        self.search.select_query = true;
     }
 
     /// Goes to the next match (`forward`) or the previous one, from the
@@ -141,151 +168,31 @@ impl InkApp {
             None if forward => self.search.hits.iter().position(|h| h.page >= self.current_page).unwrap_or(0),
             None => self.search.hits.iter().rposition(|h| h.page <= self.current_page).unwrap_or(n - 1),
         };
-        self.go_to_hit(next);
+        self.show_hit(next, false);
     }
 
-    /// Makes match `i` the current one and scrolls to it if it is not in view.
-    fn go_to_hit(&mut self, i: usize) {
+    /// Makes match `i` the current one and scrolls to it if it is not in
+    /// view, or anyway (`always`: what is in view may be another note's).
+    pub(super) fn show_hit(&mut self, i: usize, always: bool) {
         let Some(hit) = self.search.hits.get(i) else { return };
         self.search.current = Some(i);
+        self.search.focus_row = true;
         let (page, range) = (hit.page, hit.glyphs.clone());
         let Some(glyphs) = self.page_glyphs(page) else { return };
         let Some(rect) = line_rects(&glyphs, range).into_iter().reduce(|a, b| a.union(b)) else { return };
         let layout = self.layout();
         let (top, bottom) = (layout.page_top(page) + rect.top(), layout.page_top(page) + rect.bottom());
         let (shown_top, shown_bottom) = self.shown_content;
-        if top < shown_top || bottom > shown_bottom {
+        if always || top < shown_top || bottom > shown_bottom {
             // A third of the way down the view.
             let y = top - (shown_bottom - shown_top) / 3.0;
             self.scroll_to = Some(y.max(0.0));
         }
     }
-
-    /// The search view of the sidebar.
-    pub(super) fn search_view(&mut self, ui: &mut egui::Ui) {
-        let mut go = None;
-        let mut step = None;
-        let side = self.settings.sidebar_side;
-        Self::side_panel(side, "sidebar_search")
-            .resizable(true)
-            .default_size(SEARCH_WIDTH)
-            .size_range(SEARCH_WIDTHS)
-            .show_separator_line(false)
-            .frame(Self::view_frame(true))
-            .show(ui, |ui| {
-                Self::view_divider(ui, true, side);
-                let s = &mut self.search;
-                let field = egui::TextEdit::singleline(&mut s.query)
-                    .hint_text(format!("{}  Search the text", icon::MAGNIFYING_GLASS))
-                    .margin(egui::Margin::symmetric(space::S as i8, space::XS as i8 + 2))
-                    .desired_width(f32::INFINITY);
-                let resp = ui.add(field);
-                if std::mem::take(&mut s.focus) {
-                    resp.request_focus();
-                }
-                if std::mem::take(&mut s.select_query)
-                    && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id)
-                {
-                    let all = egui::text::CCursorRange::two(
-                        egui::text::CCursor::new(0),
-                        egui::text::CCursor::new(s.query.chars().count()),
-                    );
-                    state.cursor.set_char_range(Some(all));
-                    state.store(ui.ctx(), resp.id);
-                }
-                // Enter: the next match (Shift: the previous), staying in the field.
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    step = Some(!ui.input(|i| i.modifiers.shift));
-                    s.focus = true;
-                }
-
-                ui.add_space(space::S);
-                let searching = s.next_page < s.searched.2 && !s.searched.0.is_empty();
-                ui.horizontal(|ui| {
-                    let status = match (s.hits.len(), searching, s.current) {
-                        _ if s.searched.0.is_empty() => String::new(),
-                        (0, false, _) => "No matches".to_owned(),
-                        (n, _, Some(i)) => format!("{} of {n}", i + 1),
-                        (n, _, None) => format!("{n} {}", if n == 1 { "match" } else { "matches" }),
-                    };
-                    ui.label(theme::muted(status));
-                    if searching {
-                        ui.spinner();
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        theme::ghost_buttons(ui);
-                        let any = !s.hits.is_empty();
-                        if ui.add_enabled(any, egui::Button::new(icon::CARET_DOWN)).on_hover_text("Next (F3)").clicked()
-                        {
-                            step = Some(true);
-                        }
-                        if ui
-                            .add_enabled(any, egui::Button::new(icon::CARET_UP))
-                            .on_hover_text("Previous (Shift+F3)")
-                            .clicked()
-                        {
-                            step = Some(false);
-                        }
-                    });
-                });
-                ui.add_space(space::XS);
-
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let mut last_page = None;
-                    for (i, hit) in s.hits.iter().enumerate() {
-                        if last_page != Some(hit.page) {
-                            last_page = Some(hit.page);
-                            ui.add_space(space::S);
-                            theme::caption(ui, &format!("Page {}", hit.page + 1));
-                            ui.add_space(space::XS);
-                        }
-                        let current = s.current == Some(i);
-                        let resp = hit_row(ui, hit, current);
-                        if current && std::mem::take(&mut s.focus_row) {
-                            resp.scroll_to_me(None);
-                        }
-                        if resp.clicked() {
-                            go = Some(i);
-                        }
-                    }
-                });
-            });
-        if let Some(forward) = step {
-            self.find_next(forward);
-            self.search.focus_row = true;
-        }
-        if let Some(i) = go {
-            self.go_to_hit(i);
-        }
-    }
-}
-
-/// A match in the list: its context, the match itself in bold.
-fn hit_row(ui: &mut Ui, hit: &Hit, current: bool) -> egui::Response {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let strong = egui::FontId::new(font.size, theme::strong_family());
-    let fmt = |font: &egui::FontId, color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
-    let mut job = LayoutJob::default();
-    let (before, matched, after) = &hit.snippet;
-    job.append(before, 0.0, fmt(&font, color::text_muted()));
-    job.append(matched, 0.0, fmt(&strong, color::text_strong()));
-    job.append(after, 0.0, fmt(&font, color::text_muted()));
-    job.wrap.max_rows = 2;
-    job.wrap.max_width = ui.available_width() - 2.0 * space::S;
-    let galley = ui.fonts_mut(|f| f.layout_job(job));
-    let size = galley.size() + egui::vec2(2.0 * space::S, 2.0 * space::XS);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), size.y), Sense::click());
-    let fill = if current { Some(color::accent_alpha(48)) } else { resp.hovered().then_some(color::accent_alpha(20)) };
-    if let Some(fill) = fill {
-        ui.painter().rect_filled(rect, radius::SMALL, fill);
-    }
-    ui.painter().galley(rect.min + egui::vec2(space::S, space::XS), galley, color::text_muted());
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// The text around a match, blanks (`is_blank`) as single spaces.
-fn snippet(glyphs: &[Glyph], range: &Range<usize>) -> (String, String, String) {
+pub(super) fn snippet(glyphs: &[Glyph], range: &Range<usize>) -> (String, String, String) {
     let text = |r: Range<usize>| {
         let s: String = glyphs[r].iter().map(|g| if is_blank(g.ch) { ' ' } else { g.ch }).collect();
         s.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
@@ -307,4 +214,14 @@ fn snippet(glyphs: &[Glyph], range: &Range<usize>) -> (String, String, String) {
         after.push('\u{2026}');
     }
     (before, text(range.clone()), after)
+}
+
+/// Selects all of `text`, the text of the field `id`.
+pub(super) fn select_all(ui: &Ui, id: Id, text: &str) {
+    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+        let all =
+            egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()));
+        state.cursor.set_char_range(Some(all));
+        state.store(ui.ctx(), id);
+    }
 }

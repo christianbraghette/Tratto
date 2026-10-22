@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, pos2};
 
-use tratto_core::model::TextBox;
+use tratto_core::model::{Document, PdfBackground, TextBox};
 use tratto_core::pdf_pages::TextChar;
 
 use crate::markdown;
@@ -140,14 +140,10 @@ impl InkApp {
             && let (Some(file), Some(pdf_page)) = (&pdf.file, self.doc.pdf_page(page))
         {
             let chars = self.pdf_nav.text(file, pdf_page)?;
-            if let Some(placed) = pdf.placement(pdf_page, self.doc.page_width, self.doc.page_height) {
-                pdf_glyphs = place_pdf_text(&chars, placed);
-            }
+            pdf_glyphs = placed_pdf_text(pdf, pdf_page, (self.doc.page_width, self.doc.page_height), &chars);
         }
-        let mut boxes: Vec<&TextBox> = self.doc.texts.iter().filter(|t| t.page == page).collect();
-        boxes.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
-        let boxes = boxes.into_iter().map(|t| (t.y, box_glyphs(&self.egui_ctx, t))).collect();
-        let glyphs = Arc::new(merge(pdf_glyphs, boxes));
+        let ctx = &self.egui_ctx;
+        let glyphs = Arc::new(page_text(&self.doc.texts, page, pdf_glyphs, |t| box_glyphs(ctx, t)));
         self.text_layer.pages.insert(page, glyphs.clone());
         Some(glyphs)
     }
@@ -353,6 +349,57 @@ impl InkApp {
             }
         }
     }
+}
+
+/// The text of a note's pages without the ink: its text boxes and the PDF it
+/// is written on. Enough to search a note away from the window (see
+/// `search_panel`), with the same glyphs `InkApp::page_glyphs` makes, but
+/// for the places of the text boxes' characters.
+#[derive(Clone)]
+pub(super) struct NoteText {
+    pub page_count: u32,
+    page_size: (f32, f32),
+    texts: Vec<TextBox>,
+    pub pdf: Option<PdfBackground>,
+}
+
+impl NoteText {
+    pub fn of(doc: &Document) -> Self {
+        Self {
+            page_count: doc.page_count.max(1),
+            page_size: (doc.page_width, doc.page_height),
+            texts: doc.texts.clone(),
+            pdf: doc.pdf.clone(),
+        }
+    }
+
+    /// The PDF page under note page `page`, if any.
+    pub fn pdf_page(&self, page: u32) -> Option<u32> {
+        self.pdf.as_ref()?.pages.get(page as usize).copied().flatten()
+    }
+
+    /// The glyphs of `page`; `chars`: the text of the PDF page under it.
+    pub fn page_glyphs(&self, page: u32, chars: &[TextChar]) -> Vec<Glyph> {
+        let pdf = match (&self.pdf, self.pdf_page(page)) {
+            (Some(pdf), Some(pdf_page)) => placed_pdf_text(pdf, pdf_page, self.page_size, chars),
+            _ => Vec::new(),
+        };
+        page_text(&self.texts, page, pdf, |t| t.text.chars().map(|ch| Glyph { ch, rect: None }).collect())
+    }
+}
+
+/// The glyphs of `page`: the PDF's text on it (`pdf`) and its text boxes,
+/// each made by `boxed`, in reading order (see `merge`).
+fn page_text(texts: &[TextBox], page: u32, pdf: Vec<Glyph>, boxed: impl Fn(&TextBox) -> Vec<Glyph>) -> Vec<Glyph> {
+    let mut boxes: Vec<&TextBox> = texts.iter().filter(|t| t.page == page).collect();
+    boxes.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+    merge(pdf, boxes.into_iter().map(|t| (t.y, boxed(t))).collect())
+}
+
+/// The text `chars` of PDF page `pdf_page`, placed where that page sits on
+/// a note page of `page_size`.
+fn placed_pdf_text(pdf: &PdfBackground, pdf_page: u32, page_size: (f32, f32), chars: &[TextChar]) -> Vec<Glyph> {
+    pdf.placement(pdf_page, page_size.0, page_size.1).map(|placed| place_pdf_text(chars, placed)).unwrap_or_default()
 }
 
 /// The PDF's text placed on a note page: `placed` is where the PDF page
@@ -621,5 +668,31 @@ mod tests {
         let boxed = vec![(30.0, vec![at('X', 30.0)]), (80.0, vec![at('Y', 80.0)])];
         let s: String = merge(pdf, boxed).iter().map(|g| g.ch).collect();
         assert_eq!(s, "a\nX\nb\nY");
+    }
+
+    #[test]
+    fn note_text_has_each_pages_boxes_top_down() {
+        let mut doc = Document::default();
+        let tb = |page, y, text: &str| TextBox {
+            id: 0,
+            page,
+            x: 10.0,
+            y,
+            width: 100.0,
+            size: 12.0,
+            color: [0, 0, 0],
+            text: text.to_owned(),
+            lines: Vec::new(),
+            line_h: 14.0,
+            layout: None,
+        };
+        doc.page_count = 2;
+        doc.texts = vec![tb(0, 90.0, "Second *box*"), tb(1, 0.0, "Other page"), tb(0, 20.0, "First")];
+        let note = NoteText::of(&doc);
+        let s: String = note.page_glyphs(0, &[]).iter().map(|g| g.ch).collect();
+        assert_eq!(s, "First\nSecond *box*");
+        let text = searchable(&note.page_glyphs(0, &[]));
+        assert_eq!(find_all(&text, &normalize_query("second")).len(), 1);
+        assert!(find_all(&text, &normalize_query("other")).is_empty());
     }
 }

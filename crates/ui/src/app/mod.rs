@@ -13,7 +13,8 @@
 //! - `clipboard`      copy, cut and paste (note content, pages, library notes)
 //! - `text`           text boxes
 //! - `text_select`    the text of the pages: selecting and copying it
-//! - `search`         searching the text (the sidebar's search view)
+//! - `search`         finding text in the open note, its matches marked
+//! - `search_panel`   the sidebar's search view: the note, its section or notebook
 //! - `pen_input`      native pen and drop events, pressure, the pen's eraser
 //! - `pages_panel`    the sidebar strip and its pages view
 //! - `outline_ui`     the sidebar's outline view (a PDF's contents)
@@ -69,6 +70,7 @@ mod pages_panel;
 mod pen_input;
 mod pictures;
 mod search;
+mod search_panel;
 mod selection;
 mod settings_ui;
 mod text;
@@ -351,6 +353,7 @@ pub struct InkApp {
     /// A press or drag selecting text, if one is going on.
     text_gesture: Option<text_select::TextGesture>,
     search: search::Search,
+    search_panel: search_panel::SearchPanel,
     /// Canvas context menu (right click), if open.
     context_menu: Option<ContextMenu>,
     /// The press that closed the context menu must not reach the canvas.
@@ -494,6 +497,7 @@ impl InkApp {
             text_sel: None,
             text_gesture: None,
             search: search::Search::default(),
+            search_panel: search_panel::SearchPanel::default(),
             context_menu: None,
             swallow_press: false,
             pending: Vec::new(),

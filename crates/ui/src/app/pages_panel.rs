@@ -123,7 +123,7 @@ impl InkApp {
         if let Some(v) = clicked {
             self.settings.sidebar.toggle(v);
             if self.settings.sidebar == Sidebar::Search {
-                self.search.focus = true;
+                self.search_panel.focus = true;
             }
         }
     }
