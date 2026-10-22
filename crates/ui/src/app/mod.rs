@@ -480,7 +480,7 @@ impl InkApp {
         let mut app = Self {
             doc: Document::default(),
             history: History::default(),
-            tool: Tool::Pen,
+            tool: Tool::Pointer,
             settings,
             scroll: Vec2::ZERO,
             kinetic: Kinetic::default(),

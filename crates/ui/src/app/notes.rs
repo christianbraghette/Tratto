@@ -18,6 +18,7 @@ use tratto_core::storage::{self, NoteMeta, NoteWriter};
 
 use crate::settings::{NoteView, Sidebar};
 use crate::theme;
+use crate::toolbar::Tool;
 
 use crate::saver::Saved;
 
@@ -208,6 +209,10 @@ impl InkApp {
         self.note_path = Some(path.to_path_buf());
         self.ensure_pages();
         self.reset_editing_state();
+        // A note always opens on the pointer tool: nothing is written by
+        // a stray touch before a tool is picked.
+        self.pick_tool(Tool::Pointer);
+        self.saved_tool = None;
         self.reader = None;
         let key = path.to_string_lossy();
         // A PDF just imported from the reader: where it was being read.

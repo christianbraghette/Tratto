@@ -96,6 +96,20 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 - Printing, with the same choices and preview, through the system's print dialog
 - Save a page (with its paper, rules and PDF page) or a selection as a PNG picture
 
+## Install
+
+Download the file for your system from the
+[latest release](https://github.com/christianbraghette/Tratto/releases):
+
+| System | File | |
+|---|---|---|
+| Windows | `Tratto-x64.msi` | Installs for your user only, no administrator rights needed. |
+| macOS (Apple silicon) | `Tratto-arm64.dmg` | Open it and drag Tratto into Applications. |
+| Linux (x86-64) | `Tratto-x86_64.AppImage` | Make it executable (`chmod +x`) and run it. |
+
+The `tratto-<target>.zip` files hold the portable app: unpack and run.
+Tratto keeps itself up to date (menu > Check for updates...).
+
 ## Getting Started
 
 ### Requirements

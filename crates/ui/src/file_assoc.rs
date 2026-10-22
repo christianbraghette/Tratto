@@ -26,9 +26,10 @@ pub const REGISTER_HINT: &str = if cfg!(windows) {
     "Tratto opens PDFs from now on, in a window of their own."
 };
 
-/// The running executable, as the registration names it.
+/// What starts the app (the AppImage, if it runs from one), as the
+/// registration names it.
 fn exe() -> Result<std::path::PathBuf, String> {
-    std::env::current_exe().map_err(|e| format!("Cannot find the Tratto executable: {e}"))
+    crate::update::launcher().map_err(|e| format!("Cannot find the Tratto executable: {e}"))
 }
 
 /// Tratto, as it is now, opens PDFs.

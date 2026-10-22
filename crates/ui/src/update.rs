@@ -3,20 +3,28 @@
 
 //! Updates from the project's GitHub releases.
 //!
-//! Each release carries one archive per platform, `tratto-<target>.zip`
-//! (see `.github/workflows/release.yml`), holding what goes next to the
-//! executable: `tratto(.exe)`, the PDFium library and the licenses. At
-//! startup the releases are asked for in the background and the newest one
-//! of the chosen channel is picked (`UpdateChannel`: by the tag's suffix,
-//! releases, `-beta<n>` or `-alpha<n>`); if it is newer, its archive is downloaded, checked against the SHA-256 digest
-//! GitHub publishes for it, and swapped in: each file is renamed to
-//! `<name>.old` (a running executable or loaded library cannot be
-//! overwritten on Windows, but it can be renamed) and the new one takes its
-//! place. The running app is not affected; the next start runs the new
-//! version and removes the `.old` files.
+//! Each release carries, per platform, what each kind of installation
+//! (`Install`) is updated from (see `.github/workflows/release.yml`):
+//! * a folder (the portable archive, or where the Windows installer put
+//!   the app): `tratto-<target>.zip`, holding what goes next to the
+//!   executable: `tratto(.exe)`, the PDFium library and the licenses;
+//! * a macOS app bundle: `tratto-<target>.app.zip`, holding `Tratto.app`;
+//! * a Linux AppImage: `Tratto-<arch>.AppImage` itself.
 //!
-//! Debug builds and installations in a folder the user cannot write to
-//! (installed by a package manager) only report the new version.
+//! At startup the releases are asked for in the background and the newest
+//! one of the chosen channel is picked (`UpdateChannel`: by the tag's
+//! suffix, releases, `-beta<n>` or `-alpha<n>`); if it is newer, its file
+//! is downloaded, checked against the SHA-256 digest GitHub publishes for
+//! it, and swapped in. In a folder each file is renamed to `<name>.old` (a
+//! running executable or loaded library cannot be overwritten on Windows,
+//! but it can be renamed) and the new one takes its place; a bundle is
+//! swapped whole (its signature covers all of it), the old one renamed to
+//! `<name>.app.old`; an AppImage is replaced at once. The running app is
+//! not affected; the next start runs the new version and removes the
+//! `.old` files.
+//!
+//! Debug builds and installations the user cannot write to (installed by a
+//! package manager) only report the new version.
 
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -42,6 +50,8 @@ const TARGET: &str = env!("TRATTO_TARGET");
 const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
 const OLD: &str = ".old";
 const NEW: &str = ".new";
+/// The app bundle in a macOS release's `.app.zip`.
+const BUNDLE: &str = "Tratto.app";
 /// Releases looked at, most recent first (one page of the GitHub API).
 const RELEASES: u32 = 100;
 
@@ -57,8 +67,8 @@ pub struct Release {
     pub page: String,
     /// The archive for this platform, if the release has one.
     archive: Option<Asset>,
-    /// The app can install it itself: there is an archive for this platform
-    /// and the installation folder is writable.
+    /// The app can install it itself: there is an archive for this
+    /// installation and the user may write to it.
     pub installable: bool,
 }
 
@@ -174,10 +184,10 @@ impl Updater {
 
 fn download_and_install(release: Release, send: &dyn Fn(State)) {
     send(State::Downloading(release.clone()));
-    let (Some(asset), Some(dir)) = (&release.archive, install_dir()) else {
+    let (Some(asset), Some(installed)) = (&release.archive, Install::find()) else {
         return send(State::Available(release));
     };
-    match download(asset).and_then(|bytes| install(&bytes, &dir)) {
+    match download(asset).and_then(|bytes| installed.install(&bytes)) {
         Ok(()) => send(State::Installed(release.version)),
         Err(e) => send(State::Failed(e)),
     }
@@ -214,14 +224,10 @@ fn latest_release(channel: UpdateChannel) -> Result<Option<Release>, String> {
     let Some((version, gh)) = newest.filter(|(v, _)| is_newer(v, CURRENT)) else {
         return Ok(None);
     };
-    let name = archive_name();
+    let name = Install::locate().map_or_else(|| format!("tratto-{TARGET}.zip"), |i| i.asset_name());
     let archive = gh.assets.into_iter().find(|a| a.name == name);
-    let installable = archive.is_some() && install_dir().is_some();
+    let installable = archive.is_some() && Install::find().is_some();
     Ok(Some(Release { version, page: gh.html_url, archive, installable }))
-}
-
-fn archive_name() -> String {
-    format!("tratto-{TARGET}.zip")
 }
 
 /// `a` is a later version than `b` ("1.10.0" > "1.9.2"). Pre-releases come
@@ -284,17 +290,90 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The folder of the running executable, if the app may update itself there.
-fn install_dir() -> Option<PathBuf> {
-    if cfg!(debug_assertions) {
+/// How the running app is installed: what an update replaces.
+#[derive(Debug)]
+enum Install {
+    /// The folder of the executable (the portable archive, the Windows
+    /// installer's): the archive's files go over those in it.
+    Folder(PathBuf),
+    /// macOS: the app bundle, replaced whole by the archive's `Tratto.app`.
+    Bundle(PathBuf),
+    /// Linux: the AppImage file, replaced by the release's.
+    AppImage(PathBuf),
+}
+
+impl Install {
+    /// The installation, if the app may update it itself.
+    fn find() -> Option<Self> {
+        if cfg!(debug_assertions) {
+            return None;
+        }
+        let found = Self::locate()?;
+        let dir = match &found {
+            Install::Folder(dir) => dir.clone(),
+            Install::Bundle(path) | Install::AppImage(path) => path.parent()?.to_path_buf(),
+        };
+        // Writable by this user: not installed by a package manager.
+        let probe = dir.join(".tratto-update-probe");
+        std::fs::write(&probe, b"").ok()?;
+        let _ = std::fs::remove_file(&probe);
+        Some(found)
+    }
+
+    /// The installation, writable or not.
+    fn locate() -> Option<Self> {
+        if let Some(app_image) = app_image() {
+            return Some(Install::AppImage(app_image));
+        }
+        let exe = std::env::current_exe().ok()?;
+        if cfg!(target_os = "macos")
+            && let Some(bundle) = bundle_of(&exe)
+        {
+            return Some(Install::Bundle(bundle));
+        }
+        Some(Install::Folder(exe.parent()?.to_path_buf()))
+    }
+
+    /// The release file it is updated from.
+    fn asset_name(&self) -> String {
+        match self {
+            Install::Folder(_) => format!("tratto-{TARGET}.zip"),
+            Install::Bundle(_) => format!("tratto-{TARGET}.app.zip"),
+            Install::AppImage(_) => format!("Tratto-{}.AppImage", TARGET.split('-').next().unwrap_or(TARGET)),
+        }
+    }
+
+    /// Puts the downloaded release file in place.
+    fn install(&self, bytes: &[u8]) -> Result<(), String> {
+        match self {
+            Install::Folder(dir) => install(bytes, dir),
+            Install::Bundle(app) => install_bundle(bytes, app),
+            Install::AppImage(path) => install_app_image(bytes, path),
+        }
+    }
+}
+
+/// The AppImage the app runs from (its runtime sets `APPIMAGE`).
+fn app_image() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
         return None;
     }
-    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    // Writable by this user: not installed by a package manager.
-    let probe = dir.join(".tratto-update-probe");
-    std::fs::write(&probe, b"").ok()?;
-    let _ = std::fs::remove_file(&probe);
-    Some(dir)
+    std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_absolute() && p.is_file())
+}
+
+/// The app bundle `exe` is the executable of (`<name>.app/Contents/MacOS/<exe>`).
+fn bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app")
+        .then(|| app.to_path_buf())
+}
+
+/// What starts the app: the AppImage it runs from (the executable inside
+/// is in a folder that goes away with the app), else the executable.
+pub fn launcher() -> std::io::Result<PathBuf> {
+    app_image().map_or_else(std::env::current_exe, Ok)
 }
 
 /// `path` with `suffix` appended to its file name.
@@ -328,19 +407,11 @@ fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
             if let Some(parent) = new.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| fail(&e))?;
             }
-            let mut out = std::fs::File::create(&new).map_err(|e| fail(&e))?;
             files.push(dest.clone());
-            std::io::copy(&mut entry, &mut out).map_err(|e| fail(&e))?;
             // The archive's permissions, else those of the file replaced (an
             // archive zipped on Windows has none: the executable must stay one).
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = entry.unix_mode().or_else(|| std::fs::metadata(&dest).ok().map(|m| m.permissions().mode()));
-                if let Some(mode) = mode {
-                    std::fs::set_permissions(&new, std::fs::Permissions::from_mode(mode)).map_err(|e| fail(&e))?;
-                }
-            }
+            let mode = entry.unix_mode().or_else(|| mode_of(&dest));
+            write_entry(&mut entry, &new, mode).map_err(|e| fail(&e))?;
         }
         let has_exe = exe_name
             .as_ref()
@@ -382,11 +453,115 @@ fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Unpacks the archive's `Tratto.app` next to the bundle `app` and swaps
+/// it in whole, the old one renamed to `<app>.old`.
+fn install_bundle(zip: &[u8], app: &Path) -> Result<(), String> {
+    let exe_name = std::env::current_exe().ok().and_then(|p| p.file_name().map(ToOwned::to_owned));
+    let fail = |e: &dyn std::fmt::Display| format!("Cannot install the update: {e}");
+    let staging = with_suffix(app, NEW);
+    let _ = std::fs::remove_dir_all(&staging);
+    let unpacked = unpack(zip, &staging).map_err(|e| fail(&e)).and_then(|()| {
+        let new_app = staging.join(BUNDLE);
+        let has_exe = exe_name.is_some_and(|n| new_app.join("Contents/MacOS").join(n).is_file());
+        if has_exe { Ok(new_app) } else { Err(fail(&"the archive has no Tratto app")) }
+    });
+    let swapped = unpacked.and_then(|new_app| {
+        let old = with_suffix(app, OLD);
+        let _ = std::fs::remove_dir_all(&old);
+        std::fs::rename(app, &old).map_err(|e| fail(&e))?;
+        std::fs::rename(&new_app, app).map_err(|e| {
+            let _ = std::fs::rename(&old, app);
+            fail(&e)
+        })
+    });
+    let _ = std::fs::remove_dir_all(&staging);
+    swapped
+}
+
+/// Writes the downloaded AppImage next to the one at `path` and renames it
+/// over it: the running app keeps reading the old one, already open.
+fn install_app_image(bytes: &[u8], path: &Path) -> Result<(), String> {
+    let fail = |e: &dyn std::fmt::Display| format!("Cannot install the update: {e}");
+    // An AppImage is an executable.
+    if !bytes.starts_with(b"\x7fELF") {
+        return Err(fail(&"the download is not an AppImage"));
+    }
+    let new = with_suffix(path, NEW);
+    let written = write_entry(&mut &bytes[..], &new, Some(0o755)).and_then(|()| std::fs::rename(&new, path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&new);
+        return Err(fail(&e));
+    }
+    Ok(())
+}
+
+/// Unpacks all of `zip` into the new folder `dir`, which is left partly
+/// filled on an error.
+fn unpack(zip: &[u8], dir: &Path) -> std::io::Result<()> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(zip))?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        // Refuses absolute paths and `..`.
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(std::io::Error::other(format!("unsafe path {}", entry.name().unwrap_or_default())));
+        };
+        let dest = dir.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&dest)?;
+        } else {
+            std::fs::create_dir_all(dest.parent().unwrap_or(dir))?;
+            let mode = entry.unix_mode();
+            write_entry(&mut entry, &dest, mode)?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes what `data` reads to a new file at `path`, with the Unix
+/// permissions `mode` (if any).
+fn write_entry(data: &mut impl Read, path: &Path, mode: Option<u32>) -> std::io::Result<()> {
+    let mut out = std::fs::File::create(path)?;
+    std::io::copy(data, &mut out)?;
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777))?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    Ok(())
+}
+
+/// The Unix permissions of the file at `path`.
+fn mode_of(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).ok().map(|m| m.permissions().mode())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// Removes what the previous update left: the replaced files (`.old`) and
 /// any unpacked but never swapped in (`.new`). Called at startup.
 pub fn remove_leftovers() {
-    let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) else {
-        return;
+    let dir = match Install::locate() {
+        Some(Install::Folder(dir)) => dir,
+        Some(Install::Bundle(app)) => {
+            for leftover in [with_suffix(&app, OLD), with_suffix(&app, NEW)] {
+                let _ = std::fs::remove_dir_all(leftover);
+            }
+            return;
+        }
+        Some(Install::AppImage(path)) => {
+            let _ = std::fs::remove_file(with_suffix(&path, NEW));
+            return;
+        }
+        None => return,
     };
     fn sweep(dir: &Path, depth: u32) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -414,7 +589,7 @@ pub fn restart_if_requested() {
     if !RESTART.load(Ordering::Relaxed) {
         return;
     }
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = launcher() {
         let _ = std::process::Command::new(exe).spawn();
     }
 }
@@ -500,6 +675,56 @@ mod tests {
         assert!(install(&zip, &dir).is_err());
         assert_eq!(std::fs::read(dir.join("lib.dll")).unwrap(), b"old lib");
         assert!(!with_suffix(&dir.join("lib.dll"), NEW).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn swaps_a_bundle_whole() {
+        let dir = temp_dir("bundle");
+        let app = dir.join("Tratto.app");
+        let macos = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join(exe_name()), b"old exe").unwrap();
+        std::fs::write(macos.join("gone"), b"only in the old version").unwrap();
+        let exe = format!("Tratto.app/Contents/MacOS/{}", exe_name());
+        let zip = zip_of(&[(&exe, b"new exe"), ("Tratto.app/Contents/Info.plist", b"plist")]);
+        install_bundle(&zip, &app).unwrap();
+        assert_eq!(std::fs::read(macos.join(exe_name())).unwrap(), b"new exe");
+        assert!(app.join("Contents/Info.plist").exists());
+        assert!(!macos.join("gone").exists());
+        assert!(with_suffix(&app, OLD).join("Contents/MacOS/gone").exists());
+        assert!(!with_suffix(&app, NEW).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keeps_the_bundle_when_the_archive_has_no_app() {
+        let dir = temp_dir("bundle-refuse");
+        let app = dir.join("Tratto.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        let zip = zip_of(&[("Other.app/Contents/MacOS/other", b"x")]);
+        assert!(install_bundle(&zip, &app).is_err());
+        assert!(app.join("Contents/MacOS").is_dir());
+        assert!(!with_suffix(&app, NEW).exists() && !with_suffix(&app, OLD).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_the_bundle_of_an_executable() {
+        let exe = Path::new("/Applications/Tratto.app/Contents/MacOS/tratto");
+        assert_eq!(bundle_of(exe), Some(PathBuf::from("/Applications/Tratto.app")));
+        assert_eq!(bundle_of(Path::new("/opt/tratto/bin/tratto")), None);
+    }
+
+    #[test]
+    fn replaces_an_app_image() {
+        let dir = temp_dir("appimage");
+        let path = dir.join("Tratto-x86_64.AppImage");
+        std::fs::write(&path, b"\x7fELF old").unwrap();
+        assert!(install_app_image(b"<html>not found</html>", &path).is_err());
+        install_app_image(b"\x7fELF new", &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x7fELF new");
+        assert!(!with_suffix(&path, NEW).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

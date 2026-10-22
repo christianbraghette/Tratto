@@ -314,10 +314,13 @@ fn worker() -> &'static Sender<Job> {
     })
 }
 
-/// Where PDFium is looked for first: the executable's folder.
+/// Where PDFium is looked for first: the executable's folder, or in a
+/// macOS app bundle its `Contents/Frameworks`.
 fn library_next_to_exe() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    Some(Pdfium::pdfium_platform_library_name_at_path(&dir))
+    let next_to = Pdfium::pdfium_platform_library_name_at_path(&dir);
+    let frameworks = Pdfium::pdfium_platform_library_name_at_path(&dir.parent()?.join("Frameworks"));
+    Some(if cfg!(target_os = "macos") && !next_to.exists() && frameworks.exists() { frameworks } else { next_to })
 }
 
 fn bind() -> Result<Pdfium, PdfError> {

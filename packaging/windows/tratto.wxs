@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Christian Braghette
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+The Windows installer, Tratto-x64.msi, built by scripts/package.sh with
+WiX 5 from the files of the release archive (Stage).
+
+It installs for the current user only, in %LOCALAPPDATA%\Programs\Tratto:
+no administrator rights, and the app can update itself there like the
+portable archive (see crates/ui/src/update.rs). A newer installer replaces
+the installed version (the same version too, for a pre-release followed by
+its release).
+
+Variables (-d): Version (x.y.z), Stage (the unpacked archive),
+LicenseRtf (the license page), Icon (icon.ico).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <!-- The UpgradeCode ties all versions together: never change it. -->
+  <Package Name="Tratto"
+           Manufacturer="Christian Braghette"
+           Version="$(Version)"
+           UpgradeCode="EE151D82-D945-421D-919D-86FFE84E21F7"
+           Scope="perUser"
+           Language="1033">
+    <SummaryInformation Description="Tratto installer" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Tratto is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="TrattoIcon" SourceFile="$(Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="TrattoIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/christianbraghette/Tratto" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/christianbraghette/Tratto/issues" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Tratto">
+          <Directory Id="LicensesFolder" Name="licenses" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <!--
+    A per-user component is tracked by a registry value, not by its files
+    (ICE38); the folders it creates are removed with it (ICE64).
+    -->
+    <Component Id="App" Directory="INSTALLFOLDER" Guid="51A1C2E3-85A4-4EC3-B9C5-5432217A74EF">
+      <File Id="TrattoExe" Source="$(Stage)\tratto.exe" />
+      <File Source="$(Stage)\pdfium.dll" />
+      <File Source="$(Stage)\LICENSE" />
+      <RegistryValue Root="HKCU" Key="Software\Tratto" Name="InstallFolder" Type="string"
+                     Value="[INSTALLFOLDER]" KeyPath="yes" />
+      <RemoveFolder Id="RemoveLicensesFolder" Directory="LicensesFolder" On="uninstall" />
+      <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      <!-- Only if nothing else is in it. -->
+      <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+    </Component>
+
+    <!-- The updater adds and replaces files here too: all go on uninstall. -->
+    <Component Id="Cleanup" Directory="INSTALLFOLDER">
+      <RemoveFile Id="RemoveFiles" Name="*" On="uninstall" />
+      <RemoveFile Id="RemoveLicenses" Directory="LicensesFolder" Name="*" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\Tratto" Name="Cleanup" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder">
+      <Shortcut Id="TrattoShortcut" Name="Tratto" Description="Handwriting notes and PDF annotation"
+                Target="[#TrattoExe]" WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU" Key="Software\Tratto" Name="StartMenuShortcut" Type="integer" Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main">
+      <ComponentRef Id="App" />
+      <ComponentRef Id="Cleanup" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <Files Directory="LicensesFolder" Include="$(Stage)\licenses\*" />
+    </Feature>
+
+    <!-- A welcome page with the license, then the option to start the app. -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Start Tratto" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#TrattoExe]" />
+    <CustomAction Id="StartTratto" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec"
+                  Impersonate="yes" />
+    <UI>
+      <ui:WixUI Id="WixUI_Minimal" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="StartTratto"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
+    </UI>
+  </Package>
+</Wix>

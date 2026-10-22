@@ -6,3 +6,5 @@ target/
 crates/ui/pdfium/*/
 # Release archives (scripts/package.sh)
 dist/
+
+.VSCodeCounter

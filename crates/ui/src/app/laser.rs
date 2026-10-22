@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The laser pointer of the pointer tool, to present from a note: a red dot
-//! in place of the system pointer and, while pressed, a trail that fades out
-//! behind it. It writes nothing and is never saved.
+//! in place of the system pointer and, while pressed, a trail that stays
+//! lit until the pen or the button is lifted, then fades out. It writes
+//! nothing and is never saved.
 //!
 //! With the laser on, dragging on the paper draws the trail instead of
 //! moving around; the wheel, the keys, a finger and a drag off the paper
@@ -16,7 +17,7 @@ use crate::view::View;
 
 use super::InkApp;
 
-/// Seconds a point of the trail takes to fade out.
+/// Seconds the trail takes to fade out once released.
 const FADE: f64 = 0.6;
 const RED: [u8; 3] = [235, 35, 35];
 /// Radius of the dot and of its glow, width of the trail and of the glow
@@ -36,6 +37,8 @@ const RELAX: usize = 2;
 /// view moves.
 pub(super) struct LaserPoint {
     pos: Pos2,
+    /// When the fade starts: kept at the current frame while the press
+    /// lasts, so the whole trail stays lit, then its release.
     time: f64,
     /// The first point of a press: not joined to the one before.
     start: bool,
@@ -54,7 +57,8 @@ impl InkApp {
     }
 
     /// Adds where the pointer went this frame (`moves`) to the trail while
-    /// it is pressed on the canvas, and drops what has faded.
+    /// it is pressed on the canvas, keeps that press lit, and drops what has
+    /// faded.
     pub(super) fn laser_input(&mut self, ctx: &egui::Context, resp: &Response, view: &View, moves: &[Pos2], now: f64) {
         self.laser_trail.retain(|p| now - p.time < FADE);
         let pressed = self.lasering() && !self.panning && resp.is_pointer_button_down_on();
@@ -67,6 +71,11 @@ impl InkApp {
                     self.laser_trail.push(LaserPoint { pos, time: now, start });
                     start = false;
                 }
+            }
+            // The press still on: its whole trail stays lit.
+            let from = self.laser_trail.iter().rposition(|p| p.start).unwrap_or(0);
+            for p in &mut self.laser_trail[from..] {
+                p.time = now;
             }
         }
         self.laser_down = pressed;
@@ -179,9 +188,9 @@ fn smooth(points: &[(Pos2, f32)]) -> Vec<(Pos2, f32)> {
 }
 
 /// Adds to `mesh` a strip along `path`: `half` wide each side of it in
-/// `color(t)`, then `feather` more fading to nothing (soft edges). Older
-/// parts (smaller t) are thinner, so the trail tapers to its tail. Both
-/// ends are rounded.
+/// `color(t)`, then `feather` more fading to nothing (soft edges). Fading
+/// parts (smaller t) are thinner, so a released trail shrinks as it goes.
+/// Both ends are rounded.
 fn ribbon(mesh: &mut Mesh, path: &[(Pos2, f32)], half: f32, feather: f32, color: impl Fn(f32) -> Color32) {
     if path.len() < 2 {
         return;

@@ -1,9 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Christian Braghette
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# package.sh for Windows without Git Bash: builds the same release archives,
-# `dist/tratto-<target>.zip` (tratto.exe, the PDFium library, LICENSE and
-# licenses/), from PowerShell (Windows PowerShell 5.1 or PowerShell 7).
+# package.sh for Windows without Git Bash: builds the same release files,
+# `dist/Tratto-x64.msi` (the installer, made with WiX, fetched; needs the
+# .NET runtime 6 or later) and `dist/tratto-<target>.zip` (tratto.exe, the
+# PDFium library, LICENSE and licenses/), from PowerShell (Windows
+# PowerShell 5.1 or PowerShell 7).
+#
+# With TRATTO_SIGN_CERT set to the SHA-1 thumbprint of a code signing
+# certificate in the user's store, tratto.exe and the installer are signed.
 #
 # Usage: scripts\package.ps1 [windows] [linux] [macos]    (none: all three)
 #
@@ -25,13 +30,74 @@ $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
 # See crates/ui/pdfium/README.md.
 $pdfiumRelease = 'chromium%2F7881'
-# Windows' own tar (bsdtar) reads .tgz and writes zips.
+$wixVersion = '5.0.2'
+$version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^version = "(.*)"' |
+    Select-Object -First 1).Matches[0].Groups[1].Value
+# Windows' own tar (bsdtar) reads .tgz and .zip and writes zips.
 $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
 
 function Invoke-Native {
     param([string]$Exe, [string[]]$Arguments)
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe failed (exit code $LASTEXITCODE)" }
+}
+
+# Signs $Path with the certificate TRATTO_SIGN_CERT, if set.
+function Invoke-Sign {
+    param([string]$Path)
+    if (-not $env:TRATTO_SIGN_CERT) { return }
+    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+        Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1
+    if (-not $signtool) { throw 'signtool not found: install the Windows SDK' }
+    Invoke-Native $signtool.FullName @('sign', '/sha1', $env:TRATTO_SIGN_CERT, '/fd', 'sha256', '/td', 'sha256',
+        '/tr', 'http://timestamp.digicert.com', '/d', 'Tratto', $Path)
+}
+
+# The installer, from the portable app in $Stage (see packaging\windows\tratto.wxs).
+function Build-Msi {
+    param([string]$Stage, [string]$TargetDir)
+    # WiX (its NuGet package, run on whichever .NET runtime is installed)
+    # and its extensions go to a folder of their own; `wix` finds the
+    # extensions from there.
+    $tools = Join-Path $TargetDir "tools\wix-$wixVersion"
+    $wix = Join-Path $tools 'wix.exe'
+    $env:DOTNET_ROLL_FORWARD = 'Major'
+    if (-not (Test-Path $wix)) {
+        Write-Host "    fetching WiX $wixVersion"
+        $part = "$tools.part"
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $part
+        New-Item -ItemType Directory -Force $part | Out-Null
+        Invoke-Native 'curl.exe' @('-fsSL', '-o', "$part\wix.nupkg", "https://www.nuget.org/api/v2/package/wix/$wixVersion")
+        Invoke-Native $tar @('-xf', "$part\wix.nupkg", '-C', $part, 'tools/net6.0/any')
+        Move-Item (Join-Path $part 'tools\net6.0\any') $tools
+        Remove-Item -Recurse -Force $part
+        Push-Location $tools
+        try {
+            Invoke-Native $wix @('extension', 'add', "WixToolset.UI.wixext/$wixVersion", "WixToolset.Util.wixext/$wixVersion")
+        } finally {
+            Pop-Location
+        }
+    }
+    # The license page: LICENSE as RTF.
+    $rtf = Join-Path (Split-Path -Parent $Stage) 'license.rtf'
+    $lines = Get-Content (Join-Path $root 'LICENSE') |
+        ForEach-Object { ($_.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}')) + '\par' }
+    Set-Content -Encoding Ascii $rtf (@('{\rtf1\ansi\deff0{\fonttbl{\f0 Consolas;}}\fs16') + $lines + '}')
+
+    $msi = Join-Path $dist 'Tratto-x64.msi'
+    Push-Location $tools
+    try {
+        Invoke-Native $wix @('build', '-arch', 'x64', '-nologo',
+            '-ext', 'WixToolset.UI.wixext', '-ext', 'WixToolset.Util.wixext',
+            '-d', "Version=$version", '-d', "Stage=$Stage", '-d', "LicenseRtf=$rtf",
+            '-d', "Icon=$(Join-Path $root 'crates\ui\assets\icon\icon.ico')",
+            '-o', $msi, (Join-Path $root 'packaging\windows\tratto.wxs'))
+    } finally {
+        Pop-Location
+    }
+    Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($msi, 'wixpdb'))
+    Invoke-Sign $msi
+    Write-Host '    dist\Tratto-x64.msi'
 }
 
 function Build-Windows {
@@ -64,8 +130,11 @@ function Build-Windows {
     }
 
     $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
-    $stage = Join-Path ([IO.Path]::GetTempPath()) "tratto-package-$PID"
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage
+    # The portable app, unpacked: what the zip holds and the installer is
+    # made from.
+    $work = Join-Path ([IO.Path]::GetTempPath()) "tratto-package-$PID"
+    $stage = Join-Path $work 'stage'
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $work
     New-Item -ItemType Directory -Force (Join-Path $stage 'licenses'), $dist | Out-Null
     try {
         Copy-Item (Join-Path $targetDir "$target\release\tratto.exe") $stage
@@ -73,6 +142,7 @@ function Build-Windows {
         Copy-Item (Join-Path $root 'LICENSE') $stage
         Copy-Item (Join-Path $pdfiumDir 'LICENSE') (Join-Path $stage 'licenses\PDFium-LICENSE')
         Copy-Item (Join-Path $pdfiumDir 'licenses\*') (Join-Path $stage 'licenses')
+        Invoke-Sign (Join-Path $stage 'tratto.exe')
 
         $zip = Join-Path $dist "tratto-$target.zip"
         Remove-Item -Force -ErrorAction SilentlyContinue $zip
@@ -82,10 +152,11 @@ function Build-Windows {
         } finally {
             Pop-Location
         }
+        Write-Host "    dist\tratto-$target.zip"
+        Build-Msi $stage $targetDir
     } finally {
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $stage
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $work
     }
-    Write-Host "    dist\tratto-$target.zip"
 }
 
 # The Linux build runs package.sh in WSL, with its own target folder (faster

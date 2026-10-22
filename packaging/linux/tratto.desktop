@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Tratto
+Comment=Fast, low-latency handwriting notes and PDF annotation for pen and tablet
+Exec=tratto %f
+Icon=tratto
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;

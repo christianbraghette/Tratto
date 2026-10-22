@@ -5,8 +5,8 @@ in the accent colour on a transparent background.
 
     python make_icon.py <Phosphor.ttf> <Phosphor-Bold.ttf>
 
-writes icon.png (256 px, the window icon) and icon.ico (16-256 px, the .exe
-icon). Small sizes use the bold weight, so the thin strokes stay visible.
+writes icon.png (256 px, the window icon), icon.ico (16-256 px, the .exe
+icon) and icon.icns (16-1024 px, the macOS app bundle's icon). Small sizes use the bold weight, so the thin strokes stay visible.
 Needs Pillow.
 """
 
@@ -19,6 +19,7 @@ GLYPH = ""
 ACCENT = (77, 139, 255, 255)  # theme::color::ACCENT
 SUPERSAMPLE = 1024
 ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+ICNS_SIZES = [16, 32, 64, 128, 256, 512, 1024]
 BOLD_UP_TO = 32
 
 
@@ -42,6 +43,8 @@ def main() -> None:
     frames = [render(bold if s <= BOLD_UP_TO else regular, s) for s in ICO_SIZES]
     # Largest first; the other frames are stored as they are, not rescaled.
     frames[-1].save(out / "icon.ico", format="ICO", sizes=[(s, s) for s in ICO_SIZES], append_images=frames[:-1])
+    frames = [render(bold if s <= BOLD_UP_TO else regular, s) for s in ICNS_SIZES]
+    frames[-1].save(out / "icon.icns", format="ICNS", append_images=frames[:-1])
 
 
 if __name__ == "__main__":

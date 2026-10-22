@@ -1,17 +1,32 @@
 # Builds Tratto for each platform when a version tag (v1.2.3, or a
-# pre-release such as v1.2.3-beta1) is pushed and
-# attaches one archive per platform, `tratto-<target>.zip`, to a draft
-# release. Once the draft is published, the app's updater
+# pre-release such as v1.2.3-beta1) is pushed and attaches what
+# scripts/package.sh makes to a draft release: the installers
+# (Tratto-x64.msi, Tratto-arm64.dmg, Tratto-x86_64.AppImage) and the
+# archives the updater installs (tratto-<target>.zip,
+# tratto-<target>.app.zip). Once the draft is published, the app's updater
 # (crates/ui/src/update.rs) offers it on a channel picked by the tag's
 # suffix (none: stable, -beta<n>: testing, -alpha<n>: unstable) and finds
-# the archive by that name. A tag with a suffix is flagged as a pre-release
-# here, so GitHub never shows it as the latest release.
+# its file by name. A tag with a suffix is flagged as a pre-release here,
+# so GitHub never shows it as the latest release.
 #
-# Run by hand (Actions > Release > Run workflow), it only builds: the
-# archives are in the run's artifacts (e.g. the macOS one, which cannot be
-# built on Windows or Linux).
+# Run by hand (Actions > Release > Run workflow), it only builds: the files
+# are in the run's artifacts (e.g. the macOS ones, which cannot be built on
+# Windows or Linux).
 #
-# The archives are made by scripts/package.sh, as on a local machine.
+# Signing, each part only once set up in the repository's settings
+# (Settings > Secrets and variables > Actions); else the files are
+# unsigned (macOS: ad hoc):
+# * Windows, with Azure Artifact Signing: the variables
+#   ARTIFACT_SIGNING_ENDPOINT (e.g. https://weu.codesigning.azure.net/),
+#   ARTIFACT_SIGNING_ACCOUNT and ARTIFACT_SIGNING_PROFILE, and the secrets
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET of an app
+#   registration with the "Artifact Signing Certificate Profile Signer"
+#   role on the account.
+# * macOS, with an Apple Developer ID: the secrets APPLE_CERTIFICATE (the
+#   "Developer ID Application" certificate and key, a .p12 in base64),
+#   APPLE_CERTIFICATE_PASSWORD and APPLE_SIGNING_IDENTITY ("Developer ID
+#   Application: Name (TEAMID)"); for notarization also APPLE_ID,
+#   APPLE_TEAM_ID and APPLE_APP_PASSWORD (an app-specific password).
 
 name: Release
 
@@ -43,6 +58,9 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      WINDOWS_SIGNING: ${{ matrix.platform == 'windows' && vars.ARTIFACT_SIGNING_ACCOUNT != '' }}
+      MACOS_SIGNING: ${{ matrix.platform == 'macos' && secrets.APPLE_SIGNING_IDENTITY != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -74,13 +92,65 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Build and package
-        run: bash scripts/package.sh ${{ matrix.platform }}
+      - name: Build
+        run: bash scripts/package.sh --build-only ${{ matrix.platform }}
+
+      - name: Sign the executable
+        if: env.WINDOWS_SIGNING == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\target\${{ matrix.target }}\release\tratto.exe
+          description: Tratto
+
+      # A keychain of its own, for this run only, with the Developer ID.
+      - name: macOS signing certificate
+        if: env.MACOS_SIGNING == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(openssl rand -hex 16)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      - name: Package
+        env:
+          TRATTO_MACOS_IDENTITY: ${{ env.MACOS_SIGNING == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ env.MACOS_SIGNING == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: bash scripts/package.sh --bundle-only ${{ matrix.platform }}
+
+      - name: Sign the installer
+        if: env.WINDOWS_SIGNING == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\Tratto-x64.msi
+          description: Tratto
 
       - uses: actions/upload-artifact@v4
         with:
           name: tratto-${{ matrix.target }}
-          path: dist/tratto-${{ matrix.target }}.zip
+          path: dist/*
 
   release:
     needs: build
@@ -97,4 +167,4 @@ jobs:
         run: |
           prerelease=()
           case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --draft "${prerelease[@]}" --generate-notes --title "Tratto ${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft "${prerelease[@]}" --generate-notes --title "Tratto ${GITHUB_REF_NAME#v}"
