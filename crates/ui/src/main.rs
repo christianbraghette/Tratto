@@ -27,6 +27,7 @@
 //! - `file_picker`    the system's file dialogs, off the UI thread
 //! - `frame_limit`    frame rate cap when vsync is off
 //! - `power`          whether the computer runs on battery (battery saver)
+//! - `print`          printing through the system's print dialog
 //! - `saver`          saves the open note on a background thread
 //! - `snapshot`       a picture of what was copied, for other apps
 //! - `update`         updates from the GitHub releases
@@ -49,6 +50,7 @@ mod markdown;
 mod pdf_nav;
 mod pdf_view;
 mod power;
+mod print;
 mod render;
 mod saver;
 mod scrollbar;

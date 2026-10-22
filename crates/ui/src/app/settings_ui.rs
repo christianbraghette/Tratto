@@ -154,7 +154,7 @@ impl InkApp {
                 .on_hover_text("Ctrl+E")
                 .clicked()
             {
-                self.open_export_dialog();
+                self.open_export_dialog(ui.ctx(), false);
             }
         });
         hint(

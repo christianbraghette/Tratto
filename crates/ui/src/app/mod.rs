@@ -854,6 +854,7 @@ impl eframe::App for InkApp {
             self.pen_input.drop = WaylandDrop::start(ctx, frame);
             self.pen_input.windows = WindowsPen::start(ctx, frame);
             crate::chrome::round_corners(frame);
+            crate::print::remember_window(frame);
             crate::win_frame::install(frame);
         }
         // Before anything is painted: the palette of this frame.

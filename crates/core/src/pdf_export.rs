@@ -157,14 +157,17 @@ pub struct PdfNote<'a> {
 /// bookmark per note. Via a temp file, so a failure never truncates an
 /// existing export.
 pub fn export_notes(notes: &[PdfNote], path: &Path, opts: &PdfOptions) -> io::Result<()> {
-    let mut bytes = build_pdf(notes, opts)?;
-    let under = underlays(notes, opts);
-    if !under.is_empty() {
-        bytes = pdf_pages::underlay(bytes, under).map_err(io::Error::other)?;
-    }
+    let bytes = export_bytes(notes, opts)?;
     let tmp = path.with_extension("pdf.tmp");
     fs::write(&tmp, &bytes)?;
     fs::rename(&tmp, path)
+}
+
+/// The PDF `export_notes` writes, as bytes (to print it).
+pub fn export_bytes(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
+    let bytes = build_pdf(notes, opts)?;
+    let under = underlays(notes, opts);
+    if under.is_empty() { Ok(bytes) } else { pdf_pages::underlay(bytes, under).map_err(io::Error::other) }
 }
 
 /// The PDF page under a note page that is exported on its PDF page, if any.

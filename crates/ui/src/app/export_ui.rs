@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The Export PDF dialog (File > Export as PDF, `Ctrl+E`, Note settings),
-//! and saving a page or the selection as a PNG picture (see `snapshot`).
+//! the same dialog to print (File > Print, `Ctrl+P`; see `print`), and
+//! saving a page or the selection as a PNG picture (see `snapshot`).
 //!
 //! * **What**: the open note (all pages, the current one or a range), its
 //!   whole section, or a selection of the notebook's notes; several notes go
@@ -14,8 +15,13 @@
 //! The choices that describe *how* to export are remembered in the settings;
 //! the ones about *this* export (what, pages, title, file) start fresh.
 //!
+//! Printing makes the same PDF (but for the page size, which is the
+//! printer's) and hands it to the system's print dialog; it asks nothing
+//! about the document or the file.
+//!
 //! The PDF is written on a background thread from copies of the notes, so a
-//! long export never freezes the editor; one export runs at a time.
+//! long export never freezes the editor; one export or print runs at a time.
+//! A PDF in the reader is printed as it is, without the dialog.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -35,6 +41,7 @@ use tratto_core::{storage, stroke_path};
 use super::{InkApp, PathField};
 use crate::file_picker::{self, Pick, Request};
 use crate::pdf_view::PdfTextures;
+use crate::print::{self, Printed};
 use crate::render::{self, Layer, PictureTextures};
 use crate::snapshot::Snapshot;
 use crate::stroke_mesh;
@@ -59,8 +66,10 @@ enum Pages {
     Range,
 }
 
-/// The state of an open Export dialog.
+/// The state of an open Export (or Print) dialog.
 pub(super) struct ExportDialog {
+    /// Print instead of writing a file.
+    print: bool,
     scope: Scope,
     pages: Pages,
     /// 1-based, inclusive.
@@ -88,12 +97,17 @@ impl ExportDialog {
     }
 }
 
-/// A PDF being written in the background.
+/// A PDF being written (or printed) in the background.
 pub(super) struct ExportJob {
-    done: Receiver<io::Result<()>>,
-    path: PathBuf,
+    done: Receiver<io::Result<Sent>>,
     /// Unreadable notes left out.
     skipped: usize,
+}
+
+/// Where a PDF went.
+enum Sent {
+    File(PathBuf),
+    Printer(Printed),
 }
 
 /// A group of notes as the notebook panel shows it.
@@ -241,6 +255,8 @@ impl InkApp {
             }
             _ => None,
         };
+        // The printer's paper is the page size.
+        let page_size = if d.print { None } else { s.pdf_page_size };
         PdfOptions {
             include_rules: s.pdf_rules,
             pages,
@@ -248,8 +264,8 @@ impl InkApp {
             include_text: s.pdf_text,
             include_pdf_pages: s.pdf_pages,
             ink: s.pdf_ink,
-            page_size: s.pdf_page_size,
-            margin: if s.pdf_page_size.is_some() { s.pdf_margin } else { 0.0 },
+            page_size,
+            margin: if page_size.is_some() { s.pdf_margin } else { 0.0 },
             title: title.to_owned(),
             author: s.pdf_author.clone(),
         }
@@ -276,8 +292,12 @@ impl InkApp {
 
     // ------------------------------------------------------------ dialog
 
-    /// Opens the dialog for the open note.
-    pub(super) fn open_export_dialog(&mut self) {
+    /// Opens the dialog for the open note: to export it, or to `print` it.
+    /// A PDF in the reader is printed at once.
+    pub(super) fn open_export_dialog(&mut self, ctx: &egui::Context, print: bool) {
+        if print && self.reading() {
+            return self.print_pdf(ctx);
+        }
         if self.note_path.is_none() {
             return;
         }
@@ -287,6 +307,7 @@ impl InkApp {
         let section: HashSet<PathBuf> =
             self.export_section().map(|g| g.notes.into_iter().map(|n| n.path).collect()).unwrap_or_default();
         let mut d = ExportDialog {
+            print,
             scope: Scope::Note,
             pages: Pages::All,
             from: 1,
@@ -312,7 +333,7 @@ impl InkApp {
         let mut export = std::mem::take(&mut dialog.export_now);
         let picking = self.file_picker.is_open();
         let max_h = (ctx.viewport_rect().height() * 0.75).max(300.0);
-        egui::Window::new("Export PDF")
+        egui::Window::new(if dialog.print { "Print" } else { "Export PDF" })
             .open(&mut open)
             .collapsible(false)
             // Above the notches and the toolbar.
@@ -338,19 +359,23 @@ impl InkApp {
                 });
                 ui.add_space(space::M);
                 ui.horizontal(|ui| {
-                    // With the system's Save dialog next, the button says so.
-                    let label = format!("{}  Export{}", icon::FILE_PDF, if file_picker::DIRECT { "..." } else { "" });
+                    // With the system's Save (or Print) dialog next, the button says so.
+                    let label = if dialog.print {
+                        format!("{}  Print...", icon::PRINTER)
+                    } else {
+                        format!("{}  Export{}", icon::FILE_PDF, if file_picker::DIRECT { "..." } else { "" })
+                    };
                     let running = self.export_job.is_some();
-                    let has_path = file_picker::DIRECT || !dialog.path.trim().is_empty();
+                    let has_path = dialog.print || file_picker::DIRECT || !dialog.path.trim().is_empty();
                     let ready = has_path && !list.is_empty() && !running && !picking;
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !ui.ctx().egui_wants_keyboard_input();
                     let resp = ui.add_enabled(ready, theme::primary_button(label)).on_disabled_hover_text(if running {
-                        "Another export is still running"
+                        "Another export or print is still running"
                     } else {
                         "Nothing to export"
                     });
                     if (resp.clicked() || enter) && ready {
-                        if file_picker::DIRECT {
+                        if file_picker::DIRECT && !dialog.print {
                             self.pick_request = Some(Request {
                                 pick: Pick::Save("PDF", &["pdf"]),
                                 title: "Export PDF",
@@ -366,7 +391,7 @@ impl InkApp {
                     }
                     if running {
                         ui.spinner();
-                        ui.label(theme::muted("Exporting..."));
+                        ui.label(theme::muted(if dialog.print { "Printing..." } else { "Exporting..." }));
                     }
                 });
             });
@@ -381,7 +406,7 @@ impl InkApp {
         let count = self.doc.page_count.max(1);
         let current = self.current_page + 1;
 
-        section(ui, "Export");
+        section(ui, if d.print { "Print" } else { "Export" });
         let before = d.scope;
         ui.horizontal(|ui| {
             ui.selectable_value(&mut d.scope, Scope::Note, "This note");
@@ -437,6 +462,9 @@ impl InkApp {
                     ui.selectable_value(&mut s.pdf_ink, ink, label);
                 }
             });
+            if d.print {
+                return;
+            }
             row(ui, "Page size", |ui| {
                 let label = match s.pdf_page_size {
                     None => "Same as the note".to_owned(),
@@ -464,11 +492,15 @@ impl InkApp {
                 }
             });
         });
-        ui.label(
-            RichText::new("With another page size, each page is scaled to fit and centred.")
-                .small()
-                .color(color::text_faint()),
-        );
+        let fitted = if d.print {
+            "Each page is scaled to fit the printer's paper and centred, turned to match it."
+        } else {
+            "With another page size, each page is scaled to fit and centred."
+        };
+        ui.label(RichText::new(fitted).small().color(color::text_faint()));
+        if d.print {
+            return;
+        }
 
         section(ui, "Document");
         grid(ui, "export_document", |ui| {
@@ -624,7 +656,8 @@ impl InkApp {
     }
 
     /// Starts writing the PDF on a background thread, from copies of the
-    /// notes: the open note can be edited (and saved) meanwhile.
+    /// notes: the open note can be edited (and saved) meanwhile. Printing,
+    /// the thread then shows the system's print dialog and prints it.
     fn run_export(&mut self, ctx: &egui::Context, d: &ExportDialog, list: &[(PathBuf, String)]) {
         let docs: Vec<(Document, String)> = list
             .iter()
@@ -639,19 +672,45 @@ impl InkApp {
         let skipped = list.len() - docs.len();
 
         let (tx, done) = mpsc::channel();
-        let (ctx, target) = (ctx.clone(), path.clone());
+        let (ctx, to_printer) = (ctx.clone(), d.print);
         let spawned = thread::Builder::new().name("pdf-export".into()).spawn(move || {
             let notes: Vec<PdfNote> = docs.iter().map(|(doc, t)| PdfNote { doc, title: t.clone() }).collect();
-            let _ = tx.send(pdf_export::export_notes(&notes, &target, &opts));
+            let sent = if to_printer {
+                pdf_export::export_bytes(&notes, &opts)
+                    .and_then(|pdf| print::print(pdf, &title).map_err(io::Error::other))
+                    .map(Sent::Printer)
+            } else {
+                pdf_export::export_notes(&notes, &path, &opts).map(|()| Sent::File(path))
+            };
+            let _ = tx.send(sent);
             // Wake the UI to show the result.
             ctx.request_repaint();
         });
         match spawned {
             Ok(_) => {
-                self.export_job = Some(ExportJob { done, path, skipped });
-                self.toast("Exporting PDF...");
+                self.export_job = Some(ExportJob { done, skipped });
+                self.toast(if to_printer { "Preparing to print..." } else { "Exporting PDF..." });
             }
             Err(e) => self.toast(format!("PDF export failed: {e}")),
+        }
+    }
+
+    /// Prints the PDF open in the reader, as it is.
+    fn print_pdf(&mut self, ctx: &egui::Context) {
+        if self.export_job.is_some() {
+            return self.toast("Another export or print is still running");
+        }
+        let Some(file) = self.doc.pdf.as_ref().and_then(|p| p.file.clone()) else { return };
+        let title = self.note_meta.title.clone();
+        let (tx, done) = mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = thread::Builder::new().name("pdf-print".into()).spawn(move || {
+            let _ = tx.send(print::print(file.bytes.clone(), &title).map(Sent::Printer).map_err(io::Error::other));
+            ctx.request_repaint();
+        });
+        match spawned {
+            Ok(_) => self.export_job = Some(ExportJob { done, skipped: 0 }),
+            Err(e) => self.toast(format!("Cannot print: {e}")),
         }
     }
 
@@ -663,21 +722,24 @@ impl InkApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(io::Error::other("the export stopped unexpectedly")),
         };
-        let Some(ExportJob { path, skipped, .. }) = self.export_job.take() else { return };
+        let Some(ExportJob { skipped, .. }) = self.export_job.take() else { return };
+        let skipped = if skipped > 0 { format!(" ({skipped} unreadable note(s) skipped)") } else { String::new() };
         match result {
-            Ok(()) => {
-                let mut msg = format!("Exported PDF to {}", path.display());
-                if skipped > 0 {
-                    msg.push_str(&format!(" ({skipped} unreadable note(s) skipped)"));
-                }
-                self.toast(msg);
+            Ok(Sent::File(path)) => {
+                self.toast(format!("Exported PDF to {}{skipped}", path.display()));
                 if self.settings.pdf_open_after
                     && let Err(e) = open_with_system(&path)
                 {
                     self.toast(format!("Exported, but cannot open it: {e}"));
                 }
             }
-            Err(e) => self.toast(format!("PDF export failed: {e}")),
+            Ok(Sent::Printer(Printed::Sent(Some(n)))) => {
+                self.toast(format!("Sent {n} {} to the printer{skipped}", if n == 1 { "page" } else { "pages" }));
+            }
+            Ok(Sent::Printer(Printed::Sent(None))) => self.toast(format!("Sent to the printer{skipped}")),
+            Ok(Sent::Printer(Printed::Cancelled)) => {}
+            Ok(Sent::Printer(Printed::Opened)) => self.toast("Opened in Preview: print it from there (Cmd+P)"),
+            Err(e) => self.toast(format!("Cannot print or export: {e}")),
         }
     }
 }

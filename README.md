@@ -36,6 +36,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
     - [Keyboard shortcuts](#keyboard-shortcuts)
     - [Reading PDFs](#reading-pdfs)
     - [PDF export](#pdf-export)
+    - [Printing](#printing)
   - [Your Data](#your-data)
   - [Configuration](#configuration)
   - [Project Structure](#project-structure)
@@ -91,6 +92,7 @@ It runs natively on Windows, macOS and Linux, built with Rust,
 - Autosave a moment after every change, with atomic writes and periodic `.bak` backups
 - Undo and redo
 - Vector PDF export, with or without the ruled lines or grid
+- Printing, with the same choices and preview, through the system's print dialog
 - Save a page (with its paper, rules and PDF page) or a selection as a PNG picture
 
 ## Getting Started
@@ -144,7 +146,7 @@ resize.
 
 | Menu | Contents |
 | --- | --- |
-| **File** | New note, new notebook, import, open a PDF to read, write on a PDF, save, export as PDF, close note, library folder, settings, exit |
+| **File** | New note, new notebook, import, open a PDF to read, write on a PDF, save, export as PDF, print, close note, library folder, settings, exit |
 | **Edit** | Undo, redo, cut, copy, paste, select all on page, delete selection, deselect |
 | **View** | zoom in / out, actual size, fit width / page, toolbar position, full screen |
 | **Page** | Insert a page before / after the current one, delete it, copy, cut or paste a page, save it as PNG, paper style, page setup |
@@ -241,6 +243,7 @@ note and goes back to the library screen.
 | `Ctrl+O` | Open a PDF to read |
 | `Ctrl+S` | Save now |
 | `Ctrl+E` | Export the note as PDF (opens the export dialog) |
+| `Ctrl+P` | Print (opens the print dialog; a PDF in the reader prints as it is) |
 | `Ctrl+W` | Close the note and go back to the library screen |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
@@ -311,6 +314,22 @@ The dialog remembers your choices, except what to export, the title and the
 file.
 Each exported note page becomes one PDF page. Ink is exported as vector paths
 that follow the same smoothed curves as on screen.
+
+### Printing
+
+`Ctrl+P` (**File > Print...**) opens the same dialog as the export, to print:
+what to print (this note, its pages, its section or selected notes), the
+content and the ink colours, with the preview. **Print...** then opens the
+system's print dialog, to choose the printer and the copies. Each page is
+scaled to fit the printer's paper and centred, and turned a quarter if it lies
+the other way round than the paper. A PDF open in the reader goes straight to
+the system's print dialog, all of it.
+
+- **Windows**: the system's Print dialog; Tratto draws the pages for the
+  printer at its resolution (up to 300 dpi).
+- **Linux**: the desktop's print dialog (through the desktop portal, as on
+  GNOME and KDE); without one, the default printer through `lp`.
+- **macOS**: the PDF opens in Preview, to print from there (`Cmd+P`).
 
 ## Your Data
 

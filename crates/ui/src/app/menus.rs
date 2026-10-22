@@ -69,6 +69,7 @@ pub(super) enum Command {
     LibraryFolder,
     Save,
     ExportPdf,
+    Print,
     CloseNote,
     Quit,
     Undo,
@@ -345,6 +346,8 @@ impl InkApp {
                 ui,
                 Command::ExportPdf,
             );
+            // A PDF in the reader prints as it is.
+            push(entry(ui, icon::PRINTER, "Print...", &shortcut(&ctx, cmd, Key::P), editor), ui, Command::Print);
             let close = if self.reading() { "Close PDF" } else { "Close note" };
             push(entry(ui, icon::BOOKS, close, &shortcut(&ctx, cmd, Key::W), editor), ui, Command::CloseNote);
             ui.separator();
@@ -756,6 +759,9 @@ impl InkApp {
                 if i.consume_key(cmd, Key::W) {
                     out.push(Command::CloseNote);
                 }
+                if i.consume_key(cmd, Key::P) {
+                    out.push(Command::Print);
+                }
                 // Before Ctrl+F, which would also match Ctrl+Shift+F.
                 if i.consume_key(cmd | Modifiers::SHIFT, Key::F) {
                     out.push(Command::FindInNotebook);
@@ -880,7 +886,8 @@ impl InkApp {
             Command::Save if editor => {
                 self.save_note(true);
             }
-            Command::ExportPdf if editor && !self.reading() => self.open_export_dialog(),
+            Command::ExportPdf if editor && !self.reading() => self.open_export_dialog(ctx, false),
+            Command::Print if editor => self.open_export_dialog(ctx, true),
             Command::CloseNote if editor => self.close_note(ctx),
             Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::Undo => self.undo(),
@@ -1015,6 +1022,7 @@ impl InkApp {
                             (key(c, Key::N), "New note"),
                             (key(c, Key::S), "Save now"),
                             (key(c, Key::E), "Export as PDF"),
+                            (key(c, Key::P), "Print"),
                             (key(c, Key::W), "Close the note"),
                             (key(c, Key::O), "Open a PDF to read"),
                         ],

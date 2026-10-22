@@ -84,7 +84,7 @@ impl InkApp {
             self.save_note(true);
         }
         if export && !self.reading() {
-            self.open_export_dialog();
+            self.open_export_dialog(ctx, false);
         }
         // While the context menu is open, Escape belongs to it.
         if (self.selection.is_some() || self.picture.is_some())
