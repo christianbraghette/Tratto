@@ -569,6 +569,7 @@ impl InkApp {
         }
 
         // ---- painting
+        self.picture_textures.begin_frame(ui.ctx(), now);
         // Bottom to top: paper, highlighters, rules, text, pen (see `render`).
         let painter = ui.painter_at(canvas);
         render::paint_paper(&painter, &view);

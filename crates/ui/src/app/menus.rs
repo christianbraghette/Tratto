@@ -405,6 +405,7 @@ impl InkApp {
                     ui,
                     Command::ToolbarAt(ToolbarPosition::Bottom),
                 );
+                ui.separator();
                 let side = self.settings.sidebar_side;
                 push(
                     check(ui, side == SidebarSide::Left, "Sidebar on the left", ""),
@@ -623,7 +624,9 @@ impl InkApp {
                     }
                     if self.text_sel.is_some() || menu.on_selection || menu.picture.is_some() {
                         self.cut_copy_entries(ui, &mut push);
-                        if (menu.on_selection || menu.picture.is_some())
+                        // Not on a picture: it is a picture already.
+                        if menu.on_selection
+                            && menu.picture.is_none()
                             && entry(ui, icon::FILE_PNG, "Save as PNG...", "", true)
                         {
                             push(ui, Command::SaveSelectionPng);

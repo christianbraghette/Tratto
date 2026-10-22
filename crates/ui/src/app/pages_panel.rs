@@ -31,6 +31,10 @@ const THUMB_MAX_W: f32 = 200.0;
 /// this far in.
 const SWIPE_EDGE: f32 = 24.0;
 const SWIPE_IN: f32 = 48.0;
+/// Slide in / out time of the sidebar in fullscreen, in seconds.
+const SLIDE_TIME: f32 = 0.2;
+/// Fade-in time of a sidebar view opened or switched to, in seconds.
+const VIEW_FADE_TIME: f32 = 0.15;
 
 impl InkApp {
     /// Inserts an empty page so that it gets `index` (undoable).
@@ -52,7 +56,8 @@ impl InkApp {
     ///
     /// In fullscreen it starts hidden behind a notch in the top corner
     /// ([`Self::fullscreen_sidebar_notch`]); clicking the highlighted view
-    /// hides it there again.
+    /// hides it there again. It slides in and out from the window edge, as
+    /// the title bar does from the top.
     pub(super) fn sidebar(&mut self, ui: &mut egui::Ui, fullscreen: bool) {
         if !fullscreen {
             self.chrome.fullscreen_sidebar = false;
@@ -61,14 +66,44 @@ impl InkApp {
         {
             self.chrome.fullscreen_sidebar = true;
         }
-        let hidden = fullscreen && !self.chrome.fullscreen_sidebar;
-        let view = if hidden { Sidebar::Closed } else { self.settings.sidebar };
+        let shown = !fullscreen || self.chrome.fullscreen_sidebar;
+        let reveal = ui.ctx().animate_bool_with_time(Id::new("sidebar_reveal"), shown, SLIDE_TIME);
+        self.chrome.sidebar_reveal = reveal;
+        if reveal <= 0.0 {
+            self.page_drag = None;
+        } else if reveal >= 1.0 {
+            let before = ui.available_rect_before_wrap().width();
+            self.sidebar_panels(ui, fullscreen);
+            self.chrome.sidebar_width = before - ui.available_rect_before_wrap().width();
+        } else {
+            // The panel grows with the reveal, the sidebar (as wide as when
+            // last shown) slides out from the edge inside it.
+            let full = self.chrome.sidebar_width.max(toolbar::STRIP_WIDTH);
+            let side = self.settings.sidebar_side;
+            Self::side_panel(side, "sidebar_slide")
+                .resizable(false)
+                .exact_size(full * reveal)
+                .show_separator_line(false)
+                .frame(egui::Frame::NONE.fill(color::chrome()))
+                .show(ui, |ui| {
+                    let r = ui.max_rect();
+                    let rect = match side {
+                        SidebarSide::Left => Rect::from_min_max(pos2(r.right() - full, r.top()), r.max),
+                        SidebarSide::Right => Rect::from_min_size(r.min, vec2(full, r.height())),
+                    };
+                    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    inner.set_clip_rect(r.intersect(ui.clip_rect()));
+                    self.sidebar_panels(&mut inner, fullscreen);
+                });
+        }
+        self.chrome.sidebar_seen = Some(self.settings.sidebar);
+    }
+
+    /// The sidebar's panels: the strip, and the shown view next to it.
+    fn sidebar_panels(&mut self, ui: &mut egui::Ui, fullscreen: bool) {
+        let view = self.settings.sidebar;
         if view != Sidebar::Pages {
             self.page_drag = None;
-        }
-        if hidden {
-            self.chrome.sidebar_seen = Some(self.settings.sidebar);
-            return;
         }
         // Only a note written on a PDF has an outline; a reader-only window
         // has no library.
@@ -79,7 +114,7 @@ impl InkApp {
             || view == Sidebar::Notebook && !library;
         if wrong_view {
             self.settings.sidebar = Sidebar::Pages;
-            return self.sidebar(ui, fullscreen);
+            return self.sidebar_panels(ui, fullscreen);
         }
         let last = self.settings.sidebar_last;
         if last == Sidebar::Outline && !on_pdf || last == Sidebar::Notebook && !library {
@@ -126,14 +161,7 @@ impl InkApp {
                     clicked = Some(Sidebar::Settings);
                 }
             });
-        match view {
-            Sidebar::Notebook => self.notebook_view(ui),
-            Sidebar::Pages => self.pages_view(ui),
-            Sidebar::Settings => self.note_settings_view(ui),
-            Sidebar::Outline => self.outline_view(ui),
-            Sidebar::Search => self.search_view(ui),
-            Sidebar::Closed => {}
-        }
+        self.view_with_fade(ui, view);
         if let Some(v) = clicked {
             if fullscreen && v == view {
                 // Back behind the notch, keeping the view for next time.
@@ -145,7 +173,45 @@ impl InkApp {
                 self.search_panel.focus = true;
             }
         }
-        self.chrome.sidebar_seen = Some(self.settings.sidebar);
+    }
+
+    /// Shows `view` next to the strip. A view just opened, or switched to,
+    /// fades in as the menus do; its panel's surface is there at once, so the
+    /// canvas never shows through.
+    fn view_with_fade(&mut self, ui: &mut egui::Ui, view: Sidebar) {
+        let now = ui.input(|i| i.time);
+        if self.chrome.view_fade.is_none_or(|(v, _)| v != view) {
+            self.chrome.view_fade = Some((view, now));
+        }
+        let start = self.chrome.view_fade.map_or(now, |(_, t)| t);
+        let t = ((now - start) as f32 / VIEW_FADE_TIME).clamp(0.0, 1.0);
+        let alpha = egui::emath::easing::cubic_out(t);
+        if t < 1.0 {
+            ui.ctx().request_repaint();
+        }
+
+        let surface = ui.painter().add(egui::Shape::Noop);
+        let before = ui.available_rect_before_wrap();
+        let opacity = ui.opacity();
+        ui.set_opacity(opacity * alpha);
+        match view {
+            Sidebar::Notebook => self.notebook_view(ui),
+            Sidebar::Pages => self.pages_view(ui),
+            Sidebar::Settings => self.note_settings_view(ui),
+            Sidebar::Outline => self.outline_view(ui),
+            Sidebar::Search => self.search_view(ui),
+            Sidebar::Closed => {}
+        }
+        ui.set_opacity(opacity);
+        // The width the view took from the side of the window.
+        let after = ui.available_rect_before_wrap();
+        let taken = match self.settings.sidebar_side {
+            SidebarSide::Left => Rect::from_min_max(before.min, pos2(after.left(), before.bottom())),
+            SidebarSide::Right => Rect::from_min_max(pos2(after.right(), before.top()), before.max),
+        };
+        if alpha < 1.0 && taken.width() > 0.0 {
+            ui.painter().set(surface, egui::Shape::rect_filled(taken, 0.0, color::chrome()));
+        }
     }
 
     /// Fullscreen, with the sidebar hidden: the notch in its top corner that

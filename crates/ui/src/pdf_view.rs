@@ -45,7 +45,9 @@ const MAX_IN_FLIGHT: usize = 6;
 const UPLOADS_PER_FRAME: usize = 6;
 /// Seconds an image may stay unused before it is dropped (by time, not
 /// frames: at a high frame rate tiles scrolled past would be rendered again
-/// after a moment).
+/// after a moment). One shown in the last frame is still on screen and never
+/// goes, however long ago that frame was (the window only repaints on a
+/// change).
 const TTL_WHOLE: f64 = 30.0;
 const TTL_TILE: f64 = 10.0;
 /// Bytes of textures kept at most: past it, the images unused the longest
@@ -209,7 +211,8 @@ impl PdfTextures {
             .iter()
             .filter(|(k, e)| {
                 let ttl = if k.part == Part::Whole { TTL_WHOLE } else { TTL_TILE };
-                !e.pending && now - e.used_at >= ttl
+                let on_screen = e.last_used + 1 >= frame;
+                !e.pending && !on_screen && now - e.used_at >= ttl
             })
             .map(|(k, _)| *k)
             .collect();
@@ -521,6 +524,31 @@ mod tests {
             .collect();
         assert_eq!(left, [2]);
         assert_eq!(tex.retired.len(), 2);
+    }
+
+    #[test]
+    fn what_is_on_screen_stays_after_a_pause() {
+        let ctx = egui::Context::default();
+        let mut tex = PdfTextures { frame: 10, ..PdfTextures::default() };
+        let texture = ctx.load_texture("t", ColorImage::filled([1, 1], Color32::WHITE), TextureOptions::LINEAR);
+        // Shown in the last frame (10), and in an older one (9).
+        for (tx, last_used) in [(0, 10), (1, 9)] {
+            let key = Key { file: 1, page: 0, part: Part::Tile { level: 1024, tx, ty: 0 } };
+            let entry = Entry { texture: Some(texture.clone()), size: [1, 1], last_used, ..Entry::default() };
+            tex.entries.insert(key, entry);
+        }
+        // The next frame comes long after.
+        let at = RawInput { time: Some(TTL_WHOLE * 10.0), ..RawInput::default() };
+        crate::test_frame(&ctx, at, |ui| tex.begin_frame(ui.ctx()));
+        let left: Vec<u32> = tex
+            .entries
+            .keys()
+            .map(|k| match k.part {
+                Part::Tile { tx, .. } => tx,
+                Part::Whole => unreachable!(),
+            })
+            .collect();
+        assert_eq!(left, [0], "the tile on screen stays, the one scrolled past goes");
     }
 
     #[test]

@@ -79,6 +79,9 @@ pub struct PictureTextures {
     decoded: (Sender<Decoded>, Receiver<Decoded>),
     /// When unpainted textures were last dropped (egui's time).
     swept_at: f64,
+    /// The time of this frame and of the one before (see `begin_frame`).
+    frame_at: f64,
+    previous_frame_at: f64,
 }
 
 impl Default for PictureTextures {
@@ -89,13 +92,32 @@ impl Default for PictureTextures {
             unreadable: HashSet::new(),
             decoded: mpsc::channel(),
             swept_at: 0.0,
+            frame_at: 0.0,
+            previous_frame_at: 0.0,
         }
     }
 }
 
 impl PictureTextures {
-    /// Makes textures of the decoded pictures, and drops the ones unpainted
-    /// for `PICTURE_TTL` (not painted in this frame, so they can go).
+    /// Once per frame, before painting: drops the textures unpainted for
+    /// `PICTURE_TTL`. What the previous frame painted is still on screen and
+    /// stays, however long ago that frame was: the window only repaints on a
+    /// change, so after a pause every picture shown looked unpainted for
+    /// long, and was dropped and decoded again.
+    pub fn begin_frame(&mut self, ctx: &eframe::egui::Context, now: f64) {
+        if now != self.frame_at {
+            self.previous_frame_at = self.frame_at;
+            self.frame_at = now;
+        }
+        self.update(ctx, now);
+        if now - self.swept_at >= 1.0 {
+            self.swept_at = now;
+            let shown = self.previous_frame_at;
+            self.textures.retain(|_, t| t.keep || t.used_at >= shown || now - t.used_at < PICTURE_TTL);
+        }
+    }
+
+    /// Makes textures of the decoded pictures.
     fn update(&mut self, ctx: &eframe::egui::Context, now: f64) {
         for ((key, want), levels) in self.decoded.1.try_iter() {
             self.decoding.remove(&(key, want));
@@ -112,10 +134,6 @@ impl PictureTextures {
                 let keep = level <= PICTURE_LEVELS[0];
                 self.textures.insert((key, level), PictureTexture { texture, keep, used_at: now });
             }
-        }
-        if now - self.swept_at >= 1.0 {
-            self.swept_at = now;
-            self.textures.retain(|_, t| t.keep || now - t.used_at < PICTURE_TTL);
         }
     }
 
@@ -766,8 +784,14 @@ mod tests {
         settle(&mut tex, 0.0);
         assert_eq!(levels(&tex), [256, 1000], "never larger than the picture");
 
-        // Unpainted for a while: only the small one stays.
-        tex.update(&ctx, PICTURE_TTL + 1.0);
+        // A pause: the next frame comes long after, the picture still shown.
+        tex.begin_frame(&ctx, PICTURE_TTL + 1.0);
+        assert_eq!(levels(&tex), [256, 1000], "on screen: kept");
+
+        // Out of view (the frames go on without it) for a while: only the
+        // small one stays.
+        tex.begin_frame(&ctx, PICTURE_TTL + 2.0);
+        tex.begin_frame(&ctx, PICTURE_TTL + 3.0);
         assert_eq!(levels(&tex), [256]);
     }
 

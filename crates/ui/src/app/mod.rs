@@ -246,6 +246,13 @@ struct WindowChrome {
     /// The sidebar's view last frame: a view opened from elsewhere (Ctrl+F,
     /// the menus) shows the sidebar in fullscreen.
     sidebar_seen: Option<Sidebar>,
+    /// How far the sidebar is shown (0 hidden, 1 fully in): it slides in
+    /// and out in fullscreen.
+    sidebar_reveal: f32,
+    /// The sidebar's width when last fully shown, for the slide.
+    sidebar_width: f32,
+    /// The sidebar view shown and since when (s), for its fade-in.
+    view_fade: Option<(Sidebar, f64)>,
 }
 
 pub struct InkApp {
@@ -756,9 +763,10 @@ impl InkApp {
             )
         };
         // After the sidebar, so the joins (or its notch) sit next to it.
-        if fullscreen && !self.chrome.fullscreen_sidebar {
+        // Neither while the sidebar slides.
+        if self.chrome.sidebar_reveal <= 0.0 {
             self.fullscreen_sidebar_notch(ui);
-        } else {
+        } else if self.chrome.sidebar_reveal >= 1.0 {
             toolbar::show_joins(ui, self.settings.sidebar_side, bottom_inset);
         }
         // Before the canvas, which must not see the press that closes it.
