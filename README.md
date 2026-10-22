@@ -56,7 +56,8 @@ It runs natively on Windows, macOS and Linux, built with Rust,
   other apps get the copied text, or a picture of the copied ink
 - Text boxes for typed notes
 - A pointer tool to move around a note as in the PDF reader: drag to scroll,
-  tap to turn pages or follow the links of the PDF it is written on
+  tap to turn pages or follow the links of the PDF it is written on;
+  its laser pointer, to present, leaves a fading red trail where you drag
 - Native pen support on Wayland (pressure, eraser end, side button) and Windows (eraser end, side button);
   on X11, a pen side button reported as the middle mouse button also switches to the eraser
 

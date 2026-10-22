@@ -59,6 +59,7 @@ mod canvas;
 pub(crate) mod clipboard;
 mod export_ui;
 mod ink;
+mod laser;
 mod library_panel;
 mod library_ui;
 mod menus;
@@ -324,6 +325,11 @@ pub struct InkApp {
     /// The press being held is a finger's that moves around the note
     /// (see `finger_ink`), until it is released.
     finger_nav: bool,
+    /// The pointer tool shows a laser pointer (see `laser`), and its trail.
+    laser: bool,
+    laser_trail: Vec<laser::LaserPoint>,
+    /// The laser was pressed on the canvas last frame.
+    laser_down: bool,
     screen: Screen,
     library: Library,
     lib_ui: library_ui::LibraryUi,
@@ -470,6 +476,9 @@ impl InkApp {
             page_turn: 0,
             finger_ink: false,
             finger_nav: false,
+            laser: false,
+            laser_trail: Vec::new(),
+            laser_down: false,
             screen: Screen::Library,
             library: Library::default(),
             lib_ui: library_ui::LibraryUi::default(),
@@ -711,6 +720,7 @@ impl InkApp {
             count: self.doc.page_count.max(1),
             contents: self.doc.pdf.is_some(),
             can_go_back: !self.nav_back.is_empty(),
+            laser: self.laser,
         };
         let selected = self.selection_color();
         let event = if self.reading() {
@@ -751,6 +761,7 @@ impl InkApp {
             Some(ToolbarEvent::NextPage) => self.page_turn += 1,
             Some(ToolbarEvent::GoToPage(i)) => self.scroll_to = Some(self.layout().page_stop(i)),
             Some(ToolbarEvent::Back) => self.go_back(),
+            Some(ToolbarEvent::Laser) => self.laser = !self.laser,
             Some(ToolbarEvent::Tool(t)) => self.pick_tool(t),
             Some(ToolbarEvent::Recolor(rgb)) => self.recolor_selection(rgb),
             None => {}

@@ -366,14 +366,14 @@ impl InkApp {
         // Selecting text (the reader, the pointer tool), before taps and
         // links: a click that drops a selection does nothing else.
         let mut click_used = false;
-        if self.navigating() && !self.busy() {
+        if self.navigating() && !self.busy() && !self.lasering() {
             let v = View::new(canvas, self.scroll, scale, layout);
             click_used = self.text_input(ui.ctx(), &canvas_resp, &v, now);
         }
         // The reader: links, under the pointer, show where they lead
         // and are followed by a tap.
         let mut link_under_pointer = None;
-        if self.navigating() {
+        if self.navigating() && !self.lasering() {
             let v = View::new(canvas, self.scroll, scale, layout);
             let pointer = canvas_resp.interact_pointer_pos().or(canvas_resp.hover_pos());
             let link = pointer.and_then(|p| self.link_at(&v, p));
@@ -429,9 +429,10 @@ impl InkApp {
             let start = press.or(canvas_resp.interact_pointer_pos());
             let v = View::new(canvas, self.scroll, scale, layout);
             // The reader: everywhere (but not while selecting text); a note:
-            // only off the paper.
+            // only off the paper, as with the laser.
             self.panning = !self.selecting_text()
-                && (self.navigating() || start.is_some_and(|p| v.layout.page_at(v.screen_to_content(p)).is_none()));
+                && (self.navigating() && !self.lasering()
+                    || start.is_some_and(|p| v.layout.page_at(v.screen_to_content(p)).is_none()));
         }
         if self.panning {
             if canvas_resp.dragged() {
@@ -542,6 +543,7 @@ impl InkApp {
                 Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves),
             }
         }
+        self.laser_input(ui.ctx(), &canvas_resp, &view, &moves, now);
 
         if !ui.input(|i| i.pointer.primary_down()) {
             self.finger_nav = false;
@@ -675,6 +677,16 @@ impl InkApp {
                 }
             }
         }
+        // The laser: over a page its dot in place of the system pointer
+        // (off the paper the usual arrow), and its trail.
+        let laser_dot = pen_hover
+            .or(canvas_resp.hover_pos())
+            .or(canvas_resp.interact_pointer_pos())
+            .filter(|p| self.lasering() && !grabbing && view.layout.page_at(view.screen_to_content(*p)).is_some());
+        if laser_dot.is_some() {
+            hide_pointer(&ctx);
+        }
+        self.paint_laser(&painter, &view, laser_dot, now);
 
         // Rubber band while dragging out a new text box.
         if let Some(tp) = &self.text_press

@@ -52,6 +52,8 @@ pub enum ToolbarEvent {
     Tool(Tool),
     /// A colour for what is selected.
     Recolor([u8; 3]),
+    /// Turn the pointer tool's laser on or off.
+    Laser,
 }
 
 impl Tool {
@@ -119,6 +121,8 @@ pub struct Navigation {
     pub contents: bool,
     /// A link was followed: Back can return.
     pub can_go_back: bool,
+    /// The pointer tool's laser is on.
+    pub laser: bool,
 }
 
 /// The reader's bar, in the tool bar's place: import (to write on the PDF),
@@ -138,23 +142,29 @@ pub fn show_reader(
             event = Some(ToolbarEvent::Import);
         }
         ui.separator();
-        let pages = page_controls(ui, settings, nav);
+        let pages = page_controls(ui, settings, nav, false);
         ui.separator();
         zoom_controls(ui, settings).or(pages).or(event)
     })
 }
 
-/// The table of contents (if any), Back (after a link) and the pages:
-/// previous, the current one (to type or drag), next.
-fn page_controls(ui: &mut egui::Ui, settings: &mut Settings, nav: &Navigation) -> Option<ToolbarEvent> {
+/// The laser (the pointer tool, `laser`) or else the table of contents (if
+/// any), Back (after a link) and the pages: previous, the current one (to
+/// type or drag), next.
+fn page_controls(ui: &mut egui::Ui, settings: &mut Settings, nav: &Navigation, laser: bool) -> Option<ToolbarEvent> {
     let mut event = None;
-    if nav.contents && outline_button(ui, settings.sidebar == Sidebar::Outline) {
+    if laser {
+        let tip = if nav.laser { "Laser pointer: on (drag on the page to point)" } else { "Laser pointer, to present" };
+        if ui.add(egui::Button::selectable(nav.laser, theme::icon(icon::RECORD))).on_hover_text(tip).clicked() {
+            event = Some(ToolbarEvent::Laser);
+        }
+    } else if nav.contents && outline_button(ui, settings.sidebar == Sidebar::Outline) {
         settings.sidebar.toggle(Sidebar::Outline);
     }
     if nav.can_go_back && ui.button(theme::icon(icon::ARROW_BEND_UP_LEFT)).on_hover_text("Back (Alt+Left)").clicked() {
         event = Some(ToolbarEvent::Back);
     }
-    if nav.contents || nav.can_go_back {
+    if laser || nav.contents || nav.can_go_back {
         ui.separator();
     }
     let (page, count) = (nav.page, nav.count);
@@ -530,7 +540,7 @@ fn contents(
     // The size bubble goes towards the middle of the window.
     let above = settings.toolbar_position == ToolbarPosition::Bottom;
     match *tool {
-        Tool::Pointer => event = page_controls(ui, settings, nav),
+        Tool::Pointer => event = page_controls(ui, settings, nav, true),
         Tool::Pen => style_controls(ui, &mut settings.pen, &PEN_PALETTE, 0.5..=12.0, 0.5, above),
         Tool::Highlighter => {
             style_controls(ui, &mut settings.highlighter, &HIGHLIGHTER_PALETTE, 4.0..=40.0, 2.0, above)
