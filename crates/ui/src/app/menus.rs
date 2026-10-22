@@ -128,8 +128,10 @@ fn shortcut(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> String {
 }
 
 /// Width of the keyboard shortcuts window's list, and of its keys' column.
-const SHORTCUTS_WIDTH: f32 = 430.0;
-const SHORTCUT_KEYS_WIDTH: f32 = 170.0;
+/// Both are fixed: keys wrap in their column and descriptions in the rest,
+/// so a long row never widens the window past its title bar.
+const SHORTCUTS_WIDTH: f32 = 460.0;
+const SHORTCUT_KEYS_WIDTH: f32 = 180.0;
 
 /// A key, or keys pressed together, drawn as a key cap.
 fn keycap(ui: &mut Ui, keys: &str) {
@@ -1079,34 +1081,42 @@ impl InkApp {
                         ],
                     ),
                 ];
-                // As wide as the window: the scroll bar at its edge.
+                // As wide as the window: the scroll bar at its edge, floating
+                // over the margin on the right.
                 let max_h = (ctx.viewport_rect().height() * 0.7).max(240.0);
                 egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.set_max_width(ui.available_width() - theme::space::M);
                     for (n, (title, rows)) in groups.iter().enumerate() {
                         if n > 0 {
                             ui.add_space(theme::space::M);
                         }
                         theme::caption(ui, title);
                         ui.add_space(theme::space::XS);
-                        egui::Grid::new(("shortcuts", n))
-                            .num_columns(2)
-                            .min_col_width(SHORTCUT_KEYS_WIDTH)
-                            .spacing([theme::space::L, theme::space::S])
-                            .show(ui, |ui| {
-                                for (keys, what) in rows {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        for (k, alt) in keys.split(" / ").enumerate() {
-                                            if k > 0 {
-                                                ui.label(theme::muted("/"));
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.y = theme::space::S;
+                            for (keys, what) in rows {
+                                ui.horizontal(|ui| {
+                                    let keys_layout =
+                                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(SHORTCUT_KEYS_WIDTH, 0.0),
+                                        keys_layout,
+                                        |ui| {
+                                            ui.set_width(SHORTCUT_KEYS_WIDTH);
+                                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                                            for (k, alt) in keys.split(" / ").enumerate() {
+                                                if k > 0 {
+                                                    ui.label(theme::muted("/"));
+                                                }
+                                                keycap(ui, alt);
                                             }
-                                            keycap(ui, alt);
-                                        }
-                                    });
-                                    ui.label(*what);
-                                    ui.end_row();
-                                }
-                            });
+                                        },
+                                    );
+                                    ui.add_space(theme::space::L - ui.spacing().item_spacing.x);
+                                    ui.add(egui::Label::new(*what).wrap());
+                                });
+                            }
+                        });
                     }
                 });
             });

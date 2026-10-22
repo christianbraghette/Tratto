@@ -172,8 +172,8 @@ to the other edge.
 
 The sidebar works like the one in VS Code: its strip is always there, with a
 button per view. Click a button to show that view next to the strip, or the
-highlighted one to hide it again. In full screen the tool notch is hidden
-and the sidebar waits behind a small notch in its top corner: click it to
+highlighted one to hide it again. In full screen the tool notch stays and
+the sidebar waits behind a small notch in its top corner: click it to
 show the sidebar, and the highlighted view to hide it again. The title bar
 slides in from the top edge. On a touch screen, swipe down from the top edge
 for the title bar, or in from the sidebar's edge for the sidebar.

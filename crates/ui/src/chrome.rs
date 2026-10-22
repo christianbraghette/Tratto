@@ -478,6 +478,24 @@ pub fn round_corners(frame: &eframe::Frame) {
     let _ = frame;
 }
 
+/// Windows: in fullscreen the system takes a swipe in from the screen's
+/// edges for its own gestures (the top one only shows a grabber, the left
+/// one the widgets), so the swipes that show the title bar and the sidebar
+/// never arrived. This hands them to the app, in fullscreen only. Does
+/// nothing elsewhere.
+pub fn own_edge_swipes(frame: &eframe::Frame) {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let Ok(handle) = frame.window_handle() else { return };
+        let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
+        edge_gesture::disable_when_fullscreen(h.hwnd.get());
+    }
+    #[cfg(not(windows))]
+    let _ = frame;
+}
+
 /// Windows 11: DWM keeps drawing the border colour on the borderless
 /// fullscreen window, so it is turned off there and back on when leaving.
 fn sync_dwm_border(fullscreen: bool) {
@@ -524,6 +542,78 @@ mod dwm {
     pub fn outline() -> u32 {
         let [r, g, b, _] = color::border_strong().to_array();
         u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16
+    }
+}
+
+/// The window's `System.EdgeGesture.DisableTouchWhenFullscreen` property,
+/// set through its shell property store (`IPropertyStore`, called through
+/// its vtable: windows-sys has no COM interfaces).
+#[cfg(windows)]
+mod edge_gesture {
+    use core::ffi::c_void;
+
+    #[repr(C)]
+    struct Guid(u32, u16, u16, [u8; 8]);
+
+    #[repr(C)]
+    struct PropertyKey {
+        fmtid: Guid,
+        pid: u32,
+    }
+
+    /// A PROPVARIANT holding a VT_BOOL.
+    #[repr(C)]
+    struct PropVariant {
+        vt: u16,
+        reserved: [u16; 3],
+        value: [u64; 2],
+    }
+
+    #[repr(C)]
+    struct PropertyStoreVtbl {
+        query_interface: usize,
+        add_ref: usize,
+        release: unsafe extern "system" fn(*mut PropertyStore) -> u32,
+        get_count: usize,
+        get_at: usize,
+        get_value: usize,
+        set_value: unsafe extern "system" fn(*mut PropertyStore, *const PropertyKey, *const PropVariant) -> i32,
+        commit: usize,
+    }
+
+    #[repr(C)]
+    struct PropertyStore {
+        vtbl: *const PropertyStoreVtbl,
+    }
+
+    // propkey.h / propsys.h
+    const IID_IPROPERTYSTORE: Guid =
+        Guid(0x886D_8EEB, 0x8CF2, 0x4446, [0x8D, 0x02, 0xCD, 0xBA, 0x1D, 0xBD, 0xCF, 0x99]);
+    const PKEY_EDGEGESTURE_DISABLETOUCHWHENFULLSCREEN: PropertyKey = PropertyKey {
+        fmtid: Guid(0x32CE_38B2, 0x2C9A, 0x41B1, [0x9B, 0xC5, 0xB3, 0x78, 0x43, 0x94, 0xAA, 0x44]),
+        pid: 2,
+    };
+    const VT_BOOL: u16 = 11;
+    const VARIANT_TRUE: u64 = 0xFFFF;
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHGetPropertyStoreForWindow(hwnd: isize, riid: *const Guid, ppv: *mut *mut c_void) -> i32;
+    }
+
+    pub fn disable_when_fullscreen(hwnd: isize) {
+        let mut store: *mut c_void = core::ptr::null_mut();
+        // SAFETY: a valid HWND of our own window, on its thread; the store
+        // is used through IPropertyStore's vtable and released once.
+        unsafe {
+            if SHGetPropertyStoreForWindow(hwnd, &IID_IPROPERTYSTORE, &mut store) < 0 || store.is_null() {
+                return;
+            }
+            let store = store.cast::<PropertyStore>();
+            let value = PropVariant { vt: VT_BOOL, reserved: [0; 3], value: [VARIANT_TRUE, 0] };
+            ((*(*store).vtbl).set_value)(store, &PKEY_EDGEGESTURE_DISABLETOUCHWHENFULLSCREEN, &value);
+            ((*(*store).vtbl).release)(store);
+        }
     }
 }
 

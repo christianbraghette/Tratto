@@ -723,8 +723,8 @@ impl InkApp {
         // moved up so it never covers the horizontal scrollbar.
         let bottom_inset = if self.hbar_visible { scrollbar::THICKNESS } else { 0.0 };
         let notebook_was_open = self.settings.sidebar == Sidebar::Notebook;
-        // Full screen is the page alone: no toolbar, the sidebar behind a
-        // notch (the title bar still slides in from the top edge).
+        // Full screen: the page and the toolbar, the sidebar behind a notch
+        // (the title bar still slides in from the top edge).
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
         self.edge_swipe(ctx, fullscreen);
         self.sidebar(ui, fullscreen);
@@ -741,9 +741,7 @@ impl InkApp {
             laser: self.laser,
         };
         let selected = self.selection_color();
-        let event = if fullscreen {
-            None
-        } else if self.reading() {
+        let event = if self.reading() {
             toolbar::show_reader(ui, &mut self.settings, &nav, bottom_inset)
         } else {
             toolbar::show(
@@ -873,6 +871,7 @@ impl eframe::App for InkApp {
             self.pen_input.drop = WaylandDrop::start(ctx, frame);
             self.pen_input.windows = WindowsPen::start(ctx, frame);
             crate::chrome::round_corners(frame);
+            crate::chrome::own_edge_swipes(frame);
             crate::print::remember_window(frame);
             crate::win_frame::install(frame);
         }
