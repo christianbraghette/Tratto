@@ -126,6 +126,13 @@ impl InkApp {
         saved
     }
 
+    /// Writes the open note first if it is `path` and changed, for what
+    /// reads its file (moving or copying it). False (shown) if that failed.
+    pub(super) fn save_if_open(&mut self, path: &Path) -> bool {
+        self.sync_dirty();
+        self.note_path.as_deref() != Some(path) || !self.dirty || self.save_note(false)
+    }
+
     /// Saves the open note in the background (autosave). While a save is
     /// being written, the note stays dirty and is saved after it.
     pub(super) fn autosave(&mut self) {
@@ -166,6 +173,7 @@ impl InkApp {
                     if m.auto_title && meta.auto_title {
                         m.title = meta.title;
                     }
+                    self.close_unsaved = false;
                     ok = true;
                 }
                 Ok(_) => ok = true,

@@ -223,7 +223,7 @@ fn bench_page_changes() {
     };
     let first = frame(&doc, &mut cache);
     let n = 20;
-    let (mut erase, mut write) = (0.0, 0.0);
+    let (mut erase, mut write, mut undo) = (0.0, 0.0, 0.0);
     for i in 0..n {
         doc.strokes.remove(100 + i);
         erase += frame(&doc, &mut cache);
@@ -231,10 +231,16 @@ fn bench_page_changes() {
         let pts = (0..30).map(|k| Point::new(k as f32, i as f32, 0.5)).collect();
         doc.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 2.0, pts));
         write += frame(&doc, &mut cache);
+        let undone = doc.strokes.pop();
+        undo += frame(&doc, &mut cache);
+        doc.strokes.extend(undone);
+        frame(&doc, &mut cache);
     }
     println!(
-        "page changes: first build {first:.1} ms, a stroke erased {:.2} ms, a stroke written {:.3} ms",
+        "page changes: first build {first:.1} ms, a stroke erased {:.2} ms, a stroke written {:.3} ms, \
+         undone {:.3} ms",
         erase / n as f64,
-        write / n as f64
+        write / n as f64,
+        undo / n as f64
     );
 }

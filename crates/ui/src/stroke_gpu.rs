@@ -27,7 +27,7 @@
 //! as plain egui meshes.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{PaintCallbackInfo, Painter, Shape, Vec2, epaint::Mesh};
@@ -266,14 +266,22 @@ pub fn pretend_installed() {
 pub struct Batch {
     id: u64,
     mesh: Arc<Mesh>,
-    /// Changes when the mesh is replaced; within one generation it only grows
-    /// (see [`Batch::append`]), so only what was added is uploaded.
+    /// Changes when the mesh is replaced; within one generation only its end
+    /// changes (see [`Batch::append`], [`Batch::edit`]), so only that is uploaded.
     generation: u64,
+    /// Vertices and indices unchanged at the start of the mesh since it was
+    /// last uploaded (`usize::MAX`: all of them); the GPU keeps those.
+    unchanged: Arc<[AtomicUsize; 2]>,
 }
 
 impl Default for Batch {
     fn default() -> Self {
-        Self { id: NEXT_BATCH.fetch_add(1, Ordering::Relaxed), mesh: Arc::default(), generation: 0 }
+        Self {
+            id: NEXT_BATCH.fetch_add(1, Ordering::Relaxed),
+            mesh: Arc::default(),
+            generation: 0,
+            unchanged: Arc::new([AtomicUsize::new(usize::MAX), AtomicUsize::new(usize::MAX)]),
+        }
     }
 }
 
@@ -291,6 +299,14 @@ impl Batch {
     /// Adds triangles after the ones already there.
     pub fn append(&mut self, add: impl FnOnce(&mut Mesh)) {
         add(Arc::make_mut(&mut self.mesh));
+    }
+
+    /// Changes the triangles from `vertices` and `indices` on (those before
+    /// are left as they are): only the rest is uploaded again.
+    pub fn edit(&mut self, vertices: usize, indices: usize, change: impl FnOnce(&mut Mesh)) {
+        self.unchanged[0].fetch_min(vertices, Ordering::Relaxed);
+        self.unchanged[1].fetch_min(indices, Ordering::Relaxed);
+        change(Arc::make_mut(&mut self.mesh));
     }
 
     /// Replaces all the triangles.
@@ -358,6 +374,8 @@ struct DrawBatch {
     id: u64,
     generation: u64,
     mesh: Arc<Mesh>,
+    /// `Batch::unchanged`.
+    unchanged: Arc<[AtomicUsize; 2]>,
     offset: Vec2,
     scale: f32,
     blend: Blend,
@@ -377,8 +395,13 @@ impl CallbackTrait for DrawBatch {
             res.batches.remove(&id);
         }
         let mesh = &*self.mesh;
+        let unchanged = [0, 1].map(|i| self.unchanged[i].swap(usize::MAX, Ordering::Relaxed));
+        if let Some(gpu) = res.batches.get_mut(&self.id) {
+            gpu.vertex_count = gpu.vertex_count.min(unchanged[0]);
+            gpu.index_count = gpu.index_count.min(unchanged[1]);
+        }
         let gpu = match res.batches.get_mut(&self.id) {
-            // Grown within the same generation: just the new part.
+            // Changed at its end within the same generation: just that part.
             Some(gpu)
                 if gpu.generation == self.generation
                     && gpu.vertex_count <= mesh.vertices.len()
@@ -424,8 +447,8 @@ pub fn paint_batch(painter: &Painter, batch: &Batch, offset: Vec2, scale: f32, b
         painter.add(Shape::mesh(mesh));
         return;
     }
-    let (id, generation, mesh) = (batch.id, batch.generation, batch.mesh.clone());
-    let callback = DrawBatch { id, generation, mesh, offset, scale, blend };
+    let (id, generation, mesh, unchanged) = (batch.id, batch.generation, batch.mesh.clone(), batch.unchanged.clone());
+    let callback = DrawBatch { id, generation, mesh, unchanged, offset, scale, blend };
     // The whole screen: the vertex shader maps screen points; the painter's
     // clip rect becomes the scissor.
     painter.add(egui_wgpu::Callback::new_paint_callback(painter.ctx().viewport_rect(), callback));
@@ -672,6 +695,7 @@ mod tests {
             id: b.id,
             generation: b.generation,
             mesh: b.mesh.clone(),
+            unchanged: b.unchanged.clone(),
             offset: vec2(x, 0.0),
             scale: 1.0,
             blend: Blend::Over,
@@ -690,6 +714,27 @@ mod tests {
         let res = gpu.state.renderer.read();
         let gpu_batch = &res.callback_resources.get::<Resources>().unwrap().batches[&batch.id];
         assert_eq!((gpu_batch.vertex_count, gpu_batch.generation), (8, 0));
+        drop(res);
+
+        // Its end changed (a stroke erased, another written): only that part
+        // is sent again.
+        batch.edit(4, 6, |m| {
+            m.vertices.truncate(4);
+            m.indices.truncate(6);
+            quad(m, 2.0, 3.0, red);
+        });
+        let px = gpu.draw(WHITE_BLACK_WHITE_GREY, &[&call(&batch, 0.0)]);
+        assert_eq!(px, [[255, 0, 0], [0, 0, 0], [255, 0, 0], [128, 128, 128]], "its end was uploaded again");
+        // Only made shorter: nothing to send, fewer triangles drawn.
+        batch.edit(4, 6, |m| {
+            m.vertices.truncate(4);
+            m.indices.truncate(6);
+        });
+        let px = gpu.draw(WHITE_BLACK_WHITE_GREY, &[&call(&batch, 0.0)]);
+        assert_eq!(px, [[255, 0, 0], [0, 0, 0], [255, 255, 255], [128, 128, 128]], "made shorter");
+        let res = gpu.state.renderer.read();
+        let gpu_batch = &res.callback_resources.get::<Resources>().unwrap().batches[&batch.id];
+        assert_eq!((gpu_batch.vertex_count, gpu_batch.index_count, gpu_batch.generation), (4, 6, 0));
         drop(res);
 
         let mut replaced = Mesh::default();

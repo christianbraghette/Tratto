@@ -832,6 +832,8 @@ impl InkApp {
             },
             Act::Clip(path, cut) => self.copy_note(path, cut),
             Act::Paste(dir) => self.paste_note(dir),
+            // The open note as it is shown, not as last saved.
+            Act::Duplicate(path) if !self.save_if_open(&path) => {}
             Act::Duplicate(path) => match library::duplicate_note(&path) {
                 Ok(_) => self.refresh_library(),
                 Err(e) => self.toast(format!("Duplicate failed: {e}")),
@@ -841,8 +843,7 @@ impl InkApp {
             Act::MoveNote(path, dir) => {
                 // The open note is saved first and followed to its new place.
                 let open = self.note_path.as_ref() == Some(&path);
-                self.sync_dirty();
-                if open && self.dirty && !self.save_note(false) {
+                if !self.save_if_open(&path) {
                     return;
                 }
                 match library::move_note(&path, &dir) {

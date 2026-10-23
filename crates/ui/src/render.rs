@@ -336,6 +336,9 @@ const CACHE_TTL_FRAMES: u64 = 512;
 /// While zooming, batches are drawn scaled; they are made again at the new
 /// zoom once it has not changed for this long.
 const ZOOM_SETTLE: Duration = Duration::from_millis(150);
+/// A batch whose strokes were removed is compacted in place, its new strokes
+/// at the end made, unless more than this many of them are new or changed.
+const COMPACT_MAX_NEW: usize = 8;
 
 /// The two stroke layers of a page (see the module docs).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -499,25 +502,88 @@ impl StrokeCache {
                     parts.extend(strokes[kept..].iter().map(|s| tessellate_part(mesh, s, scale, aa)));
                 });
             }
-        } else {
-            let old_mesh = entry.batch.mesh();
-            let old: HashMap<(u64, u32), &Part> = entry.parts.iter().map(|p| ((p.id, p.rev), p)).collect();
-            let mut mesh = Mesh::default();
-            // About as large as before: no growing on the way.
-            mesh.reserve_vertices(old_mesh.vertices.len());
-            mesh.reserve_triangles(old_mesh.indices.len() / 3);
-            let parts = strokes
-                .iter()
-                .map(|s| match old.get(&(s.id, s.rev)) {
+            return (&entry.batch, 1.0);
+        }
+        // The triangles of the strokes before `kept` stay where they are, on
+        // the GPU too: only the rest is uploaded again.
+        let (v0, i0) = (entry.parts[kept].vertices.start as usize, entry.parts[kept].indices.start as usize);
+        let tail = &entry.parts[kept..];
+        let rest = &strokes[kept..];
+        // Strokes removed (erased, a stroke undone), then perhaps some added
+        // at the end: the triangles of the others move down in place.
+        let mut matched = Vec::with_capacity(rest.len());
+        let mut parts = tail.iter().enumerate();
+        for s in rest {
+            match parts.find(|(_, p)| same(p, s)) {
+                Some((j, _)) => matched.push(j),
+                None => break,
+            }
+        }
+        if rest.len() - matched.len() <= COMPACT_MAX_NEW {
+            let added = &rest[matched.len()..];
+            let mut new_parts = Vec::with_capacity(matched.len() + added.len());
+            entry.batch.edit(v0, i0, |mesh| {
+                let (mut v, mut i) = (v0 as u32, i0 as u32);
+                for &j in &matched {
+                    let p = &tail[j];
+                    new_parts.push(move_part(mesh, p, v, i));
+                    (v, i) = (v + p.vertices.len() as u32, i + p.indices.len() as u32);
+                }
+                mesh.vertices.truncate(v as usize);
+                mesh.indices.truncate(i as usize);
+                new_parts.extend(added.iter().map(|s| tessellate_part(mesh, s, scale, aa)));
+            });
+            entry.parts.truncate(kept);
+            entry.parts.extend(new_parts);
+            return (&entry.batch, 1.0);
+        }
+        // Changed otherwise (strokes moved, put back in the middle): the rest
+        // made again, the triangles of the unchanged strokes copied.
+        let old_mesh = entry.batch.mesh();
+        let old: HashMap<(u64, u32), &Part> = tail.iter().map(|p| ((p.id, p.rev), p)).collect();
+        let mut mesh = Mesh::default();
+        // About as large as before: no growing on the way.
+        mesh.reserve_vertices(old_mesh.vertices.len() - v0);
+        mesh.reserve_triangles((old_mesh.indices.len() - i0) / 3);
+        let new_parts: Vec<Part> = rest
+            .iter()
+            .map(|s| {
+                let mut part = match old.get(&(s.id, s.rev)) {
                     Some(p) => copy_part(&mut mesh, old_mesh, p),
                     None => tessellate_part(&mut mesh, s, scale, aa),
-                })
-                .collect();
-            entry.batch.replace(mesh);
-            entry.parts = parts;
-        }
+                };
+                part.vertices = part.vertices.start + v0 as u32..part.vertices.end + v0 as u32;
+                part.indices = part.indices.start + i0 as u32..part.indices.end + i0 as u32;
+                part
+            })
+            .collect();
+        entry.batch.edit(v0, i0, |m| {
+            m.vertices.truncate(v0);
+            m.indices.truncate(i0);
+            m.vertices.extend_from_slice(&mesh.vertices);
+            m.indices.extend(mesh.indices.iter().map(|i| i + v0 as u32));
+        });
+        entry.parts.truncate(kept);
+        entry.parts.extend(new_parts);
         (&entry.batch, 1.0)
     }
+}
+
+/// Moves the triangles of `part` down to `vertices` and `indices` in `mesh`
+/// (at or before where they are).
+fn move_part(mesh: &mut Mesh, part: &Part, vertices: u32, indices: u32) -> Part {
+    let (v, i) = (part.vertices.start, part.indices.start);
+    let (nv, ni) = (part.vertices.len() as u32, part.indices.len() as u32);
+    if v != vertices {
+        mesh.vertices.copy_within(v as usize..(v + nv) as usize, vertices as usize);
+    }
+    if v != vertices || i != indices {
+        let shift = v - vertices;
+        for k in 0..ni as usize {
+            mesh.indices[indices as usize + k] = mesh.indices[i as usize + k] - shift;
+        }
+    }
+    Part { id: part.id, rev: part.rev, vertices: vertices..vertices + nv, indices: indices..indices + ni }
 }
 
 /// Adds the triangles of `s` to `mesh`.
@@ -960,6 +1026,25 @@ mod tests {
         strokes[2].translate(4.0, 1.0);
         check(&strokes, &mut cache);
         strokes.insert(3, erased);
+        check(&strokes, &mut cache);
+        // The last one undone; the first erased; one erased and one written.
+        strokes.pop();
+        check(&strokes, &mut cache);
+        strokes.remove(0);
+        check(&strokes, &mut cache);
+        strokes.remove(1);
+        strokes.push(stroke(10, 340.0, StrokeKind::Pen));
+        check(&strokes, &mut cache);
+        // Many written in the middle (a paste): made again.
+        let pasted: Vec<Stroke> = (20..32).map(|i| stroke(i, i as f32 * 7.0, StrokeKind::Pen)).collect();
+        strokes.splice(1..1, pasted);
+        check(&strokes, &mut cache);
+        // Every other one erased.
+        let mut n = 0;
+        strokes.retain(|_| {
+            n += 1;
+            n % 2 == 0
+        });
         check(&strokes, &mut cache);
         // Everything gone.
         check(&[], &mut cache);

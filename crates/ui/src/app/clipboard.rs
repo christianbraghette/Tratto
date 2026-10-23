@@ -450,7 +450,7 @@ impl InkApp {
             // Moved once: the clipboard is empty again, as in a file manager.
             self.clipboard.clip = None;
             self.apply_act(Act::MoveNote(path, dir));
-        } else {
+        } else if self.save_if_open(&path) {
             match tratto_core::library::copy_note(&path, &dir) {
                 Ok(_) => self.refresh_library(),
                 Err(e) => self.toast(format!("Paste failed: {e}")),

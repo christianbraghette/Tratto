@@ -416,7 +416,12 @@ impl NoteWriter {
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     let tmp = path.with_extension("ink.tmp");
-    fs::write(&tmp, bytes)?;
+    let mut f = File::create(&tmp)?;
+    f.write_all(bytes)?;
+    // On the disk before it takes the note's name: after a power cut the
+    // note is the old file or the new one, never an empty one.
+    f.sync_all()?;
+    drop(f);
     fs::rename(&tmp, path)?;
     Ok(())
 }

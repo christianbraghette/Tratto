@@ -382,12 +382,44 @@ pub fn move_note(path: &Path, to_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(to_dir)?;
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let target = unique_path(to_dir, &stem, Some(NOTE_EXT));
-    fs::rename(path, &target)?;
+    move_path(path, &target)?;
     let bak = path.with_extension("ink.bak");
     if bak.exists() {
-        let _ = fs::rename(&bak, target.with_extension("ink.bak"));
+        let _ = move_path(&bak, &target.with_extension("ink.bak"));
     }
     Ok(target)
+}
+
+/// Moves the file or folder `from` to `to`, also onto another drive (a
+/// notebook outside the library), where it is copied and then removed.
+fn move_path(from: &Path, to: &Path) -> io::Result<()> {
+    match fs::rename(from, to) {
+        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
+            if let Err(e) = copy_path(from, to) {
+                // `to` is a new name: only the partial copy is there.
+                let _ = remove_path(to);
+                return Err(e);
+            }
+            remove_path(from)
+        }
+        moved => moved,
+    }
+}
+
+fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
+    if !from.is_dir() {
+        return fs::copy(from, to).map(drop);
+    }
+    fs::create_dir(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        copy_path(&entry.path(), &to.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+fn remove_path(path: &Path) -> io::Result<()> {
+    if path.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
 }
 
 /// Moves a note, notebook or section into `<root>/.trash`, remembering where
@@ -402,7 +434,7 @@ pub fn trash(root: &Path, path: &Path) -> Result<()> {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "item".into());
         unique_path(&dir, &name, None)
     };
-    fs::rename(path, &target)?;
+    move_path(path, &target)?;
     // The rolling backup of a deleted note is not needed any more.
     let _ = fs::remove_file(path.with_extension("ink.bak"));
     let mut index = read_trash_index(root);
@@ -521,7 +553,7 @@ pub fn restore(root: &Path, item: &Path) -> Result<PathBuf> {
         let stem = origin.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         unique_path(parent, &stem, Some(NOTE_EXT))
     };
-    fs::rename(item, &target)?;
+    move_path(item, &target)?;
     forget_trashed(root, item)?;
     Ok(target)
 }

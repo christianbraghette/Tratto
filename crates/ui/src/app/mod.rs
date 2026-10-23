@@ -378,6 +378,9 @@ pub struct InkApp {
     /// Writes the open note in the background.
     saver: Saver,
     dirty: bool,
+    /// Closing the window was cancelled because the note could not be
+    /// saved: closing again quits anyway.
+    close_unsaved: bool,
     last_change: Instant,
     last_fp: Fingerprint,
     /// Text box being typed into.
@@ -532,6 +535,7 @@ impl InkApp {
             note_meta: NoteMeta::new("Untitled note", true),
             saver: Saver::new(cc.egui_ctx.clone()),
             dirty: false,
+            close_unsaved: false,
             last_change: Instant::now(),
             last_fp: (0, 0, 0, 0, 0),
             edit: None,
@@ -961,18 +965,27 @@ impl eframe::App for InkApp {
         // Every frame, so that one pressed elsewhere is not pasted later.
         self.pen_input.paste = self.pen_input.windows.as_ref().is_some_and(|p| p.take_paste());
 
-        // Closing the window while editing: finish the text box and write the note.
-        if ctx.input(|i| i.viewport().close_requested()) && self.screen == Screen::Editor {
-            if self.edit.is_some() {
-                self.commit_edit(ctx);
-            }
-            self.sync_dirty();
-            if self.dirty {
-                self.save_note(false);
-            }
-        }
+        // Closing the window while editing: finish the text box and write the
+        // note. If it cannot be written, the window stays open (nothing is
+        // lost); closing again quits anyway.
         if ctx.input(|i| i.viewport().close_requested()) {
-            self.finish_saves();
+            let mut saved = true;
+            if self.screen == Screen::Editor {
+                if self.edit.is_some() {
+                    self.commit_edit(ctx);
+                }
+                self.sync_dirty();
+                if self.dirty {
+                    saved = self.save_note(false);
+                }
+            }
+            saved &= self.finish_saves();
+            if !saved && !self.close_unsaved {
+                self.close_unsaved = true;
+                update::RESTART.store(false, std::sync::atomic::Ordering::Relaxed);
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.toast(format!("{}. Close again to quit without saving", self.status));
+            }
         }
 
         // The cursor image stays until changed: only the canvas sets it, for
