@@ -64,8 +64,8 @@ pub fn print(pdf: Vec<u8>, title: &str) -> Result<Printed, String> {
             .and_then(|s| if s.success() { Ok(Printed::Opened) } else { Err("Preview cannot open it".into()) });
         #[cfg(not(target_os = "macos"))]
         match portal::print(&path, title) {
-            Ok(printed) => Ok(printed),
-            // No portal (or it failed): the default printer, as `lp` knows it.
+            Ok(printed) => printed,
+            // No portal (or no print dialog): the default printer, as `lp` knows it.
             Err(_) => {
                 let status = std::process::Command::new("lp").arg("-t").arg(title).arg(&path).status();
                 match status {
@@ -371,9 +371,14 @@ mod portal {
 
     const DESTINATION: &str = "org.freedesktop.portal.Desktop";
     const PATH: &str = "/org/freedesktop/portal/desktop";
+    /// A request's response code when the user cancelled (0: done, 2: failed).
+    const CANCELLED: u32 = 1;
 
-    /// The portal's Print dialog, then the portal prints `pdf`.
-    pub fn print(pdf: &Path, title: &str) -> zbus::Result<Printed> {
+    /// The portal's Print dialog, then the portal prints `pdf`. `Err`: no
+    /// portal to print with (or its dialog failed); `Ok(Err)`: printing
+    /// failed once a printer was chosen (not tried elsewhere: `lp` would
+    /// print on another one).
+    pub fn print(pdf: &Path, title: &str) -> zbus::Result<Result<Printed, String>> {
         let conn = Connection::session()?;
         let portal = Proxy::new(&conn, DESTINATION, PATH, "org.freedesktop.portal.Print")?;
         let empty = HashMap::<&str, Value>::new;
@@ -381,8 +386,10 @@ mod portal {
         let (code, results) = request(&conn, "tratto_prepare", |options| {
             portal.call_method("PreparePrint", &("", title, empty(), empty(), options)).map(drop)
         })?;
-        if code != 0 {
-            return Ok(Printed::Cancelled);
+        match code {
+            0 => {}
+            CANCELLED => return Ok(Ok(Printed::Cancelled)),
+            _ => return Err(zbus::Error::Failure("the print dialog failed".into())),
         }
         let token = results.get("token").and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
 
@@ -391,7 +398,11 @@ mod portal {
             options.insert("token", Value::from(token));
             portal.call_method("Print", &("", title, Fd::from(file.as_fd()), options)).map(drop)
         })?;
-        Ok(if code == 0 { Printed::Sent(None) } else { Printed::Cancelled })
+        Ok(match code {
+            0 => Ok(Printed::Sent(None)),
+            CANCELLED => Ok(Printed::Cancelled),
+            _ => Err("the printing service could not print it".into()),
+        })
     }
 
     /// Calls a portal method through `call` (given its options, with the

@@ -67,7 +67,7 @@ impl InkApp {
 
         for ev in events {
             match ev {
-                PenEvent::Motion { x, y, pressure, down, eraser } => {
+                PenEvent::Motion { x, y, pressure, down, eraser, barrel } => {
                     let pos = Pos2::new(x / zoom, y / zoom);
                     self.pen_input.pos = pos;
                     self.pen_input.hover = (!down).then_some(pos);
@@ -85,6 +85,7 @@ impl InkApp {
                         self.pen_input.pressure = pressure.clamp(0.0, 1.0);
                     }
                     self.pen_input.eraser = eraser;
+                    self.pen_input.barrel = barrel;
                 }
                 PenEvent::Leave => {
                     self.pen_input.hover = None;
@@ -99,6 +100,7 @@ impl InkApp {
                     }
                     raw_input.events.push(Event::PointerGone);
                     self.pen_input.eraser = false;
+                    self.pen_input.barrel = false;
                     self.pen_input.pressure = 1.0;
                 }
             }

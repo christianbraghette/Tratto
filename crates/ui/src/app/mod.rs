@@ -227,8 +227,10 @@ struct PenInput {
     pos: Pos2,
     /// Wayland: where the pen hovers (in range, not touching).
     hover: Option<Pos2>,
-    /// Eraser requested by the pen (eraser end or side button).
+    /// Wayland: the pen's eraser end is in use.
     eraser: bool,
+    /// Wayland: a side button of the pen is held.
+    barrel: bool,
     /// Pressure of the pen's last sample (1.0 for a mouse).
     pressure: f32,
     /// Windows: the touch of this frame is the pen's (see `finger`).
@@ -754,14 +756,14 @@ impl InkApp {
         self.handle_shortcuts(ctx);
 
         // Pen side button = eraser while held. Wayland pens report it through
-        // `pen_input.eraser`, Windows pens through `pen_input.windows`; on X11 it can arrive
+        // `pen_input.barrel`, Windows pens through `pen_input.windows`; on X11 it can arrive
         // as the middle mouse button. (The right button opens the context
         // menu.) Never switch in the middle of a stroke.
         if !self.busy() && self.edit.is_none() && !self.reading() {
             let button_held = ctx.input(|i| i.pointer.middle_down());
             let win = self.pen_input.windows.as_ref().map(|p| p.buttons()).unwrap_or_default();
             // The eraser end always erases; the side button only if enabled.
-            let side = win.barrel || button_held;
+            let side = win.barrel || self.pen_input.barrel || button_held;
             let eraser = self.pen_input.eraser || win.eraser_end || (self.settings.side_button_eraser && side);
             self.apply_pen_eraser(eraser);
         }

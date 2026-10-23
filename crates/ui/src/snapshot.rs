@@ -374,7 +374,7 @@ fn draw_mesh(canvas: &mut Canvas, mesh: &Mesh, ppp: f32, clip: Rect, atlas: &Col
     let textured = mesh.texture_id == TextureId::default();
     let [w, h] = canvas.size;
     let [aw, ah] = atlas.size;
-    for tri in mesh.indices.chunks_exact(3) {
+    for tri in mesh.indices.as_chunks::<3>().0 {
         let v = [0, 1, 2].map(|k| &mesh.vertices[tri[k] as usize]);
         let p = v.map(|v| (v.pos.to_vec2() * ppp).to_pos2());
         let area = edge(p[0], p[1], p[2]);

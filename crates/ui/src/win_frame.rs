@@ -21,6 +21,10 @@
 //! frame then, yet when it is restored, maximized or leaves full screen
 //! Windows painted its unthemed caption over it for a moment.
 
+// The hit test is only Windows' (and its test's); elsewhere only the
+// regions are kept.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use eframe::egui::{self, Rect};
 
 /// Where the title bar can be grabbed (`None`: nowhere, e.g. while a menu is

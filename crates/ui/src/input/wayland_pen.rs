@@ -33,8 +33,10 @@ pub enum PenEvent {
         pressure: f32,
         /// Tip is in contact with the surface.
         down: bool,
-        /// The eraser end of the pen is in use, or a side button is held.
+        /// The eraser end of the pen is in use.
         eraser: bool,
+        /// A side button is held (it erases if the settings say so).
+        barrel: bool,
     },
     /// Pen left proximity of the tablet.
     Leave,
@@ -185,6 +187,9 @@ mod imp {
         x: f64,
         y: f64,
         pressure: f32,
+        /// The tool reports pressure (its `capability`); else it writes as a
+        /// mouse does, at full pressure.
+        has_pressure: bool,
         in_proximity: bool,
         down: bool,
         dirty: bool,
@@ -228,9 +233,10 @@ mod imp {
                         .send(PenEvent::Motion {
                             x: t.x as f32,
                             y: t.y as f32,
-                            pressure: t.pressure,
+                            pressure: if t.has_pressure { t.pressure } else { 1.0 },
                             down: t.down,
-                            eraser: t.kind == ToolKind::Eraser || t.barrel_mask != 0,
+                            eraser: t.kind == ToolKind::Eraser,
+                            barrel: t.barrel_mask != 0,
                         })
                         .is_ok();
                 }
@@ -248,6 +254,9 @@ mod imp {
                         WEnum::Value(Type::Pen | Type::Pencil | Type::Brush | Type::Airbrush) => ToolKind::Pen,
                         _ => ToolKind::Ignore,
                     };
+                }
+                E::Capability { capability: WEnum::Value(zwp_tablet_tool_v2::Capability::Pressure) } => {
+                    t.has_pressure = true;
                 }
                 E::ProximityIn { .. } => {
                     t.in_proximity = true;
