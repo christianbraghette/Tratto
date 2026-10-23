@@ -10,7 +10,7 @@
 //! strokes never get darker, and nothing written or printed is covered.
 
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -37,6 +37,13 @@ const PICTURE_LEVELS: [u32; 4] = [256, 512, 1024, 2048];
 /// smallest is kept while the note is open: shown at once when the picture
 /// comes back into view, until the sharper one is decoded again.
 const PICTURE_TTL: f64 = 30.0;
+/// Seconds the view stays still (no scroll, no zoom) before pictures are
+/// made sharper than `PICTURE_MOVING`: a large texture uploaded mid-scroll
+/// stalls a frame, and a zoom would decode every level it passes.
+const PICTURE_SETTLE: f64 = 0.15;
+/// The sharpest level made while the view moves: a texture this large
+/// uploads quickly, and the file is decoded whole whatever the level.
+const PICTURE_MOVING: u32 = PICTURE_LEVELS[2];
 
 /// The size to decode a picture `longest` pixels on its longer side, shown
 /// `shown` pixels large: the smallest level that covers it, at most the
@@ -55,9 +62,10 @@ enum Picture {
     Unreadable,
 }
 
-/// A picture file decoded for a level (and maybe the smallest too; `None`:
-/// it cannot be read), by its key and that level.
-type Decoded = ((u64, u32), Option<Vec<(u32, ColorImage)>>);
+/// One level of a picture file decoded (`None`: it cannot be read), by its
+/// key and the level asked for: the smallest comes first, on its own, when
+/// asked for with it.
+type Decoded = ((u64, u32), Option<(u32, ColorImage)>);
 
 struct PictureTexture {
     texture: TextureHandle,
@@ -70,13 +78,20 @@ struct PictureTexture {
 /// The pictures' textures, by their files' keys and levels. A file is
 /// decoded in the background when first painted (a large photo would hold up
 /// the window), at the level it is shown at, then made a texture; meanwhile
-/// the sharpest texture of it there is stands in.
+/// the sharpest texture of it there is stands in. While the view moves only
+/// the smallest level is decoded and uploaded (see `PICTURE_SETTLE`).
 pub struct PictureTextures {
     textures: HashMap<(u64, u32), PictureTexture>,
     /// Being decoded.
     decoding: HashSet<(u64, u32)>,
     unreadable: HashSet<u64>,
     decoded: (Sender<Decoded>, Receiver<Decoded>),
+    /// Sharper levels decoded while the view moved: made textures once it
+    /// is still.
+    deferred: Vec<(u64, u32, ColorImage)>,
+    /// The view (scroll, zoom) of the last frame, and when it last changed.
+    view: Option<(Vec2, f32)>,
+    moved_at: f64,
     /// When unpainted textures were last dropped (egui's time).
     swept_at: f64,
     /// The time of this frame and of the one before (see `begin_frame`).
@@ -91,6 +106,9 @@ impl Default for PictureTextures {
             decoding: HashSet::new(),
             unreadable: HashSet::new(),
             decoded: mpsc::channel(),
+            deferred: Vec::new(),
+            view: None,
+            moved_at: f64::NEG_INFINITY,
             swept_at: 0.0,
             frame_at: 0.0,
             previous_frame_at: 0.0,
@@ -99,15 +117,25 @@ impl Default for PictureTextures {
 }
 
 impl PictureTextures {
-    /// Once per frame, before painting: drops the textures unpainted for
+    /// Once per frame, before painting, with the view's `scroll` and
+    /// `scale`: notes whether it moves, and drops the textures unpainted for
     /// `PICTURE_TTL`. What the previous frame painted is still on screen and
     /// stays, however long ago that frame was: the window only repaints on a
     /// change, so after a pause every picture shown looked unpainted for
     /// long, and was dropped and decoded again.
-    pub fn begin_frame(&mut self, ctx: &eframe::egui::Context, now: f64) {
+    pub fn begin_frame(&mut self, ctx: &eframe::egui::Context, now: f64, scroll: Vec2, scale: f32) {
         if now != self.frame_at {
             self.previous_frame_at = self.frame_at;
             self.frame_at = now;
+        }
+        let view = Some((scroll, scale));
+        if self.view.is_some() && self.view != view {
+            self.moved_at = now;
+        }
+        self.view = view;
+        // A frame once it is still, to make the pictures sharp.
+        if let Some(left) = self.settling(now) {
+            ctx.request_repaint_after(Duration::from_secs_f64(left));
         }
         self.update(ctx, now);
         if now - self.swept_at >= 1.0 {
@@ -117,22 +145,111 @@ impl PictureTextures {
         }
     }
 
-    /// Makes textures of the decoded pictures.
+    /// While the view moves: the seconds left until it counts as still.
+    fn settling(&self, now: f64) -> Option<f64> {
+        let left = PICTURE_SETTLE - (now - self.moved_at);
+        (left > 0.0).then_some(left)
+    }
+
+    /// Makes textures of the decoded pictures; the sharper levels only once
+    /// the view is still.
     fn update(&mut self, ctx: &eframe::egui::Context, now: f64) {
-        for ((key, want), levels) in self.decoded.1.try_iter() {
-            self.decoding.remove(&(key, want));
-            let Some(levels) = levels else {
+        let moving = self.settling(now).is_some();
+        let decoded: Vec<Decoded> = self.decoded.1.try_iter().collect();
+        for ((key, want), level) in decoded {
+            let Some((level, image)) = level else {
+                self.decoding.remove(&(key, want));
                 self.unreadable.insert(key);
                 continue;
             };
-            for (level, image) in levels {
-                // Mipmaps: smooth when shown smaller than decoded.
-                let options = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
-                let texture = ctx.load_texture(format!("picture-{key:x}-{level}"), image, options);
-                // The smallest level of any picture (a picture smaller than it has
-                // only one level).
-                let keep = level <= PICTURE_LEVELS[0];
-                self.textures.insert((key, level), PictureTexture { texture, keep, used_at: now });
+            if level == want {
+                self.decoding.remove(&(key, want));
+            }
+            if moving && level > PICTURE_MOVING {
+                self.deferred.push((key, level, image));
+            } else {
+                self.load(ctx, key, level, image, now);
+            }
+        }
+        if !moving {
+            for (key, level, image) in std::mem::take(&mut self.deferred) {
+                self.load(ctx, key, level, image, now);
+            }
+        }
+    }
+
+    fn load(&mut self, ctx: &eframe::egui::Context, key: u64, level: u32, image: ColorImage, now: f64) {
+        // Mipmaps: smooth when shown smaller than decoded.
+        let options = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
+        let texture = ctx.load_texture(format!("picture-{key:x}-{level}"), image, options);
+        // The smallest level of any picture (a picture smaller than it has
+        // only one level).
+        let keep = level <= PICTURE_LEVELS[0];
+        self.textures.insert((key, level), PictureTexture { texture, keep, used_at: now });
+    }
+
+    /// Some level of the picture `key` is there (maybe waiting to be made a
+    /// texture).
+    fn has(&self, key: u64) -> bool {
+        self.has_at_least(key, 0)
+    }
+
+    /// A level of the picture `key` at least `level` is there (maybe waiting
+    /// to be made a texture).
+    fn has_at_least(&self, key: u64, level: u32) -> bool {
+        let at_least = |k: u64, l: u32| k == key && l >= level;
+        self.textures.keys().any(|&(k, l)| at_least(k, l)) || self.deferred.iter().any(|&(k, l, _)| at_least(k, l))
+    }
+
+    /// The level to make of a picture `longest` pixels large, shown `shown`
+    /// pixels large, while the view moves.
+    fn moving_level(shown: f32, longest: u32) -> u32 {
+        picture_level(shown, longest).min(PICTURE_MOVING)
+    }
+
+    /// Decodes `data` at `want` in the background (and the smallest level
+    /// first, the first time), unless it is already being decoded: zooming
+    /// through several levels decodes the one wanted once the previous is
+    /// done, not every one.
+    fn request(&mut self, ctx: &eframe::egui::Context, data: &Arc<ImageData>, want: u32) {
+        let key = data.key;
+        if self.decoding.iter().any(|(k, _)| *k == key) {
+            return;
+        }
+        let smallest = picture_level(0.0, data.width.max(data.height));
+        let levels: Vec<u32> = if self.has(key) || want == smallest { vec![want] } else { vec![smallest, want] };
+        self.decoding.insert((key, want));
+        let (data, done, ctx) = (data.clone(), self.decoded.0.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            // Each level as soon as it is made: the smallest shows while the
+            // sharper is still being made smaller.
+            let mut sizes = levels.iter().copied();
+            let read = data.decode_each(&levels, |rgba| {
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let level = sizes.next().unwrap_or(want);
+                let image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                // The note may have been closed meanwhile: then nobody waits.
+                if done.send(((key, want), Some((level, image)))).is_ok() {
+                    ctx.request_repaint();
+                }
+            });
+            if read.is_err() && done.send(((key, want), None)).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// The pictures on `pages` (those next to the ones shown, `scale`
+    /// points per document unit), at the level made while the view moves:
+    /// there at once when scrolled into view.
+    pub fn prefetch(&mut self, ctx: &eframe::egui::Context, images: &[Image], pages: RangeInclusive<u32>, scale: f32) {
+        let ppp = ctx.pixels_per_point();
+        for img in images.iter().filter(|i| pages.contains(&i.page)) {
+            let key = img.data.key;
+            let shown = img.width.max(img.height) * scale * ppp;
+            let level = Self::moving_level(shown, img.data.width.max(img.data.height));
+            if !self.unreadable.contains(&key) && !self.has_at_least(key, level) {
+                self.request(ctx, &img.data, level);
             }
         }
     }
@@ -147,29 +264,14 @@ impl PictureTextures {
         }
         let longest = data.width.max(data.height);
         let want = picture_level(shown, longest);
-        let has = |textures: &HashMap<(u64, u32), PictureTexture>| textures.keys().any(|(k, _)| *k == key);
-        // One decode of a picture at a time: zooming through several levels
-        // decodes the one wanted once the previous is done, not every one.
-        if !self.textures.contains_key(&(key, want)) && !self.decoding.iter().any(|(k, _)| *k == key) {
-            // The first time, the smallest level too (from the same decode).
-            let smallest = picture_level(0.0, longest);
-            let levels: Vec<u32> =
-                if has(&self.textures) || want == smallest { vec![want] } else { vec![want, smallest] };
-            self.decoding.insert((key, want));
-            let (data, done, ctx) = (data.clone(), self.decoded.0.clone(), ctx.clone());
-            std::thread::spawn(move || {
-                let images = data.decode_sizes(&levels).ok().map(|images| {
-                    let made = images.iter().map(|rgba| {
-                        let size = [rgba.width() as usize, rgba.height() as usize];
-                        ColorImage::from_rgba_unmultiplied(size, rgba.as_raw())
-                    });
-                    levels.iter().copied().zip(made).collect()
-                });
-                // The note may have been closed meanwhile: then nobody waits.
-                if done.send(((data.key, want), images)).is_ok() {
-                    ctx.request_repaint();
-                }
-            });
+        // While the view moves, no sharper than `PICTURE_MOVING`.
+        if self.settling(now).is_some() {
+            let level = Self::moving_level(shown, longest);
+            if !self.has_at_least(key, level) {
+                self.request(ctx, data, level);
+            }
+        } else if !self.textures.contains_key(&(key, want)) {
+            self.request(ctx, data, want);
         }
         // The level wanted, else the sharpest there is meanwhile.
         let best = self.textures.iter_mut().filter(|((k, _), _)| *k == key).max_by_key(|((_, l), _)| (*l == want, *l));
@@ -785,14 +887,43 @@ mod tests {
         assert_eq!(levels(&tex), [256, 1000], "never larger than the picture");
 
         // A pause: the next frame comes long after, the picture still shown.
-        tex.begin_frame(&ctx, PICTURE_TTL + 1.0);
+        tex.begin_frame(&ctx, PICTURE_TTL + 1.0, Vec2::ZERO, 1.0);
         assert_eq!(levels(&tex), [256, 1000], "on screen: kept");
 
         // Out of view (the frames go on without it) for a while: only the
         // small one stays.
-        tex.begin_frame(&ctx, PICTURE_TTL + 2.0);
-        tex.begin_frame(&ctx, PICTURE_TTL + 3.0);
+        tex.begin_frame(&ctx, PICTURE_TTL + 2.0, Vec2::ZERO, 1.0);
+        tex.begin_frame(&ctx, PICTURE_TTL + 3.0, Vec2::ZERO, 1.0);
         assert_eq!(levels(&tex), [256]);
+    }
+
+    #[test]
+    fn pictures_get_sharp_once_the_view_is_still() {
+        let ctx = eframe::egui::Context::default();
+        let data = ImageData::from_rgba(3000, 1500, vec![200; 3000 * 1500 * 4]).unwrap();
+        let mut tex = PictureTextures::default();
+        let wait = |tex: &mut PictureTextures, now: f64| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !tex.decoding.is_empty() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+                tex.update(&ctx, now);
+            }
+        };
+        tex.begin_frame(&ctx, 0.0, Vec2::ZERO, 1.0);
+        // Scrolled: no sharper than `PICTURE_MOVING`, however large shown.
+        tex.begin_frame(&ctx, 0.0, vec2(0.0, 50.0), 1.0);
+        let _ = tex.texture(&ctx, &data, 2500.0);
+        wait(&mut tex, 0.0);
+        let mut levels: Vec<u32> = tex.textures.keys().map(|(_, l)| *l).collect();
+        levels.sort();
+        assert_eq!(levels, [256, 1024]);
+        // Still (egui's time is 0 in a test context, so the move is moved back).
+        tex.moved_at = -PICTURE_SETTLE;
+        let _ = tex.texture(&ctx, &data, 2500.0);
+        wait(&mut tex, 0.0);
+        let mut levels: Vec<u32> = tex.textures.keys().map(|(_, l)| *l).collect();
+        levels.sort();
+        assert_eq!(levels, [256, 1024, 2048]);
     }
 
     fn stroke(id: u64, x: f32, kind: StrokeKind) -> Stroke {

@@ -89,15 +89,23 @@ impl ImageData {
     /// Its pixels, RGBA, at each of `max_sides` (as [`Self::decode`]), the
     /// file decoded once.
     pub fn decode_sizes(&self, max_sides: &[u32]) -> Result<Vec<RgbaImage>, ImageError> {
+        let mut out = Vec::with_capacity(max_sides.len());
+        self.decode_each(max_sides, |rgba| out.push(rgba))?;
+        Ok(out)
+    }
+
+    /// As [`Self::decode_sizes`], each size handed to `each` as soon as it
+    /// is made (in the order of `max_sides`).
+    pub fn decode_each(&self, max_sides: &[u32], mut each: impl FnMut(RgbaImage)) -> Result<(), ImageError> {
         let img = image::load_from_memory(&self.bytes).map_err(broken)?;
-        let sized = |side: u32| {
-            if img.width().max(img.height()) > side {
+        for &side in max_sides {
+            each(if img.width().max(img.height()) > side {
                 img.resize(side, side, FilterType::Triangle).into_rgba8()
             } else {
                 img.to_rgba8()
-            }
-        };
-        Ok(max_sides.iter().map(|&side| sized(side)).collect())
+            });
+        }
+        Ok(())
     }
 }
 

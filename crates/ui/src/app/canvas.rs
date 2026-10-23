@@ -573,7 +573,7 @@ impl InkApp {
         }
 
         // ---- painting
-        self.picture_textures.begin_frame(ui.ctx(), now);
+        self.picture_textures.begin_frame(ui.ctx(), now, self.scroll, scale);
         // Bottom to top: paper, highlighters, rules, text, pen (see `render`).
         let painter = ui.painter_at(canvas);
         render::paint_paper(&painter, &view);
@@ -610,6 +610,10 @@ impl InkApp {
             let origin = view.page_origin_screen(page);
             self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scale, &picture_moves);
         }
+        // The pictures of the pages next to those shown, ready to scroll to.
+        let shown = view.visible_pages();
+        let near = shown.start().saturating_sub(1)..=(shown.end() + 1).min(layout.count - 1);
+        self.picture_textures.prefetch(ui.ctx(), &self.doc.images, near, scale);
         // Those of a selection carried far (the view scrolled while dragging),
         // their page out of view: drawn where they are now all the same.
         for img in picture_moves.iter().filter(|i| !view.visible_pages().contains(&i.page)) {
