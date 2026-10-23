@@ -35,6 +35,19 @@ pub(super) struct LibraryScan {
     again: bool,
 }
 
+/// Why the note at `path` cannot be opened; for a damaged one, where its
+/// backup is.
+fn cannot_open(path: &Path, e: &storage::StorageError) -> String {
+    let bak = path.with_extension("ink.bak");
+    match e {
+        storage::StorageError::Corrupt if bak.is_file() => {
+            let name = bak.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            format!("Cannot open note: {e}. Its last backup is next to it: rename \u{201c}{name}\u{201d} to .ink")
+        }
+        _ => format!("Cannot open note: {e}"),
+    }
+}
+
 /// The library at `root`, with the folders outside it shown as notebooks.
 fn scan_library(root: &Path, external: &[PathBuf]) -> Result<Library, String> {
     let mut library = Library::scan(root).map_err(|e| e.to_string())?;
@@ -267,7 +280,7 @@ impl InkApp {
         }
         match storage::open_note(path) {
             Ok((meta, doc, writer)) => self.show_note(path, meta, doc, writer),
-            Err(e) => self.toast(format!("Cannot open note: {e}")),
+            Err(e) => self.toast(cannot_open(path, &e)),
         }
     }
 
@@ -384,10 +397,9 @@ impl InkApp {
     /// it is ready. `label` is shown on the loading screen meanwhile.
     fn load_in_background(&mut self, label: String, find: impl FnOnce() -> Result<PathBuf, String> + Send + 'static) {
         self.in_background(label, move || {
-            find().and_then(|path| {
-                storage::open_note(&path)
-                    .map(|(meta, doc, writer)| Loaded::Note(path, meta, doc, writer))
-                    .map_err(|e| format!("Cannot open note: {e}"))
+            find().and_then(|path| match storage::open_note(&path) {
+                Ok((meta, doc, writer)) => Ok(Loaded::Note(path, meta, doc, writer)),
+                Err(e) => Err(cannot_open(&path, &e)),
             })
         });
     }

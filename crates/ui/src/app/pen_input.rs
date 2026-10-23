@@ -110,9 +110,14 @@ impl InkApp {
     /// Pressure for new points: the pen's, brought towards full by the
     /// pressure strength, or full when pressure sensitivity is off (Settings).
     pub(super) fn pen_pressure(&self) -> f32 {
+        self.applied_pressure(self.pen_input.pressure)
+    }
+
+    /// The pressure `raw` (the pen's) as the settings make it, see `pen_pressure`.
+    pub(super) fn applied_pressure(&self, raw: f32) -> f32 {
         if self.settings.pressure {
             let strength = self.settings.pressure_strength.clamp(0.0, 1.0);
-            1.0 - strength * (1.0 - self.pen_input.pressure)
+            1.0 - strength * (1.0 - raw)
         } else {
             1.0
         }

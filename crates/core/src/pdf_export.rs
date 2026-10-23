@@ -208,6 +208,23 @@ pub fn export_pages(notes: &[PdfNote], opts: &PdfOptions) -> Vec<(usize, u32)> {
     notes.iter().enumerate().flat_map(|(i, n)| (0..n.doc.page_count.max(1)).map(move |p| (i, p))).collect()
 }
 
+/// The characters of the exported pages' text boxes the PDF cannot show,
+/// each once, in the order met: its fonts (the PDF's standard ones) cover
+/// Western European text only, the others come out as "?".
+pub fn unshown_chars(notes: &[PdfNote], opts: &PdfOptions) -> Vec<char> {
+    let mut out = Vec::new();
+    for (note, page) in export_pages(notes, opts) {
+        for t in notes[note].doc.texts.iter().filter(|t| t.page == page) {
+            for ch in t.text.chars().filter(|&c| c != '?' && winansi(c) == b'?') {
+                if !out.contains(&ch) {
+                    out.push(ch);
+                }
+            }
+        }
+    }
+    out
+}
+
 // ------------------------------------------------------------ file layout
 
 fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
@@ -786,6 +803,22 @@ mod tests {
             layout: None,
         });
         doc
+    }
+
+    #[test]
+    fn text_the_fonts_cannot_show_is_found() {
+        let mut doc = sample_doc();
+        assert!(unshown_chars(&[PdfNote { doc: &doc, title: "A".into() }], &PdfOptions::default()).is_empty());
+        let mut far = doc.texts[0].clone();
+        far.id = 100;
+        far.page = 1;
+        far.text = "Łódź? 東京 Łódź".into();
+        doc.texts.push(far);
+        let note = [PdfNote { doc: &doc, title: "A".into() }];
+        assert_eq!(unshown_chars(&note, &PdfOptions::default()), ['Ł', 'ź', '東', '京']);
+        // Only the pages exported count.
+        let first = PdfOptions { pages: Some(0..=0), ..PdfOptions::default() };
+        assert!(unshown_chars(&note, &first).is_empty());
     }
 
     #[test]

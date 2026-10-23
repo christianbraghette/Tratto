@@ -8,8 +8,8 @@
 use std::sync::{Arc, OnceLock};
 
 use eframe::egui::{
-    self, Color32, Event, FontId, Id, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2, pos2,
-    vec2,
+    self, Color32, Event, FontId, Id, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, TouchPhase,
+    Vec2, pos2, vec2,
 };
 
 use tratto_core::model::StrokeKind;
@@ -518,16 +518,23 @@ impl InkApp {
         self.picture_input(ui.ctx(), &view, pointer);
 
         // ---- pen / mouse input
-        self.update_pressure(ui.ctx());
-        let mut moves: Vec<Pos2> = ui.input(|i| {
+        // Each sample with the pressure it was taken at: a pen sends several
+        // per frame, each touch (its force) just before the move it makes.
+        let mut force = self.pen_input.pressure;
+        let (mut moves, pressures): (Vec<Pos2>, Vec<f32>) = ui.input(|i| {
             i.events
                 .iter()
                 .filter_map(|e| match e {
-                    Event::PointerMoved(p) => Some(*p),
+                    Event::Touch { phase: TouchPhase::Start | TouchPhase::Move, force: Some(f), .. } if *f > 0.0 => {
+                        force = f.clamp(0.0, 1.0);
+                        None
+                    }
+                    Event::PointerMoved(p) => Some((*p, force)),
                     _ => None,
                 })
-                .collect()
+                .unzip()
         });
+        self.update_pressure(ui.ctx());
         if moves.is_empty() {
             // Out of the window (an item dragged there), where the pointer last was.
             moves.extend(canvas_resp.interact_pointer_pos().or(self.drag_pointer));
@@ -563,7 +570,7 @@ impl InkApp {
                 Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
                 Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
                 Tool::Text => self.handle_text(&canvas_resp, &view, press, &moves),
-                Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves),
+                Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves, &pressures),
             }
         }
         self.laser_input(ui.ctx(), &canvas_resp, &view, &moves, now);

@@ -3,13 +3,14 @@
 
 //! Note files.
 //!
-//! Layout (format version 7, the one Tratto writes):
+//! Layout (format version 8, the one Tratto writes):
 //!
 //! ```text
-//! "INK1" | version u32 LE (= 7) | slot_size u32 LE
+//! "INK1" | version u32 LE (= 8) | slot_size u32 LE
 //!        | meta slot A | meta slot B             (slot_size bytes each)
 //!        | pdf_len u64 LE | PDF bytes             (empty unless on a PDF)
 //!        | doc_len u64 LE | bincode(Document)     (the snapshot)
+//!        | crc32 u32 LE                           (of the PDF and the snapshot)
 //!        | record | record | ...                 (the journal)
 //!
 //! meta slot: seq u64 LE | len u32 LE | crc32 u32 LE | bincode(NoteMeta)
@@ -19,7 +20,9 @@
 //! The small meta block (title, dates, page count and a light vector preview
 //! of page 1) can be read without touching the document, which is what keeps
 //! the library screen fast. The PDF a note is written on is stored raw, so
-//! the note stays one self-contained file.
+//! the note stays one self-contained file. Every part is checksummed: a
+//! damaged file is refused (its backup, below, still opens), never read as
+//! something that was not saved.
 //!
 //! Autosaving an open note (`NoteWriter`) does not rewrite the file: it
 //! appends one record with what changed since the last save (see `journal`)
@@ -34,9 +37,10 @@
 //! version to `<note>.ink.bak` at most every ten minutes, so a bug can never
 //! destroy the only good copy.
 //!
-//! Format 6 is the same without pictures (in the document and in the
-//! records); such a note is read, and its first save writes it whole as
-//! format 7 (the backup keeps the format 6 file). Files of any other version
+//! Format 7 is the same without the snapshot's checksum, format 6 also
+//! without pictures (in the document and in the records); such a note is
+//! read, and its first save writes it whole as format 8 (the backup keeps
+//! the older file). Files of any other version
 //! (the pre-release formats 2 to 5) are refused with
 //! `StorageError::UnsupportedVersion`.
 
@@ -53,7 +57,9 @@ use crate::model::{Document, DocumentV6, Stroke};
 use crate::pdf_pages::PdfFile;
 
 const MAGIC: &[u8; 4] = b"INK1";
-const FORMAT_VERSION: u32 = 7;
+const FORMAT_VERSION: u32 = 8;
+/// The format before the snapshot's checksum, still read.
+const FORMAT_V7: u32 = 7;
 /// The format before pictures, still read.
 const FORMAT_V6: u32 = 6;
 /// Magic + version + slot size.
@@ -248,7 +254,7 @@ fn parse_header(bytes: &[u8]) -> Result<(u32, usize), StorageError> {
         Ok::<_, StorageError>(u32::from_le_bytes(b.try_into().expect("4 bytes")))
     };
     let version = word(4)?;
-    if version != FORMAT_VERSION && version != FORMAT_V6 {
+    if ![FORMAT_VERSION, FORMAT_V7, FORMAT_V6].contains(&version) {
         return Err(StorageError::UnsupportedVersion(version));
     }
     let size = word(8)? as usize;
@@ -316,7 +322,7 @@ fn write_full(path: &Path, meta: &NoteMeta, doc: &Document) -> Result<Written, S
     let slot_size = slot_size_for(meta_bytes.len());
     let snapshot = bincode::serialize(doc)?;
     let pdf: &[u8] = doc.pdf.as_ref().and_then(|p| p.file.as_deref()).map_or(&[], |f| &f.bytes);
-    let mut out = Vec::with_capacity(HEADER_LEN + 2 * slot_size + 16 + pdf.len() + snapshot.len());
+    let mut out = Vec::with_capacity(HEADER_LEN + 2 * slot_size + 20 + pdf.len() + snapshot.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&(slot_size as u32).to_le_bytes());
@@ -326,6 +332,8 @@ fn write_full(path: &Path, meta: &NoteMeta, doc: &Document) -> Result<Written, S
     out.extend_from_slice(pdf);
     out.extend_from_slice(&(snapshot.len() as u64).to_le_bytes());
     out.extend_from_slice(&snapshot);
+    let crc = crc32(&[&out[HEADER_LEN + 2 * slot_size..]]);
+    out.extend_from_slice(&crc.to_le_bytes());
     rolling_backup(path);
     write_atomic(path, &out)?;
     let end = out.len() as u64;
@@ -529,11 +537,19 @@ fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Wr
         .flatten()
         .max_by_key(|s| s.0)
         .map(|s| s.1);
-    let mut at = HEADER_LEN + 2 * slot_size;
-    let pdf = sized_part(&bytes, at)?;
-    at += 8 + pdf.len();
+    let pdf_at = HEADER_LEN + 2 * slot_size;
+    let pdf = sized_part(&bytes, pdf_at)?;
+    let mut at = pdf_at + 8 + pdf.len();
     let snapshot = sized_part(&bytes, at)?;
     at += 8 + snapshot.len();
+    // Checked before it is decoded: damage that still decodes is refused too.
+    if version == FORMAT_VERSION {
+        let crc = u32::from_le_bytes(part(&bytes, at, 4)?.try_into().expect("4 bytes"));
+        if crc32(&[&bytes[pdf_at..at]]) != crc {
+            return Err(StorageError::Corrupt);
+        }
+        at += 4;
+    }
     let mut doc: Document = if version == FORMAT_V6 {
         bincode::deserialize::<DocumentV6>(snapshot)?.into()
     } else {
@@ -896,8 +912,46 @@ mod tests {
         remove(&path);
     }
 
+    /// The format 7 file of the (format 8) note `bytes` with an empty
+    /// journal: without the snapshot's checksum.
+    fn as_format_7(mut bytes: Vec<u8>) -> Vec<u8> {
+        let crc_at = snapshot_range(&bytes).end;
+        bytes.drain(crc_at..crc_at + 4);
+        bytes[4..8].copy_from_slice(&FORMAT_V7.to_le_bytes());
+        bytes
+    }
+
     #[test]
-    fn format_6_notes_open_and_are_saved_as_format_7() {
+    fn format_7_notes_open_and_are_saved_as_format_8() {
+        let path = std::env::temp_dir().join("tratto_format7.ink");
+        remove(&path);
+        let mut doc = sample_doc();
+        let mut meta = NoteMeta::new("Last year's note", false);
+        save_note(&path, &mut meta, &doc).unwrap();
+        let mut bytes = as_format_7(fs::read(&path).unwrap());
+        // With a record: the same as format 8's.
+        let old = doc.clone();
+        let s = pen(&mut doc, 5);
+        doc.strokes.push(s);
+        let body = bincode::serialize(&journal::diff(&old, &doc).unwrap()).unwrap();
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&crc32(&[&body]).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        fs::write(&path, &bytes).unwrap();
+
+        let (m, loaded, mut writer) = open_note(&path).unwrap();
+        assert!(same(&loaded, &doc), "the snapshot and the record are read");
+        // The first save writes it whole, as format 8.
+        let mut meta = m;
+        writer.save(&path, &mut meta, &loaded).unwrap();
+        let saved = fs::read(&path).unwrap();
+        assert_eq!(u32::from_le_bytes(saved[4..8].try_into().unwrap()), FORMAT_VERSION);
+        assert!(same(&load_note(&path).unwrap().1, &doc));
+        remove(&path);
+    }
+
+    #[test]
+    fn format_6_notes_open_and_are_saved_as_format_8() {
         let path = std::env::temp_dir().join("tratto_format6.ink");
         remove(&path);
         // A format 6 file: a format 7 one without its (empty) pictures, and
@@ -905,8 +959,8 @@ mod tests {
         let mut doc = sample_doc();
         let mut meta = NoteMeta::new("Old note", false);
         save_note(&path, &mut meta, &doc).unwrap();
-        let mut bytes = fs::read(&path).unwrap();
-        bytes[4..8].copy_from_slice(&6u32.to_le_bytes());
+        let mut bytes = as_format_7(fs::read(&path).unwrap());
+        bytes[4..8].copy_from_slice(&FORMAT_V6.to_le_bytes());
         let slot_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
         let at = HEADER_LEN + 2 * slot_size + 8; // after the empty PDF's length
         let snapshot_len = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
@@ -928,7 +982,7 @@ mod tests {
         assert_eq!(m.title, "Old note");
         assert!(same(&loaded, &doc), "the snapshot and the record are read");
         assert!(read_meta(&path).is_ok());
-        // The first save writes it whole, as format 7.
+        // The first save writes it whole, as format 8.
         let mut meta = m;
         writer.save(&path, &mut meta, &loaded).unwrap();
         let saved = fs::read(&path).unwrap();
@@ -981,7 +1035,8 @@ mod tests {
         (fs::read(path).unwrap(), versions)
     }
 
-    /// Where the snapshot (with the PDF before it) is in the note `bytes`.
+    /// Where the PDF and the snapshot are in the note `bytes` (its checksum
+    /// follows).
     fn snapshot_range(bytes: &[u8]) -> std::ops::Range<usize> {
         let (_, slot_size) = parse_header(bytes).unwrap();
         let pdf_at = HEADER_LEN + 2 * slot_size;
@@ -1020,10 +1075,6 @@ mod tests {
     fn damaged_bytes_never_crash_the_reader() {
         let path = std::env::temp_dir().join("tratto_damaged_bytes.ink");
         let (bytes, versions) = journaled_note(&path);
-        // The snapshot has no checksum (the slots and the records have):
-        // damage there may be read as a document never saved. Elsewhere it
-        // must not be.
-        let snapshot = snapshot_range(&bytes);
         // xorshift: the same damage on every run.
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = move || {
@@ -1040,8 +1091,7 @@ mod tests {
                 damaged[i] ^= 1 << (next() % 8);
                 at.push(i);
             }
-            let misread = read_damaged(&path, &damaged, &versions);
-            assert!(!misread || at.iter().any(|i| snapshot.contains(i)), "damaged at {at:?}: misread");
+            assert!(!read_damaged(&path, &damaged, &versions), "damaged at {at:?}: misread");
         }
         remove(&path);
     }

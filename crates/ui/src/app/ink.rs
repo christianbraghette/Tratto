@@ -40,7 +40,16 @@ impl InkApp {
         }
     }
 
-    pub(super) fn handle_ink(&mut self, resp: &egui::Response, view: &View, press: Option<Pos2>, moves: &[Pos2]) {
+    /// `pressures`: the pen's pressure at each of `moves` (as many, or none:
+    /// the last one known for all).
+    pub(super) fn handle_ink(
+        &mut self,
+        resp: &egui::Response,
+        view: &View,
+        press: Option<Pos2>,
+        moves: &[Pos2],
+        pressures: &[f32],
+    ) {
         if resp.drag_started_by(PointerButton::Primary) {
             if let (Some(pos), Some((kind, color, width))) =
                 (press.or(resp.interact_pointer_pos()), self.stroke_params())
@@ -54,10 +63,12 @@ impl InkApp {
                 }
             }
         } else if resp.dragged() || resp.drag_stopped() {
-            let pressure = self.pen_pressure();
+            let last = self.pen_pressure();
+            let pressures: Vec<f32> =
+                (0..moves.len()).map(|k| pressures.get(k).map_or(last, |&raw| self.applied_pressure(raw))).collect();
             if let Some(active) = self.active.as_mut() {
                 let page = active.page;
-                for pos in moves {
+                for (pos, pressure) in moves.iter().zip(pressures) {
                     active.builder.push(to_page_point(view, page, *pos, pressure));
                 }
             }

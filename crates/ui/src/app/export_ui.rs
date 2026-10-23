@@ -244,6 +244,16 @@ impl InkApp {
         }
     }
 
+    /// The characters of the text to export the PDF cannot show (see
+    /// `pdf_export::unshown_chars`).
+    // TODO: gone once the PDF embeds a font for every script.
+    fn unshown_chars(&self, d: &ExportDialog, list: &[(PathBuf, String)]) -> Vec<char> {
+        let notes: Vec<PdfNote> = (list.iter())
+            .filter_map(|(p, t)| self.export_doc(&d.loaded, p).map(|doc| PdfNote { doc, title: t.clone() }))
+            .collect();
+        pdf_export::unshown_chars(&notes, &self.pdf_options(d, &d.title))
+    }
+
     fn pdf_options(&self, d: &ExportDialog, title: &str) -> PdfOptions {
         let count = self.doc.page_count.max(1);
         let s = &self.settings;
@@ -358,6 +368,17 @@ impl InkApp {
                     });
                 });
                 ui.add_space(space::M);
+                let unshown = self.unshown_chars(&dialog, &list);
+                if !unshown.is_empty() {
+                    let some: String = unshown.iter().take(12).map(|c| format!("{c} ")).collect();
+                    let more = if unshown.len() > 12 { "..." } else { "" };
+                    let text = format!(
+                        "{}  Some characters cannot be shown in the PDF and come out as \u{201c}?\u{201d}: {some}{more}",
+                        icon::WARNING
+                    );
+                    ui.add(egui::Label::new(RichText::new(text).color(color::danger())).wrap());
+                    ui.add_space(space::S);
+                }
                 ui.horizontal(|ui| {
                     // With the system's Save (or Print) dialog next, the button says so.
                     let label = if dialog.print {
