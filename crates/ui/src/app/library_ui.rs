@@ -183,8 +183,9 @@ struct DraggedNote {
 impl InkApp {
     pub(super) fn library_screen(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
-        // Drop selections that no longer exist (renamed / deleted / synced away).
-        if let Some(nb) = self.lib_ui.notebook.clone() {
+        // Drop selections that no longer exist (renamed / deleted / synced away),
+        // once the library is read (one just created is not in it before).
+        if let Some(nb) = self.lib_ui.notebook.clone().filter(|_| !self.library_refreshing()) {
             match self.library.notebooks.iter().find(|n| n.path == nb) {
                 None => {
                     self.lib_ui.notebook = None;
@@ -215,7 +216,14 @@ impl InkApp {
             .frame(Frame::NONE.fill(color::desk()).inner_margin(Margin::symmetric(space::XXL as i8, space::L as i8)))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    if searching {
+                    if !self.library_loaded {
+                        ui.add_space(96.0);
+                        ui.vertical_centered(|ui| {
+                            ui.add(egui::Spinner::new().size(28.0).color(color::accent()));
+                            ui.add_space(space::M);
+                            ui.label(theme::muted("Reading the library..."));
+                        });
+                    } else if searching {
                         let q = self.lib_ui.search.trim().to_lowercase();
                         let hits: Vec<&NoteInfo> = self
                             .library
@@ -445,7 +453,12 @@ impl InkApp {
                             }
                         });
                         theme::ghost_buttons(ui);
-                        if ui
+                        if self.library_refreshing() {
+                            // In the button's place, its size.
+                            let side = ui.spacing().interact_size.y;
+                            ui.add_sized(vec2(side, side), egui::Spinner::new().color(color::accent()))
+                                .on_hover_text("Reading the library folder...");
+                        } else if ui
                             .button(theme::icon(icon::ARROWS_CLOCKWISE))
                             .on_hover_text("Refresh (re-read the folder, e.g. after a sync)")
                             .clicked()
@@ -904,6 +917,9 @@ impl InkApp {
                         self.settings.library_root = p.to_string_lossy().into_owned();
                         self.lib_ui.notebook = None;
                         self.lib_ui.section = None;
+                        // Not the old folder's notebooks meanwhile: the spinner.
+                        self.library = library::Library::empty(p);
+                        self.library_loaded = false;
                         self.refresh_library();
                     }
                     Err(e) => self.toast(format!("Cannot use that folder: {e}")),

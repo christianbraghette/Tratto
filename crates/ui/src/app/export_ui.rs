@@ -302,7 +302,7 @@ impl InkApp {
             return;
         }
         // The notebook as it is on disk now.
-        self.refresh_library();
+        self.refresh_library_now();
         let count = self.doc.page_count.max(1);
         let section: HashSet<PathBuf> =
             self.export_section().map(|g| g.notes.into_iter().map(|n| n.path).collect()).unwrap_or_default();

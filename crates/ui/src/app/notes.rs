@@ -28,6 +28,22 @@ use super::{Fingerprint, InkApp, Loaded, Loading, Screen, is_pdf};
 /// on a PDF.
 const LOAD_IN_BACKGROUND: u64 = 4 * 1024 * 1024;
 
+/// The library folder being read in the background (see `refresh_library`).
+pub(super) struct LibraryScan {
+    done: mpsc::Receiver<Result<Library, String>>,
+    /// Asked for again meanwhile: read once more when it is done.
+    again: bool,
+}
+
+/// The library at `root`, with the folders outside it shown as notebooks.
+fn scan_library(root: &Path, external: &[PathBuf]) -> Result<Library, String> {
+    let mut library = Library::scan(root).map_err(|e| e.to_string())?;
+    for nb in external {
+        library.add_notebook(nb);
+    }
+    Ok(library)
+}
+
 impl InkApp {
     pub(super) fn toast(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
@@ -38,21 +54,70 @@ impl InkApp {
         PathBuf::from(&self.settings.library_root)
     }
 
-    /// Re-reads the library folder (cheap: only the small header of each note).
+    /// Re-reads the library folder on a background thread (it reads the
+    /// header of every note: a large library, or one on a network drive,
+    /// would hold up the window). The library shown stays until then.
     pub(super) fn refresh_library(&mut self) {
-        let root = self.library_root();
-        self.library = match Library::scan(&root) {
-            Ok(l) => l,
-            Err(e) => {
-                self.toast(format!("Cannot read library folder: {e}"));
-                Library::empty(root)
-            }
-        };
+        if let Some(scan) = &mut self.library_scan {
+            // It may have read the folder before the change: once more after it.
+            scan.again = true;
+            return;
+        }
         // Gone meanwhile (deleted, renamed elsewhere): no longer shown.
         self.external_notebooks.retain(|p| p.is_dir());
-        for nb in &self.external_notebooks {
-            self.library.add_notebook(nb);
+        let (root, external) = (self.library_root(), self.external_notebooks.clone());
+        let (tx, done) = mpsc::channel();
+        let ctx = self.egui_ctx.clone();
+        let work = move || {
+            let _ = tx.send(scan_library(&root, &external));
+            ctx.request_repaint();
+        };
+        match thread::Builder::new().name("library scan".into()).spawn(work) {
+            Ok(_) => self.library_scan = Some(LibraryScan { done, again: false }),
+            Err(_) => self.refresh_library_now(),
         }
+    }
+
+    /// Re-reads the library folder now, for what needs it as it is on disk.
+    pub(super) fn refresh_library_now(&mut self) {
+        self.external_notebooks.retain(|p| p.is_dir());
+        let scanned = scan_library(&self.library_root(), &self.external_notebooks);
+        self.library_scanned(scanned);
+    }
+
+    /// The library is being read (see `refresh_library`).
+    pub(super) fn library_refreshing(&self) -> bool {
+        self.library_scan.is_some()
+    }
+
+    /// Shows the library read in the background once it is ready.
+    pub(super) fn poll_library(&mut self) {
+        let Some(scan) = &self.library_scan else { return };
+        let scanned = match scan.done.try_recv() {
+            Ok(scanned) => scanned,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the scan stopped unexpectedly".to_owned()),
+        };
+        let again = scan.again;
+        self.library_scan = None;
+        self.library_scanned(scanned);
+        if again {
+            self.refresh_library();
+        }
+    }
+
+    fn library_scanned(&mut self, scanned: Result<Library, String>) {
+        let root = self.library_root();
+        match scanned {
+            // Read before the library folder was changed: a newer scan follows.
+            Ok(l) if l.root != root => {}
+            Ok(l) => self.library = l,
+            Err(e) => {
+                self.toast(format!("Cannot read library folder: {e}"));
+                self.library = Library::empty(root);
+            }
+        }
+        self.library_loaded = true;
     }
 
     /// Opens a path given on the command line: a PDF in the reader, a note
@@ -451,9 +516,15 @@ impl InkApp {
     /// Guarantees that every stroke lies on an existing page (e.g. after an
     /// undo that restores a stroke whose page was removed).
     pub(super) fn ensure_pages(&mut self) {
-        let need = self.doc.strokes.iter().map(|s| s.page + 1).max().unwrap_or(1).max(1);
+        let d = &self.doc;
+        let pages = d.strokes.iter().map(|s| s.page).chain(d.texts.iter().map(|t| t.page));
+        let need = pages.chain(d.images.iter().map(|i| i.page)).max().map_or(1, |p| p + 1);
         if self.doc.page_count < need {
             self.doc.page_count = need;
+            // Plain paper under the pages added (the list is one per page).
+            if let Some(pdf) = &mut self.doc.pdf {
+                pdf.pages.resize(need as usize, None);
+            }
         }
     }
 }

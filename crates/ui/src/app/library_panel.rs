@@ -89,6 +89,10 @@ impl InkApp {
                         {
                             picks.push(Pick::LibraryScreen);
                         }
+                        if self.library_refreshing() {
+                            ui.add(egui::Spinner::new().size(14.0).color(color::accent()))
+                                .on_hover_text("Reading the library folder...");
+                        }
                         ui.add_space(space::XS);
                         if let Some(nb) = &notebook {
                             let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());

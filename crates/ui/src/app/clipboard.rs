@@ -401,11 +401,7 @@ impl InkApp {
 
     /// Inserts `pages` so that the first gets `index`; one undo step.
     fn paste_pages(&mut self, pages: &[PageContent], index: u32) {
-        if self.edit.is_some() {
-            let ctx = self.egui_ctx.clone();
-            self.commit_edit(&ctx);
-        }
-        self.clear_selection();
+        self.before_page_change();
         let index = index.min(self.doc.page_count);
         let pdf_key = self.doc.pdf.as_ref().and_then(|p| p.file.as_ref()).map(|f| f.key);
         let mut actions = Vec::new();

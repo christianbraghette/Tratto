@@ -37,15 +37,26 @@ const SLIDE_TIME: f32 = 0.2;
 const VIEW_FADE_TIME: f32 = 0.15;
 
 impl InkApp {
+    /// Before the pages are added, removed or moved: the text box being
+    /// typed is committed (it knows its page by number, as the selection
+    /// does), the selection dropped.
+    pub(super) fn before_page_change(&mut self) {
+        if self.edit.is_some() {
+            let ctx = self.egui_ctx.clone();
+            self.commit_edit(&ctx);
+        }
+        self.clear_selection();
+    }
+
     /// Inserts an empty page so that it gets `index` (undoable).
     pub(super) fn insert_page(&mut self, index: u32) {
-        self.clear_selection();
+        self.before_page_change();
         self.history.exec(&mut self.doc, Action::InsertPage { index, pdf_page: None });
     }
 
     /// Deletes a page with its content (undoable).
     pub(super) fn delete_page(&mut self, index: u32) {
-        self.clear_selection();
+        self.before_page_change();
         self.history.exec(&mut self.doc, Action::DeletePage { index });
         self.toast(format!("Page {} deleted (Ctrl+Z restores it)", index + 1));
     }
@@ -549,7 +560,7 @@ impl InkApp {
             });
 
         if let Some((from, to)) = reorder {
-            self.clear_selection();
+            self.before_page_change();
             self.history.exec(&mut self.doc, Action::MovePage { from, to });
             self.scroll_to = Some(layout.page_top(to) - MARGIN);
         }

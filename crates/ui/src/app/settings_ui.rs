@@ -112,14 +112,19 @@ impl InkApp {
                     self.insert_page(self.doc.page_count);
                 }
                 let last = self.doc.page_count.saturating_sub(1);
-                let removable = self.doc.page_count > 1 && !self.doc.strokes.iter().any(|s| s.page == last);
+                let d = &self.doc;
+                let empty = !d.strokes.iter().any(|s| s.page == last)
+                    && !d.texts.iter().any(|t| t.page == last)
+                    && !d.images.iter().any(|i| i.page == last)
+                    && self.edit.as_ref().is_none_or(|e| e.page != last);
+                let removable = self.doc.page_count > 1 && empty;
                 if ui
                     .add_enabled(removable, egui::Button::new("Remove last"))
                     .on_disabled_hover_text("Only an empty last page can be removed")
                     .clicked()
                 {
                     let index = self.doc.page_count - 1;
-                    self.clear_selection();
+                    self.before_page_change();
                     self.history.exec(&mut self.doc, Action::RemovePage { index });
                 }
             });

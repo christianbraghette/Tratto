@@ -371,6 +371,10 @@ pub struct InkApp {
     laser_down: bool,
     screen: Screen,
     library: Library,
+    /// The library folder being read in the background, if it is.
+    library_scan: Option<notes::LibraryScan>,
+    /// `library` has been read once (until then it is empty).
+    library_loaded: bool,
     lib_ui: library_ui::LibraryUi,
     /// File of the open note.
     note_path: Option<PathBuf>,
@@ -530,6 +534,8 @@ impl InkApp {
             laser_down: false,
             screen: Screen::Library,
             library: Library::default(),
+            library_scan: None,
+            library_loaded: false,
             lib_ui: library_ui::LibraryUi::default(),
             note_path: None,
             note_meta: NoteMeta::new("Untitled note", true),
@@ -1000,6 +1006,7 @@ impl eframe::App for InkApp {
             self.toast(format!("The PDF pages cannot be shown: {e}"));
         }
         self.poll_loading();
+        self.poll_library();
         self.poll_saves();
         self.poll_update();
         self.poll_file_picker();
