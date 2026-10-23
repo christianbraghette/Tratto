@@ -225,8 +225,8 @@ macos_app() {
     # an identity, ad hoc (Apple silicon runs nothing unsigned).
     local identity=${TRATTO_MACOS_IDENTITY:--} options=()
     [ "$identity" = - ] || options=(--options runtime --timestamp)
-    codesign --force "${options[@]}" --sign "$identity" "$app/Contents/Frameworks/libpdfium.dylib"
-    codesign --force "${options[@]}" --sign "$identity" "$app"
+    codesign --force ${options[@]+"${options[@]}"} --sign "$identity" "$app/Contents/Frameworks/libpdfium.dylib"
+    codesign --force ${options[@]+"${options[@]}"} --sign "$identity" "$app"
 
     rm -f "$dist/tratto-$target.app.zip"
     ditto -c -k --norsrc --noextattr --keepParent "$app" "$dist/tratto-$target.app.zip"
