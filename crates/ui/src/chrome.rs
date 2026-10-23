@@ -7,8 +7,9 @@
 //!
 //! With the custom frame the system decorations are turned off, so moving and
 //! resizing go through `ViewportCommand::StartDrag` / `BeginResize`, which hand
-//! the gesture to the OS (snapping keeps working). With the native frame only
-//! the menu bar is drawn, below the system title bar.
+//! the gesture to the OS (snapping keeps working). On Windows the window keeps
+//! the system's frame and only loses its caption (`win_frame`). With the
+//! native frame only the menu bar is drawn, below the system title bar.
 //!
 //! The window buttons follow the desktop (see `desktop.rs`): which ones, on
 //! which side and how they look (Windows, GNOME's Adwaita, KDE's Breeze).
@@ -50,7 +51,7 @@ static DWM_FRAME: AtomicBool = AtomicBool::new(false);
 /// Window state the chrome depends on.
 #[derive(Clone, Copy)]
 pub struct WindowState {
-    /// Draw the custom frame (system decorations are off).
+    /// Draw the custom title bar (the system's is off).
     pub custom: bool,
     pub maximized: bool,
     pub fullscreen: bool,
@@ -399,9 +400,15 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
     if !resizable {
         return;
     }
-    // Windows resizes the window itself (`win_frame`); only the outline is ours.
+    // Windows draws the frame and resizes the window itself (`win_frame`).
+    // Windows 10 draws no border along the top, where the caption was.
     if win_frame::active() {
-        paint_outline(ctx);
+        if !DWM_FRAME.load(Ordering::Relaxed) {
+            let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("window_outline")));
+            let r = ctx.viewport_rect();
+            let y = r.top() + 0.5;
+            painter.hline(r.x_range(), y, Stroke::new(1.0, color::border_strong()));
+        }
         return;
     }
     let r = ctx.viewport_rect();

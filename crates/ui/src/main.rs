@@ -199,9 +199,12 @@ fn main() -> eframe::Result<()> {
             .with_title("Tratto")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("the bundled icon is a valid PNG"))
             // The app draws its own title bar; switching to the system one
-            // (Settings) turns decorations back on at runtime.
-            .with_decorations(false)
-            .with_maximized(true) // F11 toggles fullscreen at runtime
+            // (Settings) turns decorations back on at runtime. On Windows the
+            // window keeps them, and only loses its caption (see `win_frame`).
+            .with_decorations(cfg!(windows))
+            // F11 toggles fullscreen at runtime. On Windows maximized out of
+            // sight before the first frame instead (`win_frame::open_maximized`).
+            .with_maximized(!cfg!(windows))
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };

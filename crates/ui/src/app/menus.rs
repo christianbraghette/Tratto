@@ -241,11 +241,6 @@ impl InkApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             }
         }
-        // System decorations off while the custom title bar is used. In
-        // fullscreen they are on: the window has no frame there anyway, and
-        // winit's undecorated window starts its client area 1 px below the
-        // screen top (room for the drop shadow), so the top row would miss
-        // the pointer that reveals the bar.
         let fullscreen = ctx.input(|i| i.viewport().fullscreen == Some(true));
         // The window's animations back on once a switch in or out of full
         // screen is done (and has had a moment to settle), or after a while.
@@ -268,10 +263,16 @@ impl InkApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
+        // Windows: the window keeps the system's frame, only its caption goes
+        // (`win_frame`). Elsewhere the system decorations are off while the
+        // custom title bar is used. In fullscreen they are on: the window has
+        // no frame there anyway, and winit's undecorated window starts its
+        // client area 1 px below the screen top (room for the drop shadow),
+        // so the top row would miss the pointer that reveals the bar.
         crate::win_frame::own_frame(self.settings.custom_title_bar);
         // Leaving full screen they are off already (see `Command::Fullscreen`).
         let leaving = matches!(self.chrome.switching, Some((false, ..)));
-        let decorations = !self.settings.custom_title_bar || fullscreen && !leaving;
+        let decorations = cfg!(windows) || !self.settings.custom_title_bar || fullscreen && !leaving;
         if self.chrome.decorations != Some(decorations) {
             self.chrome.decorations = Some(decorations);
             ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(decorations));
@@ -1143,7 +1144,7 @@ impl InkApp {
                     // The system frame (on in full screen, see `window_chrome`) off
                     // first: else the window comes back with it, unthemed, for a
                     // moment.
-                    if self.settings.custom_title_bar {
+                    if self.settings.custom_title_bar && !cfg!(windows) {
                         self.chrome.decorations = Some(false);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
                     }

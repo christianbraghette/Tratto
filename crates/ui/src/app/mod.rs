@@ -487,6 +487,11 @@ impl InkApp {
         crate::theme::install(&cc.egui_ctx);
 
         let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, SETTINGS_KEY)).unwrap_or_default();
+        // Windows: the caption off before the first frame (the window is still
+        // hidden), so it is laid out at its final size.
+        crate::win_frame::own_frame(settings.custom_title_bar);
+        crate::win_frame::install(cc);
+        crate::win_frame::open_maximized();
 
         let mut app = Self {
             doc: Document::default(),
@@ -562,8 +567,8 @@ impl InkApp {
             pending: Vec::new(),
             help: HelpWindows::default(),
             chrome: WindowChrome {
-                // main.rs creates the window without decorations.
-                decorations: Some(false),
+                // As main.rs creates the window.
+                decorations: Some(cfg!(windows)),
                 os_title: "Tratto".to_owned(),
                 ..WindowChrome::default()
             },
@@ -957,6 +962,16 @@ fn to_page_point(view: &View, page: u32, pos: Pos2, pressure: f32) -> Point {
 impl eframe::App for InkApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        // Windows: the window shown once a frame at its maximized size is on
+        // screen. The first one may still be at the size it was created with
+        // (the drawing surface then starts over, blank, at the new size), and
+        // shown from the third frame on it still came up white at times; the
+        // fifth leaves a margin (the frames come at once, a few ms apart).
+        if ctx.cumulative_frame_nr() < 4 {
+            ctx.request_repaint();
+        } else {
+            crate::win_frame::reveal();
+        }
         // The Wayland display handle is only available through `Frame`, so the
         // native pen source is started lazily on the first frame.
         if !self.pen_input.started {
@@ -967,7 +982,6 @@ impl eframe::App for InkApp {
             crate::chrome::round_corners(frame);
             crate::chrome::own_edge_swipes(frame);
             crate::print::remember_window(frame);
-            crate::win_frame::install(frame);
         }
         // Before anything is painted: the palette of this frame.
         crate::theme::follow(ctx, self.settings.theme);
