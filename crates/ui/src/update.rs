@@ -13,7 +13,7 @@
 //!
 //! At startup the releases are asked for in the background and the newest
 //! one of the chosen channel is picked (`UpdateChannel`: by the tag's
-//! suffix, releases, `-beta<n>` or `-alpha<n>`); if it is newer, its file
+//! suffix, releases, `-rc<n>` and `-beta<n>`, or `-alpha<n>`); if it is newer, its file
 //! is downloaded, checked against the SHA-256 digest GitHub publishes for
 //! it, and swapped in. In a folder each file is renamed to `<name>.old` (a
 //! running executable or loaded library cannot be overwritten on Windows,
@@ -253,8 +253,8 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64, bool, String, u64)> {
 }
 
 /// The steadiest channel a version is offered on, by its tag: releases on
-/// Stable, betas on Testing, alphas (and any other pre-release) on
-/// Unstable. GitHub's pre-release flag (set by the release workflow from
+/// Stable, release candidates and betas on Testing, alphas (and any other
+/// pre-release) on Unstable. GitHub's pre-release flag (set by the release workflow from
 /// the tag) only keeps a release off Stable, should it be set by hand.
 /// `None` for an unparsable version.
 fn channel_of(version: &str, prerelease: bool) -> Option<UpdateChannel> {
@@ -262,7 +262,7 @@ fn channel_of(version: &str, prerelease: bool) -> Option<UpdateChannel> {
     Some(match name.as_str() {
         _ if release && prerelease => UpdateChannel::Testing,
         _ if release => UpdateChannel::Stable,
-        "beta" => UpdateChannel::Testing,
+        "rc" | "beta" => UpdateChannel::Testing,
         _ => UpdateChannel::Unstable,
     })
 }
@@ -611,6 +611,9 @@ mod tests {
         assert!(is_newer("0.1.0-alpha10", "0.1.0-alpha2"));
         assert!(is_newer("0.1.0-beta0", "0.1.0-alpha9"));
         assert!(is_newer("0.1.0-beta.2", "0.1.0-beta.1"));
+        assert!(is_newer("0.1.0-rc1", "0.1.0-beta9"));
+        assert!(is_newer("0.1.0-rc2", "0.1.0-rc1"));
+        assert!(is_newer("0.1.0", "0.1.0-rc2"));
         assert!(!is_newer("0.1.0-alpha0", "0.1.0-alpha0"));
         assert!(is_newer("0.2.0-alpha0", "0.1.0"));
         assert!(!is_newer("0.0.9", "0.1.0"));
@@ -624,7 +627,9 @@ mod tests {
         assert_eq!(channel_of("1.2.0-beta1", false), Some(UpdateChannel::Testing));
         assert_eq!(channel_of("1.2.0-beta.2", false), Some(UpdateChannel::Testing));
         assert_eq!(channel_of("1.2.0-alpha0", false), Some(UpdateChannel::Unstable));
-        assert_eq!(channel_of("1.2.0-rc1", false), Some(UpdateChannel::Unstable));
+        assert_eq!(channel_of("1.2.0-rc1", false), Some(UpdateChannel::Testing));
+        assert_eq!(channel_of("1.2.0-rc.2", true), Some(UpdateChannel::Testing));
+        assert_eq!(channel_of("1.2.0-dev3", false), Some(UpdateChannel::Unstable));
         assert_eq!(channel_of("nightly", false), None);
         // Flagged as a pre-release on GitHub: never Stable, else by the tag.
         assert_eq!(channel_of("1.2.0", true), Some(UpdateChannel::Testing));

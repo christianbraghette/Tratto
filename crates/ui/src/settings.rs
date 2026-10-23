@@ -146,8 +146,8 @@ impl UpdateChannel {
     pub fn label(self) -> &'static str {
         match self {
             Self::Stable => "Stable",
-            Self::Testing => "Testing (betas)",
-            Self::Unstable => "Unstable (alphas)",
+            Self::Testing => "Testing",
+            Self::Unstable => "Unstable",
         }
     }
 }

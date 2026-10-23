@@ -5,7 +5,7 @@
 # archives the updater installs (tratto-<target>.zip,
 # tratto-<target>.app.zip). Once the draft is published, the app's updater
 # (crates/ui/src/update.rs) offers it on a channel picked by the tag's
-# suffix (none: stable, -beta<n>: testing, -alpha<n>: unstable) and finds
+# suffix (none: stable, -rc<n> or -beta<n>: testing, -alpha<n>: unstable) and finds
 # its file by name. A tag with a suffix is flagged as a pre-release here,
 # so GitHub never shows it as the latest release.
 #
