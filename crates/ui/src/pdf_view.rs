@@ -8,8 +8,9 @@
 //! * a small image of every page shown (also the page previews), drawn first
 //!   so a page is never empty;
 //! * when a page is shown larger, tiles of `TILE` pixels at a zoom *level*
-//!   (the page's width in pixels, in steps of sqrt 2): only the tiles on
-//!   screen are rendered, nearest to the centre first, a few at a time.
+//!   (the page's width in pixels, exactly as shown, so a pixel of a tile is a
+//!   pixel of the screen: scaled tiles break thin strokes up): only the tiles
+//!   on screen are rendered, nearest to the centre first, a few at a time.
 //!   Small tiles keep large (e.g. scanned) PDFs fast at any zoom: nothing off
 //!   screen is rasterised and no single upload stalls a frame.
 //!
@@ -36,8 +37,7 @@ use tratto_core::pdf_pages::{self, PdfError, PdfFile, RenderedPage};
 const SMALL_PX: u32 = 512;
 /// Side of a tile, in pixels.
 const TILE: u32 = 512;
-/// Zoom levels (page widths in pixels).
-const MIN_LEVEL: f32 = 1024.0;
+/// The largest zoom level (page width in pixels); past it tiles are stretched.
 const MAX_LEVEL: f32 = 16384.0;
 /// Renders asked for and not back yet, at most.
 const MAX_IN_FLIGHT: usize = 6;
@@ -137,14 +137,10 @@ impl Default for PdfTextures {
     }
 }
 
-/// The zoom level for a page shown `shown` pixels wide: the next step
-/// (sqrt 2 apart) at least that large.
+/// The zoom level for a page shown `shown` pixels wide: that width, whole
+/// pixels.
 fn level_for(shown: f32) -> u32 {
-    let mut level = MIN_LEVEL;
-    while level < shown && level < MAX_LEVEL {
-        level *= std::f32::consts::SQRT_2;
-    }
-    level.min(MAX_LEVEL).round() as u32
+    shown.round().clamp(SMALL_PX as f32, MAX_LEVEL) as u32
 }
 
 /// The tiles (columns, rows) of a `width` x `height` pixel page that cover
@@ -310,8 +306,12 @@ impl PdfTextures {
         fetch: bool,
     ) -> bool {
         let (w, h) = (level, pdf_pages::page_height_px(size, level));
-        // Level pixels per screen point.
-        let k = w as f32 / rect.width();
+        // Level pixels per screen point: at the level shown, exactly the
+        // screen's, with the page's corner on a pixel, so tiles are drawn
+        // pixel for pixel (no resampling blur).
+        let ppp = painter.ctx().pixels_per_point();
+        let k = if (w as f32 - rect.width() * ppp).abs() <= 1.0 { ppp } else { w as f32 / rect.width() };
+        let rect = Rect::from_min_size((rect.min.to_vec2() * ppp).round().to_pos2() / ppp, rect.size());
         let to_px = |a: f32, b: f32, o: f32| [(a - o) * k, (b - o) * k];
         let Some((cols, rows)) = tiles_over(
             w,
@@ -405,11 +405,10 @@ mod tests {
     use eframe::egui::{RawInput, TextureId};
 
     #[test]
-    fn levels_come_in_steps() {
-        assert_eq!(level_for(10.0), 1024);
+    fn levels_are_the_width_shown() {
+        assert_eq!(level_for(10.0), SMALL_PX);
         assert_eq!(level_for(1024.0), 1024);
-        assert_eq!(level_for(1100.0), 1448);
-        assert_eq!(level_for(1400.0), 1448); // a small zoom keeps the level
+        assert_eq!(level_for(1100.4), 1100);
         assert_eq!(level_for(100_000.0), 16384);
     }
 

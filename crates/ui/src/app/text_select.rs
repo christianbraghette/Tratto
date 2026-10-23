@@ -140,7 +140,9 @@ impl InkApp {
             && let (Some(file), Some(pdf_page)) = (&pdf.file, self.doc.pdf_page(page))
         {
             let chars = self.pdf_nav.text(file, pdf_page)?;
-            pdf_glyphs = placed_pdf_text(pdf, pdf_page, (self.doc.page_width, self.doc.page_height), &chars);
+            let size = (self.doc.page_width, self.doc.page_height);
+            let covers: Vec<Rect> = self.doc.images.iter().filter(|i| i.page == page).map(|i| i.rect()).collect();
+            pdf_glyphs = placed_pdf_text(pdf, pdf_page, size, &chars, &covers);
         }
         let ctx = &self.egui_ctx;
         let glyphs = Arc::new(page_text(&self.doc.texts, page, pdf_glyphs, |t| box_glyphs(ctx, t)));
@@ -360,6 +362,8 @@ pub(super) struct NoteText {
     pub page_count: u32,
     page_size: (f32, f32),
     texts: Vec<TextBox>,
+    /// The pictures' places, by page: they hide the PDF's text under them.
+    pictures: Vec<(u32, Rect)>,
     pub pdf: Option<PdfBackground>,
 }
 
@@ -369,6 +373,7 @@ impl NoteText {
             page_count: doc.page_count.max(1),
             page_size: (doc.page_width, doc.page_height),
             texts: doc.texts.clone(),
+            pictures: doc.images.iter().map(|i| (i.page, i.rect())).collect(),
             pdf: doc.pdf.clone(),
         }
     }
@@ -381,7 +386,10 @@ impl NoteText {
     /// The glyphs of `page`; `chars`: the text of the PDF page under it.
     pub fn page_glyphs(&self, page: u32, chars: &[TextChar]) -> Vec<Glyph> {
         let pdf = match (&self.pdf, self.pdf_page(page)) {
-            (Some(pdf), Some(pdf_page)) => placed_pdf_text(pdf, pdf_page, self.page_size, chars),
+            (Some(pdf), Some(pdf_page)) => {
+                let covers: Vec<Rect> = self.pictures.iter().filter(|(p, _)| *p == page).map(|(_, r)| *r).collect();
+                placed_pdf_text(pdf, pdf_page, self.page_size, chars, &covers)
+            }
             _ => Vec::new(),
         };
         page_text(&self.texts, page, pdf, |t| t.text.chars().map(|ch| Glyph { ch, rect: None }).collect())
@@ -397,9 +405,39 @@ fn page_text(texts: &[TextBox], page: u32, pdf: Vec<Glyph>, boxed: impl Fn(&Text
 }
 
 /// The text `chars` of PDF page `pdf_page`, placed where that page sits on
-/// a note page of `page_size`.
-fn placed_pdf_text(pdf: &PdfBackground, pdf_page: u32, page_size: (f32, f32), chars: &[TextChar]) -> Vec<Glyph> {
-    pdf.placement(pdf_page, page_size.0, page_size.1).map(|placed| place_pdf_text(chars, placed)).unwrap_or_default()
+/// a note page of `page_size`, without what the pictures there (`covers`)
+/// hide.
+fn placed_pdf_text(
+    pdf: &PdfBackground,
+    pdf_page: u32,
+    page_size: (f32, f32),
+    chars: &[TextChar],
+    covers: &[Rect],
+) -> Vec<Glyph> {
+    let placed = pdf.placement(pdf_page, page_size.0, page_size.1).map(|placed| place_pdf_text(chars, placed));
+    uncovered(placed.unwrap_or_default(), covers)
+}
+
+/// `glyphs` without those whose middle is under one of `covers` (pictures
+/// are painted over the PDF). The breaks left next to each other become
+/// one, a line break if there was one.
+fn uncovered(glyphs: Vec<Glyph>, covers: &[Rect]) -> Vec<Glyph> {
+    if covers.is_empty() {
+        return glyphs;
+    }
+    let mut out: Vec<Glyph> = Vec::with_capacity(glyphs.len());
+    for g in glyphs {
+        match g.rect {
+            Some(r) if covers.iter().any(|c| c.contains(r.center())) => {}
+            Some(_) => out.push(g),
+            None => match out.last().map(|last| last.rect.is_some()) {
+                Some(true) => out.push(g),
+                Some(false) if g.ch == '\n' => *out.last_mut().expect("there is one") = g,
+                _ => {}
+            },
+        }
+    }
+    out
 }
 
 /// The PDF's text placed on a note page: `placed` is where the PDF page
@@ -659,6 +697,17 @@ mod tests {
         assert_eq!(find_all(&text, &normalize_query("CD  e")), vec![3..7]);
         assert_eq!(find_all(&text, &normalize_query("b")).first(), Some(&(1..2)));
         assert!(find_all(&text, &normalize_query("  ")).is_empty());
+    }
+
+    #[test]
+    fn pictures_hide_the_text_under_them() {
+        // A picture over "cd" and the start of the next line.
+        let picture = Rect::from_min_max(pos2(25.0, -5.0), pos2(60.0, 30.0));
+        let s: String = uncovered(sample(), &[picture]).iter().map(|g| g.ch).collect();
+        assert_eq!(s, "ab\nEf");
+        // Over everything: nothing is left, not even the breaks.
+        let all = Rect::from_min_max(pos2(-5.0, -5.0), pos2(60.0, 40.0));
+        assert!(uncovered(sample(), &[all]).is_empty());
     }
 
     #[test]
