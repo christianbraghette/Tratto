@@ -17,9 +17,14 @@
 //! through egui as before (`active` is false).
 //!
 //! While the app draws its own title bar (`own_frame`), the subclass also
-//! keeps Windows from painting the system's: the window has no visible
-//! frame then, yet when it is restored, maximized or leaves full screen
-//! Windows painted its unthemed caption over it for a moment.
+//! keeps Windows from repainting the system's when the window is activated.
+//! While the window goes in or out of full screen (`switching`) it paints
+//! none of the system's frame at all (`WM_NCPAINT`): leaving full screen,
+//! Windows painted its unthemed frame around the window for a frame or two.
+//! A window that swallows `WM_NCPAINT` is no longer themed, and the
+//! caption Windows then paints now and then (e.g. back from the background,
+//! or the whole frame with the system title bar) is the unthemed, light
+//! blue one: once the switch is done, the theme is applied again.
 
 // The hit test is only Windows' (and its test's); elsewhere only the
 // regions are kept.
@@ -108,9 +113,15 @@ pub fn active() -> bool {
 }
 
 /// The app draws the window's title bar (the custom frame is on): Windows
-/// paints none (see the module docs).
+/// does not repaint its own on activation (see the module docs).
 pub fn own_frame(on: bool) {
     imp::own_frame(on);
+}
+
+/// The window is going in or out of full screen: Windows paints none of
+/// its frame meanwhile (see the module docs).
+pub fn switching(on: bool) {
+    imp::switching(on);
 }
 
 /// Installs the hit test on the eframe window (first frame).
@@ -146,7 +157,7 @@ pub fn publish_border(ctx: &egui::Context, border: Option<f32>) {
 #[cfg(windows)]
 mod imp {
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -165,8 +176,16 @@ mod imp {
         fn GetClientRect(hwnd: HWND, rect: *mut RECT) -> i32;
     }
 
+    #[link(name = "uxtheme")]
+    unsafe extern "system" {
+        fn SetWindowTheme(hwnd: HWND, app_name: *const u16, id_list: *const u16) -> i32;
+    }
+
     static ACTIVE: AtomicBool = AtomicBool::new(false);
     static OWN_FRAME: AtomicBool = AtomicBool::new(false);
+    static SWITCHING: AtomicBool = AtomicBool::new(false);
+    /// The window, once the subclass is installed.
+    static WINDOW: AtomicIsize = AtomicIsize::new(0);
     static REGIONS: Mutex<Regions> = Mutex::new(Regions { caption: None, holes: Vec::new(), border: 0 });
 
     pub fn active() -> bool {
@@ -175,6 +194,17 @@ mod imp {
 
     pub fn own_frame(on: bool) {
         OWN_FRAME.store(on, Ordering::Relaxed);
+    }
+
+    pub fn switching(on: bool) {
+        let hwnd = WINDOW.load(Ordering::Relaxed);
+        if SWITCHING.swap(on, Ordering::Relaxed) && !on && hwnd != 0 {
+            // Swallowing `WM_NCPAINT` left the window unthemed: the default
+            // theme back (null names), which Windows tells it with
+            // `WM_THEMECHANGED`.
+            // SAFETY: our own window, on its thread.
+            unsafe { SetWindowTheme(hwnd as HWND, std::ptr::null(), std::ptr::null()) };
+        }
     }
 
     pub fn set(regions: Regions) {
@@ -196,7 +226,7 @@ mod imp {
         if OWN_FRAME.load(Ordering::Relaxed) {
             match msg {
                 // Nothing of the system's frame is painted.
-                WM_NCPAINT => return 0,
+                WM_NCPAINT if SWITCHING.load(Ordering::Relaxed) => return 0,
                 // Activation still changes, without repainting the frame
                 // (an `lparam` of -1 asks for that).
                 // SAFETY: forwarding to the next window procedure.
@@ -225,6 +255,7 @@ mod imp {
         let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
         // SAFETY: the HWND of our own window, on its thread (the first frame).
         let ok = unsafe { SetWindowSubclass(h.hwnd.get() as HWND, Some(subclass_proc), SUBCLASS_ID, 0) != 0 };
+        WINDOW.store(h.hwnd.get(), Ordering::Relaxed);
         ACTIVE.store(ok, Ordering::Relaxed);
     }
 }
@@ -238,6 +269,8 @@ mod imp {
     }
 
     pub fn own_frame(_on: bool) {}
+
+    pub fn switching(_on: bool) {}
 
     pub fn set(_regions: Regions) {}
 

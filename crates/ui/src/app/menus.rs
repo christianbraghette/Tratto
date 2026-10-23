@@ -262,6 +262,7 @@ impl InkApp {
             }
             if done && now - since > 0.5 || now - since > 3.0 {
                 chrome::window_transitions(true);
+                crate::win_frame::switching(false);
                 self.chrome.switching = None;
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -1135,6 +1136,7 @@ impl InkApp {
                     (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false), i.time)
                 });
                 chrome::window_transitions(false);
+                crate::win_frame::switching(true);
                 if fs {
                     let maximize = std::mem::take(&mut self.chrome.maximize_after_fullscreen);
                     self.chrome.switching = Some((false, maximize, now));
