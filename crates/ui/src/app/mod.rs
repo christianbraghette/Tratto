@@ -420,6 +420,8 @@ pub struct InkApp {
     export_job: Option<export_ui::ExportJob>,
     /// Pictures being saved as PNG files in the background.
     png_jobs: Vec<Receiver<Result<PathBuf, String>>>,
+    /// Pictures being made to insert, in the background.
+    picture_jobs: Vec<pictures::PictureJob>,
     /// Note being dragged in the notebook panel.
     note_drag: Option<library_panel::NoteDrag>,
     /// Same for the notebook name in the notebook panel.
@@ -567,6 +569,7 @@ impl InkApp {
             export_dialog: None,
             export_job: None,
             png_jobs: Vec::new(),
+            picture_jobs: Vec::new(),
             note_drag: None,
             notebook_buf: String::new(),
             notebook_focused: false,
@@ -1007,6 +1010,7 @@ impl eframe::App for InkApp {
         }
         self.poll_loading();
         self.poll_library();
+        self.poll_pictures();
         self.poll_saves();
         self.poll_update();
         self.poll_file_picker();

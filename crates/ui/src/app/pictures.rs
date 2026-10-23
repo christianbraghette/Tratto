@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 
 use eframe::egui::{self, Color32, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
 
@@ -49,18 +51,55 @@ pub(super) fn is_picture(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// A picture to insert, made into a note's picture in the background (a
+/// photo takes a while to shrink): see `InkApp::insert_pictures`.
+pub(super) enum PictureSource {
+    File(PathBuf),
+    /// RGBA pixels, row by row (the clipboard's).
+    Pixels(u32, u32, Vec<u8>),
+}
+
+impl PictureSource {
+    fn read(self) -> Result<Arc<ImageData>, String> {
+        match self {
+            PictureSource::File(path) => read_picture(&path),
+            PictureSource::Pixels(w, h, rgba) => ImageData::from_rgba(w, h, rgba).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// A picture to insert: what it is made from, where it goes and what a
+/// failure says ("Cannot paste").
+pub(super) type PictureRequest = (PictureSource, Option<(u32, Pos2)>, String);
+
+/// A picture made in the background (or why it could not be), where it
+/// goes and what a failure says.
+type MadePicture = (Result<Arc<ImageData>, String>, Option<(u32, Pos2)>, String);
+
+/// Pictures being made in the background for the note at `note`.
+pub(super) struct PictureJob {
+    note: Option<PathBuf>,
+    done: Receiver<MadePicture>,
+}
+
 /// The clipboard's picture: its pixels (a screenshot, a picture copied in a
 /// browser), else the first picture file copied (in the file manager).
-pub(super) fn clipboard_picture() -> Result<Option<Arc<ImageData>>, String> {
+pub(super) fn clipboard_picture() -> Result<Option<PictureSource>, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     if let Ok(img) = clipboard.get_image() {
         let (w, h) = (img.width as u32, img.height as u32);
-        return ImageData::from_rgba(w, h, img.bytes.into_owned()).map(Some).map_err(|e| e.to_string());
+        return Ok(Some(PictureSource::Pixels(w, h, img.bytes.into_owned())));
     }
     if let Some(path) = clipboard.get().file_list().ok().and_then(|files| files.into_iter().find(|p| is_picture(p))) {
-        return read_picture(&path).map(Some);
+        return Ok(Some(PictureSource::File(path)));
     }
     Ok(None)
+}
+
+/// The picture file `path` to insert at `at`.
+fn file_request(path: &Path, at: Option<(u32, Pos2)>) -> PictureRequest {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    (PictureSource::File(path.to_path_buf()), at, format!("Cannot insert \u{201c}{name}\u{201d}"))
 }
 
 fn read_picture(path: &Path) -> Result<Arc<ImageData>, String> {
@@ -138,11 +177,54 @@ impl InkApp {
 
     /// The picture file `path` onto the note.
     pub(super) fn insert_picture_file(&mut self, path: &Path, at: Option<(u32, Pos2)>) {
-        match read_picture(path) {
-            Ok(data) => self.insert_picture(data, at),
-            Err(e) => {
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.toast(format!("Cannot insert \u{201c}{name}\u{201d}: {e}"));
+        self.insert_pictures(vec![file_request(path, at)]);
+    }
+
+    /// Makes the pictures on a background thread and inserts each, in order,
+    /// once it is made (see `poll_pictures`): the window never waits for a
+    /// photo to be shrunk.
+    pub(super) fn insert_pictures(&mut self, pictures: Vec<PictureRequest>) {
+        if pictures.is_empty() {
+            return;
+        }
+        let (tx, done) = mpsc::channel();
+        let ctx = self.egui_ctx.clone();
+        let work = move || {
+            for (source, at, failure) in pictures {
+                if tx.send((source.read(), at, failure)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+        };
+        match thread::Builder::new().name("pictures".into()).spawn(work) {
+            Ok(_) => self.picture_jobs.push(PictureJob { note: self.note_path.clone(), done }),
+            Err(e) => self.toast(format!("Cannot insert the picture: {e}")),
+        }
+    }
+
+    /// Inserts the pictures made in the background, into the note they were
+    /// for if it is still open.
+    pub(super) fn poll_pictures(&mut self) {
+        let mut made = Vec::new();
+        self.picture_jobs.retain(|job| {
+            loop {
+                match job.done.try_recv() {
+                    Ok(picture) => made.push((job.note.clone(), picture)),
+                    Err(TryRecvError::Empty) => return true,
+                    Err(TryRecvError::Disconnected) => return false,
+                }
+            }
+        });
+        for (note, (read, at, failure)) in made {
+            if note != self.note_path || self.screen != super::Screen::Editor {
+                continue;
+            }
+            // Its page may have been deleted meanwhile.
+            let at = at.filter(|(page, _)| *page < self.doc.page_count);
+            match read {
+                Ok(data) => self.insert_picture(data, at),
+                Err(e) => self.toast(format!("{failure}: {e}")),
             }
         }
     }
@@ -180,11 +262,11 @@ impl InkApp {
         }
         let dropped: Vec<PathBuf> = ctx
             .input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| is_picture(p)).collect());
-        for (n, path) in dropped.iter().enumerate() {
+        let requests = dropped.iter().enumerate().map(|(n, path)| {
             // Several: one a little below and right of the other.
-            let at = at.map(|(page, p)| (page, p + vec2(24.0, 24.0) * n as f32));
-            self.insert_picture_file(path, at);
-        }
+            file_request(path, at.map(|(page, p)| (page, p + vec2(24.0, 24.0) * n as f32)))
+        });
+        self.insert_pictures(requests.collect());
     }
 
     /// The picture on `page` under `p` (page space), the top one.

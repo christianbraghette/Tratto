@@ -20,6 +20,7 @@
 
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
@@ -293,6 +294,31 @@ enum Job {
 }
 
 impl Job {
+    /// The request with what `fail` needs to answer it (not its data).
+    fn answerable(&self) -> Job {
+        match self {
+            Job::Sizes { file, reply } => Job::Sizes { file: file.clone(), reply: reply.clone() },
+            Job::Render { file, page, width, region, reply, wake } => Job::Render {
+                file: file.clone(),
+                page: *page,
+                width: *width,
+                region: *region,
+                reply: reply.clone(),
+                wake: wake.clone(),
+            },
+            Job::Underlay { reply, .. } => Job::Underlay { pdf: Vec::new(), pages: Vec::new(), reply: reply.clone() },
+            Job::Outline { file, reply, wake } => {
+                Job::Outline { file: file.clone(), reply: reply.clone(), wake: wake.clone() }
+            }
+            Job::Links { file, page, reply, wake } => {
+                Job::Links { file: file.clone(), page: *page, reply: reply.clone(), wake: wake.clone() }
+            }
+            Job::Text { file, page, reply, wake } => {
+                Job::Text { file: file.clone(), page: *page, reply: reply.clone(), wake: wake.clone() }
+            }
+        }
+    }
+
     /// The same render asked for again (the older one need not be done).
     fn same_render(&self, other: &Job) -> bool {
         match (self, other) {
@@ -408,7 +434,16 @@ fn run(jobs: Receiver<Job>) {
         loop {
             if !pending.iter().any(|later| job.same_render(later)) {
                 match open.as_mut() {
-                    Some(open) => handle(open, job),
+                    Some(open) => {
+                        // A bug (or a PDF that trips one) fails its request
+                        // only: the worker, and every other PDF, go on.
+                        let answer = job.answerable();
+                        if panic::catch_unwind(AssertUnwindSafe(|| handle(open, job))).is_err() {
+                            open.pages.clear();
+                            open.documents.clear();
+                            fail(answer, PdfError::Unreadable("PDFium failed on this PDF".into()));
+                        }
+                    }
                     None => fail(job, pdfium.as_ref().err().cloned().expect("not bound")),
                 }
             }

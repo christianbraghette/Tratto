@@ -32,6 +32,11 @@ impl InkApp {
 
     /// Selects everything on `page` with the select tool.
     pub(super) fn select_all_on_page(&mut self, page: u32) {
+        // What is being typed is kept, and selected with the rest.
+        if self.edit.is_some() {
+            let ctx = self.egui_ctx.clone();
+            self.commit_edit(&ctx);
+        }
         let strokes = self.doc.strokes.iter().filter(|s| s.page == page).map(|s| s.id).collect();
         let texts = self.doc.texts.iter().filter(|t| t.page == page).map(|t| t.id).collect();
         let images = self.doc.images.iter().filter(|i| i.page == page).map(|i| i.id).collect();
@@ -39,9 +44,6 @@ impl InkApp {
             self.toast(format!("Nothing to select on page {}", page + 1));
             return;
         };
-        if self.edit.is_some() {
-            self.edit = None;
-        }
         self.tool = Tool::Select;
         self.saved_tool = None;
         self.picture = None;

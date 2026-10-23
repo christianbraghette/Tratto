@@ -954,4 +954,95 @@ mod tests {
         assert!(matches!(load_note(&path), Err(StorageError::BadMagic)));
         let _ = fs::remove_file(&path);
     }
+
+    /// A note saved whole, then by appending: its bytes and every version
+    /// of the document it held (the last one last).
+    fn journaled_note(path: &Path) -> (Vec<u8>, Vec<Document>) {
+        let mut doc = sample_doc();
+        let mut meta = NoteMeta::new("Damaged", false);
+        let mut writer = NoteWriter::default();
+        let mut versions = Vec::new();
+        for step in 0..4 {
+            match step {
+                0 => {}
+                1 => {
+                    let s = pen(&mut doc, 40);
+                    doc.strokes.push(s);
+                }
+                2 => doc.texts[0].text.push_str("\neggs"),
+                _ => {
+                    doc.strokes.remove(0);
+                    doc.page_count = 2;
+                }
+            }
+            writer.save(path, &mut meta, &doc).unwrap();
+            versions.push(doc.clone());
+        }
+        (fs::read(path).unwrap(), versions)
+    }
+
+    /// Where the snapshot (with the PDF before it) is in the note `bytes`.
+    fn snapshot_range(bytes: &[u8]) -> std::ops::Range<usize> {
+        let (_, slot_size) = parse_header(bytes).unwrap();
+        let pdf_at = HEADER_LEN + 2 * slot_size;
+        let pdf = sized_part(bytes, pdf_at).unwrap();
+        let snapshot = sized_part(bytes, pdf_at + 8 + pdf.len()).unwrap();
+        pdf_at..pdf_at + 16 + pdf.len() + snapshot.len()
+    }
+
+    /// Reads the damaged note `bytes` every way the app does, then renames
+    /// it. None of them may panic; true if a document was read but is none
+    /// of `versions`.
+    fn read_damaged(path: &Path, bytes: &[u8], versions: &[Document]) -> bool {
+        fs::write(path, bytes).unwrap();
+        let _ = read_meta(path);
+        let opened = open_note(path).map(|(_, doc, _)| doc);
+        let loaded = load_note(path).map(|(_, doc)| doc);
+        assert_eq!(opened.is_ok(), loaded.is_ok());
+        let _ = rewrite_meta(path, |m| m.title = "Renamed".into());
+        loaded.is_ok_and(|doc| !versions.iter().any(|v| same(v, &doc)))
+    }
+
+    #[test]
+    fn a_cut_short_note_opens_as_an_earlier_save_or_not_at_all() {
+        let path = std::env::temp_dir().join("tratto_cut_short.ink");
+        let (bytes, versions) = journaled_note(&path);
+        // Every length from the PDF on (the snapshot, every record); in the
+        // meta slots, which are mostly padding, a sample.
+        let from = snapshot_range(&bytes).start;
+        for len in (0..from).step_by(37).chain(from - 8..bytes.len()) {
+            assert!(!read_damaged(&path, &bytes[..len], &versions), "cut at {len} of {}: misread", bytes.len());
+        }
+        remove(&path);
+    }
+
+    #[test]
+    fn damaged_bytes_never_crash_the_reader() {
+        let path = std::env::temp_dir().join("tratto_damaged_bytes.ink");
+        let (bytes, versions) = journaled_note(&path);
+        // The snapshot has no checksum (the slots and the records have):
+        // damage there may be read as a document never saved. Elsewhere it
+        // must not be.
+        let snapshot = snapshot_range(&bytes);
+        // xorshift: the same damage on every run.
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..600 {
+            let mut damaged = bytes.clone();
+            let mut at = Vec::new();
+            for _ in 0..1 + next() % 3 {
+                let i = (next() % damaged.len() as u64) as usize;
+                damaged[i] ^= 1 << (next() % 8);
+                at.push(i);
+            }
+            let misread = read_damaged(&path, &damaged, &versions);
+            assert!(!misread || at.iter().any(|i| snapshot.contains(i)), "damaged at {at:?}: misread");
+        }
+        remove(&path);
+    }
 }

@@ -232,7 +232,7 @@ impl InkApp {
         }
         // Another app's: a picture, else text.
         match super::pictures::clipboard_picture() {
-            Ok(Some(data)) => return self.insert_picture(data, at),
+            Ok(Some(picture)) => return self.insert_pictures(vec![(picture, at, "Cannot paste".to_owned())]),
             Ok(None) => {}
             Err(e) if !quiet => return self.toast(format!("Cannot paste: {e}")),
             Err(_) => return,
