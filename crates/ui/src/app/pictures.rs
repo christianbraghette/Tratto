@@ -253,8 +253,8 @@ impl InkApp {
             Some((page, c - view.layout.page_origin(page).to_vec2()))
         });
         let typing = self.edit.is_some() || ctx.egui_wants_keyboard_input();
-        // The key on Windows (egui hides it without text on the clipboard);
-        // elsewhere a paste of text, which may come with a picture.
+        // The key, which egui hides without text on the clipboard (see
+        // `hidden_paste`); or a paste of text, which may come with a picture.
         let key = std::mem::take(&mut self.pen_input.paste);
         let text = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))));
         if (key || text) && !typing {

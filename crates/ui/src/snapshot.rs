@@ -12,12 +12,6 @@
 //! puts the result on the system clipboard. Transparent around ink: pasted
 //! onto anything, only what was written shows.
 //!
-//! On Windows it is a picture. Elsewhere egui only notices the paste key
-//! when the clipboard has text, so Tratto could not paste its own copy with
-//! the keyboard: there it is HTML holding the picture (what Word, mail or a
-//! browser take), with the text of the copied text boxes as plain text (a
-//! space if there are none).
-//!
 //! A page saved as a file has all of the page under the ink: the paper, its
 //! rules or grid, and the PDF page the note is written on.
 
@@ -58,8 +52,6 @@ pub struct Snapshot {
     area: Rect,
     /// On white paper (a whole page); else transparent.
     paper: bool,
-    /// Plain text with it, where it goes as HTML (see the module docs).
-    alt: String,
     /// The paper's rules or grid.
     rules: Option<PageStyle>,
     /// The PDF page under it: its file, the page, and where it goes (page
@@ -67,32 +59,23 @@ pub struct Snapshot {
     underlay: Option<(Arc<PdfFile>, u32, Rect)>,
 }
 
-/// The text of `texts`, one box a paragraph; a space without any.
-fn alt_text(texts: &[TextBox]) -> String {
-    let text = texts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join("\n\n");
-    if text.trim().is_empty() { " ".to_owned() } else { text }
-}
-
 impl Snapshot {
     pub fn of_content(c: &Content) -> Self {
         let area = c.bounds.expand(MARGIN);
-        let alt = alt_text(&c.texts);
         let (strokes, texts, images) = (c.strokes.clone(), c.texts.clone(), c.images.clone());
-        Self { strokes, texts, images, area, paper: false, alt, rules: None, underlay: None }
+        Self { strokes, texts, images, area, paper: false, rules: None, underlay: None }
     }
 
     pub fn of_page(p: &PageContent, (w, h): (f32, f32)) -> Self {
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(w, h));
-        let alt = alt_text(&p.texts);
         let (strokes, texts, images) = (p.strokes.clone(), p.texts.clone(), p.images.clone());
-        Self { strokes, texts, images, area, paper: true, alt, rules: None, underlay: None }
+        Self { strokes, texts, images, area, paper: true, rules: None, underlay: None }
     }
 
     /// Page `page` of `doc` as it looks: on its paper, with its rules or
     /// grid and the PDF page under it.
     pub fn of_note_page(doc: &Document, page: u32) -> Self {
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(doc.page_width, doc.page_height));
-        let texts: Vec<TextBox> = doc.texts.iter().filter(|t| t.page == page).cloned().collect();
         let underlay = doc.pdf.as_ref().and_then(|pdf| {
             let pdf_page = doc.pdf_page(page)?;
             let [x, y, w, h] = pdf.placement(pdf_page, doc.page_width, doc.page_height)?;
@@ -101,8 +84,7 @@ impl Snapshot {
         Self {
             strokes: doc.strokes.iter().filter(|s| s.page == page).cloned().collect(),
             images: doc.images.iter().filter(|i| i.page == page).cloned().collect(),
-            alt: alt_text(&texts),
-            texts,
+            texts: doc.texts.iter().filter(|t| t.page == page).cloned().collect(),
             area,
             paper: true,
             rules: doc.ruled(page).then_some(doc.page),
@@ -121,7 +103,6 @@ struct Scene {
     /// Points to pixels of `primitives`.
     ppp: f32,
     atlas: ColorImage,
-    alt: String,
     /// The paper's rules (pixels).
     rules: Vec<Rect>,
     /// The PDF page under it, and where it goes (pixels).
@@ -139,7 +120,7 @@ pub fn export(ctx: &egui::Context, snap: Snapshot, system: Arc<Mutex<SystemCopy>
     let shared = system.clone();
     let spawned = std::thread::Builder::new().name("copy-picture".into()).spawn(move || {
         let image = rasterise(&scene);
-        let done = put_on_clipboard(&image, &scene.alt).unwrap_or_default();
+        let done = put_on_clipboard(&image).unwrap_or_default();
         let mut system = shared.lock().unwrap_or_else(|e| e.into_inner());
         // Unless a later copy replaced this one meanwhile.
         if *system == SystemCopy::Pending(id) {
@@ -221,7 +202,7 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
     let rules =
         snap.rules.map(|style| rule_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
     let underlay = snap.underlay.as_ref().map(|(file, page, rect)| (file.clone(), *page, px(*rect)));
-    Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, alt: snap.alt.clone(), rules, underlay }
+    Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, rules, underlay }
 }
 
 /// The rules (and the grid's columns) of a page `size` large on paper
@@ -418,40 +399,19 @@ fn edge(a: Pos2, b: Pos2, c: Pos2) -> f32 {
     (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
 }
 
-/// Puts `image` on the system clipboard (see the module docs), with `alt`
-/// as its text where it goes as HTML; what is there then. The clipboard is
-/// kept for the whole run: on Linux what it offers goes with it.
-fn put_on_clipboard(image: &Rgba, alt: &str) -> Option<SystemCopy> {
+/// Puts `image` on the system clipboard; what is there then. The clipboard
+/// is kept for the whole run: on Linux what it offers goes with it.
+fn put_on_clipboard(image: &Rgba) -> Option<SystemCopy> {
     static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
     let mut clipboard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
     if clipboard.is_none() {
         *clipboard = arboard::Clipboard::new().ok();
     }
     let clipboard = clipboard.as_mut()?;
-    let bytes = image.bytes.clone();
     let [w, h] = image.size;
-    if cfg!(windows) {
-        let data = arboard::ImageData { width: w, height: h, bytes: bytes.into() };
-        clipboard.set_image(data).ok()?;
-        return Some(SystemCopy::Image(image.size));
-    }
-    let png = tratto_core::images::encode_png(w as u32, h as u32, bytes).ok()?;
-    let html = format!("<img src=\"data:image/png;base64,{}\" width=\"{w}\" height=\"{h}\">", base64(&png));
-    clipboard.set_html(html, Some(alt.to_owned())).ok()?;
-    Some(SystemCopy::Text(alt.to_owned()))
-}
-
-/// `bytes` in base64 (RFC 4648, with padding).
-fn base64(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
-        for i in 0..4 {
-            out.push(if i <= chunk.len() { DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
-        }
-    }
-    out
+    let data = arboard::ImageData { width: w, height: h, bytes: image.bytes.clone().into() };
+    clipboard.set_image(data).ok()?;
+    Some(SystemCopy::Image(image.size))
 }
 
 #[cfg(test)]
@@ -485,7 +445,6 @@ mod tests {
             images: Vec::new(),
             area,
             paper: false,
-            alt: " ".into(),
             rules: None,
             underlay: None,
         };
@@ -547,15 +506,6 @@ mod tests {
         let mut canvas = Canvas { size: [4, 1], px: vec![[0.0; 4]; 4] };
         fill_rect(&mut canvas, Rect::from_min_max(pos2(0.5, 0.0), pos2(2.0, 1.0)), [1.0; 4]);
         assert_eq!(canvas.px.iter().map(|p| p[3]).collect::<Vec<_>>(), [0.5, 1.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn base64_of_bytes() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
     }
 
     #[test]

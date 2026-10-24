@@ -36,7 +36,9 @@ sha2 = "0.11.0"
 rfd = "0.17.2"
 pollster = "1.0.1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
-arboard = { version = "3.7", default-features = false, features = ["image-data"] }
+# On Linux, the Wayland clipboard where the compositor offers data control
+# (else X11, through XWayland).
+arboard = { version = "3.7", default-features = false, features = ["image-data", "wayland-data-control"] }
 
 # Native Wayland tablet (pen) and drag and drop support. Versions match what
 # winit 0.30 uses so there is a single wayland-client in the dependency tree.

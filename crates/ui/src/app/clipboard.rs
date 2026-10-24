@@ -80,6 +80,9 @@ pub(crate) struct Clipboard {
     pub clip: Option<Clip>,
     /// Shared with the thread that makes the picture.
     pub system: Arc<Mutex<SystemCopy>>,
+    /// The paste key held now was reported by egui, pressed or as a paste
+    /// (see `hidden_paste`).
+    key_seen: bool,
 }
 
 impl Clipboard {
@@ -467,6 +470,30 @@ pub(super) fn note_pastable(ctx: &egui::Context) -> bool {
 }
 
 impl InkApp {
+    /// A paste key pressed this frame that egui did not report as a paste,
+    /// outside Windows (there see `WindowsPen`): without text on the
+    /// clipboard egui hides the press, and only its release comes through.
+    pub(super) fn hidden_paste(&mut self, ctx: &egui::Context) -> bool {
+        if cfg!(windows) {
+            return false;
+        }
+        let seen = &mut self.clipboard.key_seen;
+        ctx.input(|i| {
+            let mut hidden = false;
+            for e in &i.events {
+                match e {
+                    egui::Event::Paste(_) => *seen = true,
+                    egui::Event::Key { key: egui::Key::V | egui::Key::Paste, pressed, .. } => {
+                        hidden |= !*pressed && !*seen;
+                        *seen = *pressed;
+                    }
+                    _ => {}
+                }
+            }
+            hidden
+        })
+    }
+
     /// Tells the library's menus whether a note can be pasted (each frame).
     pub(super) fn publish_clipboard(&self, ctx: &egui::Context) {
         let note = self.clipboard.note().is_some();

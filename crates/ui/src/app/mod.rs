@@ -235,7 +235,8 @@ struct PenInput {
     pressure: f32,
     /// Windows: the touch of this frame is the pen's (see `finger`).
     windows_touch: bool,
-    /// Windows: a paste key was pressed this frame (see `picture_input`).
+    /// A paste key egui did not report as a paste was pressed this frame
+    /// (see `picture_input`).
     paste: bool,
 }
 
@@ -988,7 +989,8 @@ impl eframe::App for InkApp {
         self.present_mode(ctx, frame);
         self.publish_clipboard(ctx);
         // Every frame, so that one pressed elsewhere is not pasted later.
-        self.pen_input.paste = self.pen_input.windows.as_ref().is_some_and(|p| p.take_paste());
+        let hidden = self.hidden_paste(ctx);
+        self.pen_input.paste = hidden || self.pen_input.windows.as_ref().is_some_and(|p| p.take_paste());
 
         // Closing the window while editing: finish the text box and write the
         // note. If it cannot be written, the window stays open (nothing is

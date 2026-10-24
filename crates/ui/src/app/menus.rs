@@ -879,7 +879,7 @@ impl InkApp {
         let typing = self.edit.is_some() || ctx.egui_wants_keyboard_input();
         let cmd = Modifiers::COMMAND;
         let note_paste = self.clipboard.note().is_some();
-        // Windows: the paste key, even without text on the clipboard.
+        // The paste key, even without text on the clipboard.
         let paste_key = !editor && std::mem::take(&mut self.pen_input.paste);
         let found: Vec<Command> = ctx.input_mut(|i| {
             let mut out = Vec::new();
