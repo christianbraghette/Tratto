@@ -114,10 +114,13 @@ impl Clipboard {
         let Ok(mut clipboard) = arboard::Clipboard::new() else { return true };
         let text = clipboard.get_text().ok().filter(|t| !t.trim().is_empty());
         let image = clipboard.get_image().ok().map(|i| [i.width, i.height]);
+        // Files copied in a file manager.
+        let files = clipboard.get().file_list().is_ok_and(|f| !f.is_empty());
+        let empty = text.is_none() && image.is_none() && !files;
         match system {
-            SystemCopy::Text(ours) => text.as_ref().is_some_and(|t| *t == ours) || text.is_none() && image.is_none(),
-            SystemCopy::Image(size) => image == Some(size) || text.is_none() && image.is_none(),
-            _ => text.is_none() && image.is_none(),
+            SystemCopy::Text(ours) => text.as_ref().is_some_and(|t| *t == ours) || empty,
+            SystemCopy::Image(size) => image == Some(size) || empty,
+            _ => empty,
         }
     }
 }
