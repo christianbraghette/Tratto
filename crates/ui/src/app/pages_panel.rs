@@ -468,15 +468,6 @@ impl InkApp {
                                 return;
                             }
                             ui.separator();
-                            if menus::entry(ui, icon::ARROW_LINE_UP, "Insert page before", "", true) {
-                                insert = Some(i);
-                                ui.close();
-                            }
-                            if menus::entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
-                                insert = Some(i + 1);
-                                ui.close();
-                            }
-                            ui.separator();
                             if menus::entry(ui, icon::COPY, "Copy page", "", true) {
                                 clip = Some(menus::Command::CopyPage(i));
                                 ui.close();
@@ -485,12 +476,20 @@ impl InkApp {
                                 clip = Some(menus::Command::CutPage(i));
                                 ui.close();
                             }
-                            if menus::entry(ui, icon::CLIPBOARD, "Paste page after", "", can_paste) {
+                            if menus::entry(ui, icon::CLIPBOARD, "Paste page", "", can_paste) {
                                 clip = Some(menus::Command::PastePages(i + 1));
                                 ui.close();
                             }
                             ui.separator();
-                            if menus::entry(ui, icon::TRASH, &format!("Delete page {}", i + 1), "", true) {
+                            if menus::entry(ui, icon::ARROW_LINE_UP, "Insert page before", "", true) {
+                                insert = Some(i);
+                                ui.close();
+                            }
+                            if menus::entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
+                                insert = Some(i + 1);
+                                ui.close();
+                            }
+                            if menus::entry(ui, icon::TRASH, "Delete page", "", true) {
                                 delete = Some(i);
                                 ui.close();
                             }

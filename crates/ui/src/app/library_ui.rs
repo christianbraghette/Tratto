@@ -62,9 +62,6 @@ pub enum Dialog {
     },
     /// Erase everything in the trash (the number of items).
     EmptyTrash(usize),
-    Move {
-        path: PathBuf,
-    },
     Import(String),
     /// A PDF to write on (its path).
     ImportPdf(String),
@@ -272,7 +269,7 @@ impl InkApp {
             theme::paint_toast(&ghost, p + vec2(60.0, 20.0), &d.title);
         }
 
-        self.dialogs(ctx, &root, &target_dir, &mut acts);
+        self.dialogs(ctx, &target_dir, &mut acts);
         self.draw_toast(ctx);
         for a in acts {
             self.apply_act(a);
@@ -498,15 +495,15 @@ impl InkApp {
         if self.lib_ui.dialog.is_none() {
             return;
         }
-        let (root, target) = (self.library_root(), self.library_target_dir());
+        let target = self.library_target_dir();
         let mut acts = Vec::new();
-        self.dialogs(ctx, &root, &target, &mut acts);
+        self.dialogs(ctx, &target, &mut acts);
         for a in acts {
             self.apply_act(a);
         }
     }
 
-    fn dialogs(&mut self, ctx: &egui::Context, root: &Path, target_dir: &Path, acts: &mut Vec<Act>) {
+    fn dialogs(&mut self, ctx: &egui::Context, target_dir: &Path, acts: &mut Vec<Act>) {
         let Some(dialog) = self.lib_ui.dialog.as_mut() else {
             return;
         };
@@ -546,7 +543,6 @@ impl InkApp {
             Dialog::Trash { .. } => "Delete",
             Dialog::DeleteForever { .. } => "Delete permanently",
             Dialog::EmptyTrash(_) => "Empty trash",
-            Dialog::Move { .. } => "Move note to",
             Dialog::Import(_) => "Import a note file",
             Dialog::ImportPdf(_) => "Write on a PDF",
             Dialog::OpenPdf(_) => "Read a PDF",
@@ -554,6 +550,7 @@ impl InkApp {
         };
 
         egui::Window::new(title)
+            .id(super::menus::LIBRARY_DIALOG.into())
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
@@ -562,7 +559,7 @@ impl InkApp {
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
                 // Main button: label, destructive, action (None = disabled).
-                let mut primary: Option<(&str, bool, Option<Act>)> = None;
+                let primary: Option<(&str, bool, Option<Act>)>;
                 let mut submit = enter;
                 let named = |text: &String| !text.trim().is_empty();
                 match dialog {
@@ -603,30 +600,6 @@ impl InkApp {
                         ui.label(format!("Erase {what} in the trash for good?"));
                         ui.label(theme::muted("This cannot be undone.").small());
                         primary = Some(("Empty trash", true, Some(Act::EmptyTrash)));
-                    }
-                    Dialog::Move { path } => {
-                        let from = path.parent().map(Path::to_path_buf).unwrap_or_default();
-                        let mut dest: Vec<(String, PathBuf)> =
-                            vec![("Library (quick notes)".into(), root.to_path_buf())];
-                        for nb in &self.library.notebooks {
-                            dest.push((nb.name.clone(), nb.path.clone()));
-                            for s in &nb.sections {
-                                dest.push((format!("{} › {}", nb.name, s.name), s.path.clone()));
-                            }
-                        }
-                        ui.visuals_mut().button_frame = false;
-                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                            for (label, dir) in dest {
-                                if dir == from {
-                                    continue;
-                                }
-                                if entry(ui, icon::FOLDER_SIMPLE, &label, "", true) {
-                                    result = Some(Act::MoveNote(path.clone(), dir));
-                                }
-                            }
-                        });
-                        ui.visuals_mut().button_frame = true;
-                        submit = false;
                     }
                     Dialog::Import(text) => {
                         ui.label("Full path of an .ink file (any version):");
@@ -1411,10 +1384,6 @@ fn note_menu(ui: &mut Ui, note: &NoteInfo, acts: &mut Vec<Act>) {
     }
     if entry(ui, icon::SCISSORS, "Cut", "", true) {
         acts.push(Act::Clip(note.path.clone(), true));
-        ui.close();
-    }
-    if entry(ui, icon::ARROW_BEND_UP_RIGHT, "Move to...", "", true) {
-        acts.push(Act::Dialog(Dialog::Move { path: note.path.clone() }));
         ui.close();
     }
     ui.separator();

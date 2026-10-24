@@ -15,6 +15,7 @@ use tratto_core::model::{PAPERS, PageKind, paper_label};
 
 use super::InkApp;
 use super::library_ui::{Dialog, location, when};
+use super::menus::SETTINGS_WINDOW;
 use crate::file_assoc;
 use crate::settings::{BatterySaver, EraserMode, SidebarSide, ToolbarPosition};
 use crate::theme::{self, ThemeMode, color, space};
@@ -175,15 +176,15 @@ impl InkApp {
 
     /// File > Settings: global preferences in a floating window.
     pub(super) fn global_settings_window(&mut self, ctx: &egui::Context) {
-        if !self.global_settings_open {
+        // Shown while closed too, fading out.
+        let Some((window, fade)) = theme::fading_window(ctx, SETTINGS_WINDOW, "Settings", self.global_settings_open)
+        else {
             return;
-        }
-        let mut open = true;
+        };
         // Large: most of the window, what does not fit scrolls.
         let screen = ctx.viewport_rect();
         let size = vec2((screen.width() * 0.9).min(540.0), screen.height() * 0.85);
-        egui::Window::new("Settings")
-            .open(&mut open)
+        let shown = window
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
@@ -191,9 +192,12 @@ impl InkApp {
             .fixed_size(size)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                ui.multiply_opacity(fade);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.global_settings(ui));
             });
-        self.global_settings_open = open;
+        if shown.is_some_and(|w| theme::window_close_button(&w.response, fade)) {
+            self.global_settings_open = false;
+        }
     }
 
     fn global_settings(&mut self, ui: &mut Ui) {

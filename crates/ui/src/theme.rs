@@ -532,6 +532,51 @@ pub fn row_button(
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A window that fades in and out (`open`), with its opacity (0: gone,
+/// None). Its contents call `ui.multiply_opacity` with it, and it is closed
+/// with [`window_close_button`]: egui's own fade comes with its own close
+/// button, a bare "×".
+pub fn fading_window<'a>(ctx: &egui::Context, id: &str, title: &str, open: bool) -> Option<(egui::Window<'a>, f32)> {
+    let id = egui::Id::new(id);
+    let fade = ctx.animate_bool_with_easing(id.with("fade"), open, egui::emath::easing::cubic_out);
+    if fade <= 0.0 {
+        return None;
+    }
+    let style = ctx.global_style();
+    let title = RichText::new(title).color(style.visuals.text_color().gamma_multiply(fade));
+    let window = egui::Window::new(title)
+        .id(id)
+        .frame(egui::Frame::window(&style).multiply_with_opacity(fade))
+        // Fading out: nothing to click.
+        .interactable(open);
+    Some((window, fade))
+}
+
+/// The close button in the title bar of a [`fading_window`]: `window` is
+/// its response, `fade` its opacity. A hover fill like [`row_button`]'s;
+/// true when clicked.
+pub fn window_close_button(window: &egui::Response, fade: f32) -> bool {
+    let ctx = &window.ctx;
+    let id = window.id;
+    // Where egui puts its own: a heading-high square inside the window margin.
+    let style = ctx.global_style();
+    let margin = style.spacing.window_margin;
+    let h = ctx.fonts_mut(|f| f.row_height(&TextStyle::Heading.resolve(&style)));
+    let center = pos2(window.rect.right() - margin.rightf() - h * 0.5, window.rect.top() + margin.topf() + h * 0.5);
+    let rect = Rect::from_center_size(center, vec2(ROW_BUTTON, ROW_BUTTON));
+    // On the window's layer, over its title bar.
+    let builder = egui::UiBuilder::new().layer_id(window.layer_id).max_rect(rect);
+    let mut ui = Ui::new(ctx.clone(), id.with("close_ui"), builder);
+    ui.multiply_opacity(fade);
+    let resp = ui.interact(rect, id.with("close"), egui::Sense::click());
+    let fg = if resp.hovered() { color::text_strong() } else { color::text_muted() };
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, radius::SMALL, color::pressed());
+    }
+    ui.painter().text(center, egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, font(size::BODY), fg);
+    resp.on_hover_text("Close (Esc)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
 /// A dashed "add" placeholder (add a page, a note): outline and label turn
 /// accent on hover.
 pub fn add_tile(ui: &mut Ui, rect: Rect, id: egui::Id, label: &str) -> egui::Response {

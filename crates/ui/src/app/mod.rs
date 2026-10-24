@@ -419,6 +419,11 @@ pub struct InkApp {
     global_settings_open: bool,
     /// Export PDF dialog, if open.
     export_dialog: Option<export_ui::ExportDialog>,
+    /// The Export PDF dialog just closed, shown while it fades out.
+    export_closing: Option<export_ui::ExportDialog>,
+    /// The last of the windows Escape closes to be on top (see
+    /// `menus::escape_closes_window`).
+    top_window: Option<egui::Id>,
     /// PDF being written in the background, if any.
     export_job: Option<export_ui::ExportJob>,
     /// Pictures being saved as PNG files in the background.
@@ -575,6 +580,8 @@ impl InkApp {
             },
             global_settings_open: false,
             export_dialog: None,
+            export_closing: None,
+            top_window: None,
             export_job: None,
             png_jobs: Vec::new(),
             picture_jobs: Vec::new(),
@@ -1035,6 +1042,7 @@ impl eframe::App for InkApp {
         // While a note loads, the window waits: no shortcuts, no drops.
         if self.loading.is_none() {
             self.dropped_pdf(ctx);
+            self.escape_closes_window(ctx);
             self.menu_shortcuts(ctx);
         }
         self.window_chrome(ui);

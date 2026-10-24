@@ -38,6 +38,7 @@ use tratto_core::model::{Document, PAPERS, PageKind, StrokeKind};
 use tratto_core::pdf_export::{self, InkColors, PdfNote, PdfOptions};
 use tratto_core::{storage, stroke_path};
 
+use super::menus::EXPORT_WINDOW;
 use super::{InkApp, PathField};
 use crate::file_picker::{self, Pick, Request};
 use crate::pdf_view::PdfTextures;
@@ -334,23 +335,29 @@ impl InkApp {
     }
 
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
-        let Some(mut dialog) = self.export_dialog.take() else { return };
+        // Open, or just closed and fading out.
+        let (mut dialog, open) = match (self.export_dialog.take(), self.export_closing.take()) {
+            (Some(d), _) => (d, true),
+            (None, Some(d)) => (d, false),
+            (None, None) => return,
+        };
+        let title = if dialog.print { "Print" } else { "Export PDF" };
+        let Some((window, fade)) = theme::fading_window(ctx, EXPORT_WINDOW, title, open) else { return };
         let list = self.export_list(&dialog);
         self.load_for_export(&mut dialog, &list);
 
-        let mut open = true;
-        let mut cancel = false;
-        let mut export = std::mem::take(&mut dialog.export_now);
+        let mut cancel = !open;
+        let mut export = open && std::mem::take(&mut dialog.export_now);
         let picking = self.file_picker.is_open();
         let max_h = (ctx.viewport_rect().height() * 0.75).max(300.0);
-        egui::Window::new(if dialog.print { "Print" } else { "Export PDF" })
-            .open(&mut open)
+        let shown = window
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                ui.multiply_opacity(fade);
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.set_width(440.0);
@@ -416,10 +423,15 @@ impl InkApp {
                     }
                 });
             });
+        let fading = shown.is_some();
+        cancel |= shown.is_some_and(|w| theme::window_close_button(&w.response, fade));
         if export {
             self.run_export(ctx, &dialog, &list);
-        } else if open && !cancel {
+        }
+        if !export && !cancel {
             self.export_dialog = Some(dialog);
+        } else if fading {
+            self.export_closing = Some(dialog);
         }
     }
 

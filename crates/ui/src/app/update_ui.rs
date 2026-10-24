@@ -9,6 +9,7 @@ use eframe::egui::{self, Align2, Ui};
 use egui_phosphor::regular as icon;
 
 use super::InkApp;
+use super::menus::UPDATES_WINDOW;
 use super::settings_ui::{hint, row, rows, section};
 use crate::settings::{UpdateChannel, UpdateMode};
 use crate::theme;
@@ -27,20 +28,24 @@ impl InkApp {
 
     /// Help > Check for updates: the updater in a floating window.
     pub(super) fn updates_window(&mut self, ctx: &egui::Context) {
-        if !self.help.updates {
+        // Shown while closed too, fading out.
+        let Some((window, fade)) = theme::fading_window(ctx, UPDATES_WINDOW, "Updates", self.help.updates) else {
             return;
-        }
-        let mut open = true;
-        egui::Window::new("Updates")
-            .open(&mut open)
+        };
+        let shown = window
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
             .resizable(false)
             .default_width(380.0)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| self.updates(ui));
-        self.help.updates &= open;
+            .show(ctx, |ui| {
+                ui.multiply_opacity(fade);
+                self.updates(ui);
+            });
+        if shown.is_some_and(|w| theme::window_close_button(&w.response, fade)) {
+            self.help.updates = false;
+        }
     }
 
     fn updates(&mut self, ui: &mut Ui) {

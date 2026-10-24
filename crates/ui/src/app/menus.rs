@@ -25,6 +25,17 @@ use crate::settings::{Sidebar, SidebarSide, ToolbarPosition, ZoomMode};
 use crate::theme::{self, color};
 use crate::toolbar::Tool;
 
+/// Ids of the windows Escape closes (see `escape_closes_window`).
+pub(super) const SETTINGS_WINDOW: &str = "settings_window";
+pub(super) const UPDATES_WINDOW: &str = "updates_window";
+pub(super) const SHORTCUTS_WINDOW: &str = "shortcuts_window";
+pub(super) const ABOUT_WINDOW: &str = "about_window";
+pub(super) const EXPORT_WINDOW: &str = "export_window";
+const ESCAPE_WINDOWS: [&str; 5] = [EXPORT_WINDOW, UPDATES_WINDOW, SHORTCUTS_WINDOW, ABOUT_WINDOW, SETTINGS_WINDOW];
+/// Id of the library dialogs (rename, new notebook...), which close
+/// themselves on Escape.
+pub(super) const LIBRARY_DIALOG: &str = "library_dialog";
+
 /// Minimum width of every menu (title bar, context menus).
 const MENU_MIN_WIDTH: f32 = 200.0;
 
@@ -85,7 +96,6 @@ pub(super) enum Command {
     /// A picture file, chosen in a dialog, at the same.
     InsertPicture(Option<(u32, Pos2)>),
     DeletePicture(u64),
-    Tool(Tool),
     ZoomIn,
     ZoomOut,
     Zoom(ZoomMode),
@@ -712,7 +722,7 @@ impl InkApp {
         if entry(ui, icon::SCISSORS, "Cut page", "", true) {
             push(ui, Command::CutPage(page));
         }
-        if entry(ui, icon::CLIPBOARD, "Paste page after", "", self.clipboard.has_pages()) {
+        if entry(ui, icon::CLIPBOARD, "Paste page", "", self.clipboard.has_pages()) {
             push(ui, Command::PastePages(page + 1));
         }
         if entry(ui, icon::FILE_PNG, "Save page as PNG...", "", true) {
@@ -720,22 +730,74 @@ impl InkApp {
         }
     }
 
-    /// Insert / delete entries for `page` (Page menu and context menu).
+    /// Insert / delete entries, then the clipboard ones, for `page` (Page
+    /// menu).
     fn page_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
+        self.page_insert_entries(ui, page, push);
+        ui.separator();
+        self.page_clipboard_entries(ui, page, push);
+    }
+
+    /// Inserting a page before or after `page` and deleting it (Page menu
+    /// and context menu).
+    fn page_insert_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
         if entry(ui, icon::ARROW_LINE_UP, "Insert page before", "", true) {
             push(ui, Command::InsertPage(page));
         }
         if entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
             push(ui, Command::InsertPage(page + 1));
         }
-        if entry(ui, icon::TRASH, &format!("Delete page {}", page + 1), "", true) {
+        if entry(ui, icon::TRASH, "Delete page", "", true) {
             push(ui, Command::DeletePage(page));
         }
-        ui.separator();
-        self.page_clipboard_entries(ui, page, push);
     }
 
     // -------------------------------------------------------- context menu
+
+    /// The context menu on something: a selection (of ink or of text), a
+    /// picture or a text box.
+    fn item_menu(&self, ui: &mut Ui, menu: &ContextMenu, push: &mut dyn FnMut(&mut Ui, Command)) {
+        let mut groups = 0;
+        let mut group = |ui: &mut Ui| {
+            if groups > 0 {
+                ui.separator();
+            }
+            groups += 1;
+        };
+        if self.text_sel.is_some() || menu.on_selection || menu.picture.is_some() {
+            group(ui);
+            self.cut_copy_entries(ui, push);
+            // Not on a picture: it is a picture already.
+            if menu.on_selection && menu.picture.is_none() && entry(ui, icon::FILE_PNG, "Save as PNG...", "", true) {
+                push(ui, Command::SaveSelectionPng);
+            }
+        }
+        if let Some(id) = menu.picture {
+            group(ui);
+            if entry(ui, icon::TRASH, "Delete picture", "", true) {
+                push(ui, Command::DeletePicture(id));
+            }
+        }
+        if let Some(id) = menu.text {
+            group(ui);
+            if entry(ui, icon::TEXT_T, "Edit text", "", true) {
+                push(ui, Command::EditText(id));
+            }
+            if entry(ui, icon::TRASH, "Delete text box", "", true) {
+                push(ui, Command::DeleteText(id));
+            }
+        }
+        if menu.on_selection {
+            group(ui);
+            let ctx = ui.ctx().clone();
+            if entry(ui, icon::TRASH, "Delete selection", &shortcut(&ctx, Modifiers::NONE, Key::Delete), true) {
+                push(ui, Command::DeleteSelection);
+            }
+            if entry(ui, icon::SELECTION_SLASH, "Deselect", &shortcut(&ctx, Modifiers::NONE, Key::Escape), true) {
+                push(ui, Command::Deselect);
+            }
+        }
+    }
 
     /// Draws the canvas context menu, if open. Call before the canvas: a
     /// press outside closes the menu and is not passed on to the canvas.
@@ -772,66 +834,18 @@ impl InkApp {
                         self.text_entries(ui, menu.page.unwrap_or(self.current_page), &mut push);
                         return;
                     }
-                    if self.text_sel.is_some() || menu.on_selection || menu.picture.is_some() {
-                        self.cut_copy_entries(ui, &mut push);
-                        // Not on a picture: it is a picture already.
-                        if menu.on_selection
-                            && menu.picture.is_none()
-                            && entry(ui, icon::FILE_PNG, "Save as PNG...", "", true)
-                        {
-                            push(ui, Command::SaveSelectionPng);
-                        }
-                        ui.separator();
-                    }
-                    if let Some(id) = menu.picture {
-                        if entry(ui, icon::TRASH, "Delete picture", "", true) {
-                            push(ui, Command::DeletePicture(id));
-                        }
-                        ui.separator();
-                    }
-                    if let Some(id) = menu.text {
-                        if entry(ui, icon::TEXT_T, "Edit text", "", true) {
-                            push(ui, Command::EditText(id));
-                        }
-                        if entry(ui, icon::TRASH, "Delete text box", "", true) {
-                            push(ui, Command::DeleteText(id));
-                        }
-                        ui.separator();
-                    }
-                    if menu.on_selection {
-                        let ctx = ui.ctx().clone();
-                        if entry(
-                            ui,
-                            icon::TRASH,
-                            "Delete selection",
-                            &shortcut(&ctx, Modifiers::NONE, Key::Delete),
-                            true,
-                        ) {
-                            push(ui, Command::DeleteSelection);
-                        }
-                        if entry(
-                            ui,
-                            icon::SELECTION_SLASH,
-                            "Deselect",
-                            &shortcut(&ctx, Modifiers::NONE, Key::Escape),
-                            true,
-                        ) {
-                            push(ui, Command::Deselect);
-                        }
-                        ui.separator();
+                    // On something (a selection, a picture, a text box): what
+                    // can be done with it; elsewhere: the page's entries.
+                    let on_item = self.text_sel.is_some() || menu.on_selection || menu.picture.is_some();
+                    if on_item || menu.text.is_some() {
+                        self.item_menu(ui, menu, &mut push);
+                        return;
                     }
                     if entry(ui, icon::ARROW_U_UP_LEFT, "Undo", "", self.history.can_undo()) {
                         push(ui, Command::Undo);
                     }
                     if entry(ui, icon::ARROW_U_UP_RIGHT, "Redo", "", self.history.can_redo()) {
                         push(ui, Command::Redo);
-                    }
-                    ui.separator();
-                    for t in Tool::ALL {
-                        let glyph = if self.tool == t { icon::CHECK } else { t.icon() };
-                        if entry(ui, glyph, t.label(), "", true) {
-                            push(ui, Command::Tool(t));
-                        }
                     }
                     if let Some(page) = menu.page {
                         ui.separator();
@@ -850,7 +864,10 @@ impl InkApp {
                         if entry(ui, icon::IMAGE, "Insert picture here...", "", true) {
                             push(ui, Command::InsertPicture(menu.at));
                         }
-                        self.page_entries(ui, page, &mut push);
+                        ui.separator();
+                        self.page_clipboard_entries(ui, page, &mut push);
+                        ui.separator();
+                        self.page_insert_entries(ui, page, &mut push);
                     }
                 });
             },
@@ -1082,7 +1099,6 @@ impl InkApp {
                 }
                 self.history.exec(&mut self.doc, Action::RemoveText { id });
             }
-            Command::Tool(t) => self.pick_tool(t),
             Command::ZoomIn | Command::ZoomOut => {
                 let now = (self.view_scale * 100.0).round() as u32;
                 let next = if cmd == Command::ZoomIn {
@@ -1182,15 +1198,23 @@ impl InkApp {
     // --------------------------------------------------------- help windows
 
     fn help_windows(&mut self, ctx: &egui::Context) {
-        let mut open = self.help.about;
-        egui::Window::new("About Tratto")
-            .open(&mut open)
+        self.about_window(ctx);
+        self.shortcuts_window(ctx);
+    }
+
+    fn about_window(&mut self, ctx: &egui::Context) {
+        // Shown while closed too, fading out.
+        let Some((window, fade)) = theme::fading_window(ctx, ABOUT_WINDOW, "About Tratto", self.help.about) else {
+            return;
+        };
+        let shown = window
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                ui.multiply_opacity(fade);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::accent()));
                     ui.label(theme::title("Tratto"));
@@ -1216,11 +1240,19 @@ impl InkApp {
                     );
                 });
             });
-        self.help.about = open;
+        if shown.is_some_and(|w| theme::window_close_button(&w.response, fade)) {
+            self.help.about = false;
+        }
+    }
 
-        let mut open = self.help.shortcuts;
-        egui::Window::new("Keyboard shortcuts")
-            .open(&mut open)
+    fn shortcuts_window(&mut self, ctx: &egui::Context) {
+        // Shown while closed too, fading out.
+        let Some((window, fade)) =
+            theme::fading_window(ctx, SHORTCUTS_WINDOW, "Keyboard shortcuts", self.help.shortcuts)
+        else {
+            return;
+        };
+        let shown = window
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
@@ -1230,6 +1262,7 @@ impl InkApp {
             .max_width(SHORTCUTS_WIDTH)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                ui.multiply_opacity(fade);
                 let c = Modifiers::COMMAND;
                 let (none, shift) = (Modifiers::NONE, Modifiers::SHIFT);
                 let key = |m, k| shortcut(ctx, m, k);
@@ -1340,6 +1373,54 @@ impl InkApp {
                     }
                 });
             });
-        self.help.shortcuts = open;
+        if shown.is_some_and(|w| theme::window_close_button(&w.response, fade)) {
+            self.help.shortcuts = false;
+        }
+    }
+
+    /// Escape closes the window on top (settings, help, updates, export),
+    /// before the editor would take it. Not while typing or with a popup
+    /// open: those take it first.
+    pub(super) fn escape_closes_window(&mut self, ctx: &egui::Context) {
+        // The last window on top. Not egui's top layer itself: a dropdown's
+        // popup stays at the top of its order after it closes.
+        if let Some(top) = ctx.memory(|m| m.areas().top_layer_id(Order::Foreground))
+            && ESCAPE_WINDOWS.iter().chain([&LIBRARY_DIALOG]).any(|w| top.id == Id::new(w))
+        {
+            self.top_window = Some(top.id);
+        }
+        if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        // A library dialog closes itself.
+        if self.top_window == Some(Id::new(LIBRARY_DIALOG)) && self.lib_ui.dialog.is_some() {
+            return;
+        }
+        let is_open = |app: &Self, w: &str| match w {
+            SETTINGS_WINDOW => app.global_settings_open,
+            UPDATES_WINDOW => app.help.updates,
+            SHORTCUTS_WINDOW => app.help.shortcuts,
+            ABOUT_WINDOW => app.help.about,
+            EXPORT_WINDOW => app.export_dialog.is_some(),
+            _ => false,
+        };
+        // The one on top if still open, else any.
+        let top = ESCAPE_WINDOWS.iter().find(|w| self.top_window == Some(Id::new(w)));
+        let Some(&window) =
+            top.filter(|w| is_open(self, w)).or_else(|| ESCAPE_WINDOWS.iter().find(|w| is_open(self, w)))
+        else {
+            return;
+        };
+        if !ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            return;
+        }
+        match window {
+            SETTINGS_WINDOW => self.global_settings_open = false,
+            UPDATES_WINDOW => self.help.updates = false,
+            SHORTCUTS_WINDOW => self.help.shortcuts = false,
+            ABOUT_WINDOW => self.help.about = false,
+            EXPORT_WINDOW => self.export_closing = self.export_dialog.take(),
+            _ => {}
+        }
     }
 }

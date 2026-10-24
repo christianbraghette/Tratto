@@ -628,10 +628,6 @@ fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Ve
             picks.push(Pick::Act(Act::Clip(note.path.clone(), true)));
             ui.close();
         }
-        if entry(ui, icon::ARROW_BEND_UP_RIGHT, "Move to...", "", true) {
-            picks.push(Pick::Act(Act::Dialog(Dialog::Move { path: note.path.clone() })));
-            ui.close();
-        }
         ui.separator();
         let resp = ui.add_enabled_ui(!is_current, |ui| entry(ui, icon::TRASH, "Delete...", "", true));
         if resp.inner {
