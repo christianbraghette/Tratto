@@ -29,7 +29,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use eframe::egui::{self, Color32, ColorImage, Painter, Rect, TextureHandle, TextureOptions, pos2, vec2};
+use eframe::egui::{self, Color32, ColorImage, Painter, Pos2, Rect, TextureHandle, TextureOptions, Vec2, pos2, vec2};
 use tratto_core::model::Document;
 use tratto_core::pdf_pages::{self, PdfError, PdfFile, RenderedPage};
 
@@ -311,6 +311,7 @@ impl PdfTextures {
         // pixel for pixel (no resampling blur).
         let ppp = painter.ctx().pixels_per_point();
         let k = if (w as f32 - rect.width() * ppp).abs() <= 1.0 { ppp } else { w as f32 / rect.width() };
+        let full = rect;
         let rect = Rect::from_min_size((rect.min.to_vec2() * ppp).round().to_pos2() / ppp, rect.size());
         let to_px = |a: f32, b: f32, o: f32| [(a - o) * k, (b - o) * k];
         let Some((cols, rows)) = tiles_over(
@@ -340,7 +341,26 @@ impl PdfTextures {
                 match &e.texture {
                     Some(t) => {
                         let tile = Rect::from_min_size(origin, vec2(e.size[0] as f32, e.size[1] as f32) / k);
-                        painter.image(t.id(), tile, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                        // The tiles on the page's edges end exactly on them:
+                        // snapping the corner and rounding the level's height
+                        // can leave them short of the edge (what is under the
+                        // page shows) or past it (their last, half blank, row
+                        // shows past the page's border).
+                        let (mut shown, mut uv) = (tile, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)));
+                        let at = |p: Pos2| ((p - tile.min) / tile.size()).clamp(Vec2::ZERO, Vec2::splat(1.0));
+                        if tx == 0 {
+                            (shown.min.x, uv.min.x) = (full.min.x, at(full.min).x);
+                        }
+                        if ty == 0 {
+                            (shown.min.y, uv.min.y) = (full.min.y, at(full.min).y);
+                        }
+                        if (tx + 1) * TILE >= w {
+                            (shown.max.x, uv.max.x) = (full.max.x, at(full.max).x);
+                        }
+                        if (ty + 1) * TILE >= h {
+                            (shown.max.y, uv.max.y) = (full.max.y, at(full.max).y);
+                        }
+                        painter.image(t.id(), shown, uv, Color32::WHITE);
                     }
                     None => {
                         complete = false;
