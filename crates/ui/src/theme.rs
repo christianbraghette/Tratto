@@ -532,30 +532,15 @@ pub fn row_button(
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A window that fades in and out (`open`), with its opacity (0: gone,
-/// None). Its contents call `ui.multiply_opacity` with it, and it is closed
-/// with [`window_close_button`]: egui's own fade comes with its own close
-/// button, a bare "×".
-pub fn fading_window<'a>(ctx: &egui::Context, id: &str, title: &str, open: bool) -> Option<(egui::Window<'a>, f32)> {
-    let id = egui::Id::new(id);
-    let fade = ctx.animate_bool_with_easing(id.with("fade"), open, egui::emath::easing::cubic_out);
-    if fade <= 0.0 {
-        return None;
-    }
-    let style = ctx.global_style();
-    let title = RichText::new(title).color(style.visuals.text_color().gamma_multiply(fade));
-    let window = egui::Window::new(title)
-        .id(id)
-        .frame(egui::Frame::window(&style).multiply_with_opacity(fade))
-        // Fading out: nothing to click.
-        .interactable(open);
-    Some((window, fade))
+/// A window that appears and disappears at once, closed with
+/// [`window_close_button`] (egui's own is a bare "×").
+pub fn window<'a>(id: &str, title: &'a str) -> egui::Window<'a> {
+    egui::Window::new(title).id(egui::Id::new(id)).fade_in(false)
 }
 
-/// The close button in the title bar of a [`fading_window`]: `window` is
-/// its response, `fade` its opacity. A hover fill like [`row_button`]'s;
-/// true when clicked.
-pub fn window_close_button(window: &egui::Response, fade: f32) -> bool {
+/// The close button in the title bar of a [`window`]: `window` is its
+/// response. A hover fill like [`row_button`]'s; true when clicked.
+pub fn window_close_button(window: &egui::Response) -> bool {
     let ctx = &window.ctx;
     let id = window.id;
     // Where egui puts its own: a heading-high square inside the window margin.
@@ -566,8 +551,7 @@ pub fn window_close_button(window: &egui::Response, fade: f32) -> bool {
     let rect = Rect::from_center_size(center, vec2(ROW_BUTTON, ROW_BUTTON));
     // On the window's layer, over its title bar.
     let builder = egui::UiBuilder::new().layer_id(window.layer_id).max_rect(rect);
-    let mut ui = Ui::new(ctx.clone(), id.with("close_ui"), builder);
-    ui.multiply_opacity(fade);
+    let ui = Ui::new(ctx.clone(), id.with("close_ui"), builder);
     let resp = ui.interact(rect, id.with("close"), egui::Sense::click());
     let fg = if resp.hovered() { color::text_strong() } else { color::text_muted() };
     if resp.hovered() {

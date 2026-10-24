@@ -1203,18 +1203,16 @@ impl InkApp {
     }
 
     fn about_window(&mut self, ctx: &egui::Context) {
-        // Shown while closed too, fading out.
-        let Some((window, fade)) = theme::fading_window(ctx, ABOUT_WINDOW, "About Tratto", self.help.about) else {
+        if !self.help.about {
             return;
-        };
-        let shown = window
+        }
+        let shown = theme::window(ABOUT_WINDOW, "About Tratto")
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.multiply_opacity(fade);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::accent()));
                     ui.label(theme::title("Tratto"));
@@ -1240,19 +1238,16 @@ impl InkApp {
                     );
                 });
             });
-        if shown.is_some_and(|w| theme::window_close_button(&w.response, fade)) {
+        if shown.is_some_and(|w| theme::window_close_button(&w.response)) {
             self.help.about = false;
         }
     }
 
     fn shortcuts_window(&mut self, ctx: &egui::Context) {
-        // Shown while closed too, fading out.
-        let Some((window, fade)) =
-            theme::fading_window(ctx, SHORTCUTS_WINDOW, "Keyboard shortcuts", self.help.shortcuts)
-        else {
+        if !self.help.shortcuts {
             return;
-        };
-        let shown = window
+        }
+        let shown = theme::window(SHORTCUTS_WINDOW, "Keyboard shortcuts")
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
@@ -1262,7 +1257,6 @@ impl InkApp {
             .max_width(SHORTCUTS_WIDTH)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.multiply_opacity(fade);
                 let c = Modifiers::COMMAND;
                 let (none, shift) = (Modifiers::NONE, Modifiers::SHIFT);
                 let key = |m, k| shortcut(ctx, m, k);
@@ -1373,7 +1367,7 @@ impl InkApp {
                     }
                 });
             });
-        if shown.is_some_and(|w| theme::window_close_button(&w.response, fade)) {
+        if shown.is_some_and(|w| theme::window_close_button(&w.response)) {
             self.help.shortcuts = false;
         }
     }
@@ -1419,7 +1413,7 @@ impl InkApp {
             UPDATES_WINDOW => self.help.updates = false,
             SHORTCUTS_WINDOW => self.help.shortcuts = false,
             ABOUT_WINDOW => self.help.about = false,
-            EXPORT_WINDOW => self.export_closing = self.export_dialog.take(),
+            EXPORT_WINDOW => self.export_dialog = None,
             _ => {}
         }
     }

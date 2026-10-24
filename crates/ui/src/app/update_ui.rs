@@ -28,22 +28,18 @@ impl InkApp {
 
     /// Help > Check for updates: the updater in a floating window.
     pub(super) fn updates_window(&mut self, ctx: &egui::Context) {
-        // Shown while closed too, fading out.
-        let Some((window, fade)) = theme::fading_window(ctx, UPDATES_WINDOW, "Updates", self.help.updates) else {
+        if !self.help.updates {
             return;
-        };
-        let shown = window
+        }
+        let shown = theme::window(UPDATES_WINDOW, "Updates")
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
             .resizable(false)
             .default_width(380.0)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.multiply_opacity(fade);
-                self.updates(ui);
-            });
-        if shown.is_some_and(|w| theme::window_close_button(&w.response, fade)) {
+            .show(ctx, |ui| self.updates(ui));
+        if shown.is_some_and(|w| theme::window_close_button(&w.response)) {
             self.help.updates = false;
         }
     }
