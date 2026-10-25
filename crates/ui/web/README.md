@@ -31,6 +31,12 @@ Tested in Edge (WebGPU):
   eframe takes a pen for a mouse, the pressure comes from there
 - the library: a quick note created, written in, saved, and opened again
   with its strokes after the page was reloaded
+- files in: *Write on a PDF* (the browser's file picker, then the PDF's
+  pages rendered by PDFium under the ink), *Import note file*, a PDF
+  dropped onto the page (opens in the reader)
+- files out: *Export as PDF* downloads the PDF (with the PDF's pages under
+  the ink); *Download note* (a note's context menu, the File menu)
+  downloads its `.ink` file, for the desktop app
 
 Built but not tested yet: the eraser, selection, text boxes, undo, the pen's
 eraser end and side button, WebGL 2 (browsers without WebGPU), and settings
@@ -40,11 +46,12 @@ kept in the browser's local storage by eframe.
 
 | What | Why | Next step |
 |---|---|---|
-| File dialogs, import, export | `rfd` is async-only on the web | browser file pickers and downloads |
+| Choosing a folder (library folder, open a notebook folder) | the browser picks files, not folders | not needed: the library lives in the browser |
 | Clipboard for pictures, pasting text | `arboard` is desktop-only | the browser's clipboard API |
 | Printing | system print dialogs | export a PDF and print it from the browser |
-| Background work (picture decoding, search, saving) | no threads | runs inline for now; Web Workers later |
-| Updates, file associations, window frame | desktop features | not needed: a web app is as new as its page |
+| Background work (export, search, loading, pictures) | no threads | done at once (`background::spawn`), holding up the frame; Web Workers later |
+| Updates (no Help > Check for updates, no check at start), file associations, window frame | desktop features | not needed: a web app is as new as its page |
+| Display settings (vsync, battery saver, frame rate limit, graphics backend), the library folder | the browser paces the frames and picks the graphics API; the library lives in the browser | hidden in Settings |
 
 The wasm file is about 10 MB before `wasm-opt`.
 
@@ -61,11 +68,15 @@ synchronous, so:
   that tree; afterwards it writes back what changed, every second and when
   the page is hidden.
 
+Files picked or dropped are read to `/tmp` and files to download written
+to `/Downloads` in that tree (`src/web_files.rs`); neither is kept in the
+storage, the downloads go to the browser instead.
+
 Things to know:
 
 - **Per browser and per site.** Notes made in one browser (or at another
-  address) are not in another. Moving notes in and out needs import and
-  export (not there yet).
+  address) are not in another. Notes move in with *Import note file* and
+  out with *Download note* (or as PDFs).
 - **The last second.** A change made just before the tab is closed may not
   reach the storage.
 - **Whole files.** A note appended to is written again whole; a large note

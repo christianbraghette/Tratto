@@ -8,6 +8,7 @@
 //!
 //! Module layout:
 //! - `app`            application state and per-frame orchestration
+//! - `background`     work off the frame: a thread (desktop), or at once (web)
 //! - `chrome`         custom title bar, window buttons and resize borders
 //! - `view`           page layout + page/content/screen coordinate transforms
 //! - `win_frame`      Windows: moving and resizing the window with any input
@@ -32,6 +33,7 @@
 //! - `snapshot`       a picture of what was copied, for other apps
 //! - `update`         updates from the GitHub releases
 //! - `web`            the web app: the same app in a browser's canvas
+//! - `web_files`      the web: files picked, dropped and downloaded
 //! - `web_storage`    the web: notes in the browser's private storage
 
 // A GUI program on Windows: started from Explorer or a shortcut, no console
@@ -39,6 +41,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod background;
 #[cfg(test)]
 mod bench;
 mod chrome;
@@ -66,6 +69,8 @@ mod update;
 mod view;
 #[cfg(target_arch = "wasm32")]
 mod web;
+#[cfg(target_arch = "wasm32")]
+mod web_files;
 #[cfg(target_arch = "wasm32")]
 mod web_storage;
 mod win_frame;

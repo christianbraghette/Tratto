@@ -27,7 +27,6 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread;
 
 use eframe::egui::{
     self, Align2, Color32, DragValue, Rect, RichText, Sense, Shape, Slider, Stroke, Ui, epaint::Mesh, pos2, vec2,
@@ -694,7 +693,7 @@ impl InkApp {
 
         let (tx, done) = mpsc::channel();
         let (ctx, to_printer) = (ctx.clone(), d.print);
-        let spawned = thread::Builder::new().name("pdf-export".into()).spawn(move || {
+        let spawned = crate::background::spawn("pdf-export", move || {
             let notes: Vec<PdfNote> = docs.iter().map(|(doc, t)| PdfNote { doc, title: t.clone() }).collect();
             let sent = if to_printer {
                 pdf_export::export_bytes(&notes, &opts)
@@ -725,7 +724,7 @@ impl InkApp {
         let title = self.note_meta.title.clone();
         let (tx, done) = mpsc::channel();
         let ctx = ctx.clone();
-        let spawned = thread::Builder::new().name("pdf-print".into()).spawn(move || {
+        let spawned = crate::background::spawn("pdf-print", move || {
             let _ = tx.send(print::print(file.bytes.clone(), &title).map(Sent::Printer).map_err(io::Error::other));
             ctx.request_repaint();
         });
@@ -746,6 +745,11 @@ impl InkApp {
         let Some(ExportJob { skipped, .. }) = self.export_job.take() else { return };
         let skipped = if skipped > 0 { format!(" ({skipped} unreadable note(s) skipped)") } else { String::new() };
         match result {
+            // The web: written to the downloads (see `web_files`), downloaded by the browser.
+            Ok(Sent::File(path)) if cfg!(target_arch = "wasm32") => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                self.toast(format!("Downloaded {name}{skipped}"));
+            }
             Ok(Sent::File(path)) => {
                 self.toast(format!("Exported PDF to {}{skipped}", path.display()));
                 if self.settings.pdf_open_after

@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, TryRecvError};
-use std::thread;
 
 use eframe::egui::{self, Color32, Id, Vec2, vec2};
 
@@ -87,7 +86,7 @@ impl InkApp {
             let _ = tx.send(scan_library(&root, &external));
             ctx.request_repaint();
         };
-        match thread::Builder::new().name("library scan".into()).spawn(work) {
+        match crate::background::spawn("library scan", work) {
             Ok(_) => self.library_scan = Some(LibraryScan { done, again: false }),
             Err(_) => self.refresh_library_now(),
         }
@@ -411,7 +410,7 @@ impl InkApp {
     fn in_background(&mut self, label: String, load: impl FnOnce() -> Result<Loaded, String> + Send + 'static) {
         let (tx, done) = mpsc::channel();
         let ctx = self.egui_ctx.clone();
-        let spawned = thread::Builder::new().name("load-note".into()).spawn(move || {
+        let spawned = crate::background::spawn("load-note", move || {
             let _ = tx.send(load());
             ctx.request_repaint();
         });
@@ -499,6 +498,19 @@ impl InkApp {
         }
         if let Some(src) = dropped {
             self.open_pdf(ctx, &src);
+        }
+    }
+
+    /// The web: hands the note file `path` to the browser as a download
+    /// (through `web_files::DOWNLOADS`, see there).
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn download_note(&mut self, path: &Path) {
+        let Some(name) = path.file_name() else { return };
+        tratto_core::fs::memory::load_dir(crate::web_files::DOWNLOADS);
+        let to = Path::new(crate::web_files::DOWNLOADS).join(name);
+        match tratto_core::fs::copy(path, &to) {
+            Ok(_) => self.toast(format!("Downloading {}", name.to_string_lossy())),
+            Err(e) => self.toast(format!("Download failed: {e}")),
         }
     }
 

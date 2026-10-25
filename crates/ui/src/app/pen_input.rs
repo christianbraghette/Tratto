@@ -38,6 +38,9 @@ impl InkApp {
     /// Wayland: reports the files dragged over and dropped onto the window
     /// as winit does elsewhere. While dragged their paths are unknown.
     pub(super) fn inject_drop_events(&mut self, raw_input: &mut egui::RawInput) {
+        // The web: read first, then reported by their paths (see `web_files`).
+        #[cfg(target_arch = "wasm32")]
+        self.pen_input.web_drops.process(&self.egui_ctx, raw_input);
         let Some(wl_drop) = self.pen_input.drop.as_ref() else { return };
         for ev in wl_drop.try_iter() {
             match ev {

@@ -150,6 +150,9 @@ pub(super) enum Act {
     DeleteForever(PathBuf),
     EmptyTrash,
     Duplicate(PathBuf),
+    /// The web: download the note file (`.ink`).
+    #[cfg(target_arch = "wasm32")]
+    Download(PathBuf),
     MoveNote(PathBuf, PathBuf),
     /// Copy (false) or cut (true) a note, to paste it into a folder.
     Clip(PathBuf, bool),
@@ -825,6 +828,11 @@ impl InkApp {
                 Ok(_) => self.refresh_library(),
                 Err(e) => self.toast(format!("Duplicate failed: {e}")),
             },
+            // As it is shown, like a duplicate.
+            #[cfg(target_arch = "wasm32")]
+            Act::Download(path) if !self.save_if_open(&path) => {}
+            #[cfg(target_arch = "wasm32")]
+            Act::Download(path) => self.download_note(&path),
             // Already there (dropped onto its own folder): nothing to do.
             Act::MoveNote(path, dir) if path.parent() == Some(dir.as_path()) => {}
             Act::MoveNote(path, dir) => {
@@ -1377,6 +1385,11 @@ fn note_menu(ui: &mut Ui, note: &NoteInfo, acts: &mut Vec<Act>) {
     }
     if entry(ui, icon::COPY, "Duplicate", "", true) {
         acts.push(Act::Duplicate(note.path.clone()));
+        ui.close();
+    }
+    #[cfg(target_arch = "wasm32")]
+    if entry(ui, icon::DOWNLOAD_SIMPLE, "Download note", "", true) {
+        acts.push(Act::Download(note.path.clone()));
         ui.close();
     }
     if entry(ui, icon::COPY_SIMPLE, "Copy", "", true) {

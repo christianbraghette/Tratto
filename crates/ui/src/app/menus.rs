@@ -82,6 +82,9 @@ pub(super) enum Command {
     LibraryFolder,
     Save,
     ExportPdf,
+    /// The web: download the open note's file.
+    #[cfg(target_arch = "wasm32")]
+    DownloadNote,
     Print,
     CloseNote,
     Quit,
@@ -590,19 +593,29 @@ impl InkApp {
                 ui,
                 Command::ExportPdf,
             );
+            #[cfg(target_arch = "wasm32")]
+            push(entry(ui, icon::DOWNLOAD_SIMPLE, "Download note", "", note), ui, Command::DownloadNote);
+            // The web has no printing, no library folder to choose and nothing to exit.
+            let desktop = !cfg!(target_arch = "wasm32");
             // A PDF in the reader prints as it is.
-            push(entry(ui, icon::PRINTER, "Print...", &shortcut(&ctx, cmd, Key::P), editor), ui, Command::Print);
+            if desktop {
+                push(entry(ui, icon::PRINTER, "Print...", &shortcut(&ctx, cmd, Key::P), editor), ui, Command::Print);
+            }
             let close = if self.reading() { "Close PDF" } else { "Close note" };
             push(entry(ui, icon::BOOKS, close, &shortcut(&ctx, cmd, Key::W), editor), ui, Command::CloseNote);
             ui.separator();
-            push(entry(ui, icon::FOLDER_OPEN, "Library folder...", "", true), ui, Command::LibraryFolder);
+            if desktop {
+                push(entry(ui, icon::FOLDER_OPEN, "Library folder...", "", true), ui, Command::LibraryFolder);
+            }
             push(
                 entry(ui, icon::GEAR_SIX, "Settings...", &shortcut(&ctx, cmd, Key::Comma), true),
                 ui,
                 Command::Settings,
             );
-            ui.separator();
-            push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
+            if desktop {
+                ui.separator();
+                push(entry(ui, icon::SIGN_OUT, "Exit", &shortcut(&ctx, cmd, Key::Q), true), ui, Command::Quit);
+            }
         });
 
         // The reader changes nothing: its Edit menu only copies and finds,
@@ -694,7 +707,10 @@ impl InkApp {
         ui.menu_button("Help", |ui| {
             open = true;
             push(entry(ui, icon::KEYBOARD, "Keyboard shortcuts", "", true), ui, Command::Shortcuts);
-            push(entry(ui, icon::DOWNLOAD_SIMPLE, "Check for updates...", "", true), ui, Command::CheckUpdates);
+            // The web app is as new as its page: no updates of its own.
+            if !cfg!(target_arch = "wasm32") {
+                push(entry(ui, icon::DOWNLOAD_SIMPLE, "Check for updates...", "", true), ui, Command::CheckUpdates);
+            }
             ui.separator();
             push(entry(ui, icon::INFO, "About Tratto", "", true), ui, Command::About);
         });
@@ -1180,6 +1196,12 @@ impl InkApp {
             }
             Command::ExportPdf if editor && !self.reading() => self.open_export_dialog(ctx, false),
             Command::Print if editor => self.open_export_dialog(ctx, true),
+            #[cfg(target_arch = "wasm32")]
+            Command::DownloadNote if editor && !self.reading() => {
+                if let Some(path) = self.note_path.clone() {
+                    self.apply_act(super::library_ui::Act::Download(path));
+                }
+            }
             Command::CloseNote if editor => self.close_note(ctx),
             Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::Undo => self.undo(),

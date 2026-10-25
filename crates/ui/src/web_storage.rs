@@ -10,6 +10,8 @@
 //! hidden. `/` is the storage's root; the library is `/Tratto`.
 //!
 //! A changed file is written whole (a note appended to is written again).
+//! Files picked and dropped, and those to download, are not kept: the
+//! latter are downloaded instead (see `web_files`).
 
 use std::path::{Component, Path};
 
@@ -21,6 +23,8 @@ use eframe::web_sys::{
 };
 use tratto_core::fs::memory;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+use crate::web_files;
 
 /// How often changes are written to the storage, in milliseconds.
 const FLUSH_EVERY: i32 = 1000;
@@ -97,10 +101,29 @@ async fn flush() {
         return;
     };
     for path in changes {
+        if web_files::transient(&path) {
+            downloads(&path);
+            continue;
+        }
         if let Err(e) = write_path(&root, &path).await {
             web_sys::console::warn_2(&format!("Tratto: cannot save {} to the browser:", path.display()).into(), &e);
             memory::mark_changed(&path);
         }
+    }
+}
+
+/// The files to download at `path` (under `web_files::DOWNLOADS`) go to the
+/// browser, and out of the tree.
+fn downloads(path: &Path) {
+    if !path.starts_with(web_files::DOWNLOADS) {
+        return;
+    }
+    for (file, bytes) in memory::entries(path) {
+        let (Some(bytes), Some(name)) = (bytes, file.file_name()) else { continue };
+        if let Err(e) = web_files::download(&name.to_string_lossy(), &bytes) {
+            web_sys::console::warn_2(&"Tratto: cannot download".into(), &e);
+        }
+        let _ = tratto_core::fs::remove_file(&file);
     }
 }
 

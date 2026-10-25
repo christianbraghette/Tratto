@@ -13,7 +13,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread;
 
 use eframe::egui::{self, Color32, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
 
@@ -208,7 +207,7 @@ impl InkApp {
                 ctx.request_repaint();
             }
         };
-        match thread::Builder::new().name("pictures".into()).spawn(work) {
+        match crate::background::spawn("pictures", work) {
             Ok(_) => self.picture_jobs.push(PictureJob { note: self.note_path.clone(), done }),
             Err(e) => self.toast(format!("Cannot insert the picture: {e}")),
         }

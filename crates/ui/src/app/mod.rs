@@ -237,6 +237,9 @@ struct PenInput {
     /// The web: pen pressure, side button and eraser end.
     #[cfg(target_arch = "wasm32")]
     web: Option<crate::input::web_pen::WebPen>,
+    /// The web: files dropped onto the page, being read.
+    #[cfg(target_arch = "wasm32")]
+    web_drops: crate::web_files::Drops,
     /// The sources above were started (on the first frame).
     started: bool,
     down: bool,
@@ -657,7 +660,8 @@ impl InkApp {
             app.open_pdf(&cc.egui_ctx, path);
             return app;
         }
-        if app.settings.updates != UpdateMode::Off {
+        // The web app is as new as its page (see `update`).
+        if app.settings.updates != UpdateMode::Off && !cfg!(target_arch = "wasm32") {
             let install = app.settings.updates == UpdateMode::Install;
             app.updater.check(&cc.egui_ctx, app.settings.update_channel, install);
         }

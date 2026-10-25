@@ -328,76 +328,82 @@ impl InkApp {
             });
         });
 
-        section(ui, "Display");
-        rows(ui, "global_display", |ui| {
-            row(ui, "Vsync", |ui| {
-                ui.add_enabled(!vsync_forced, egui::Checkbox::new(&mut s.vsync, "Wait for the display"))
-                    .on_hover_text("Saves power, but the ink trails the pen a little more")
-                    .on_disabled_hover_text("Set by the TRATTO_VSYNC environment variable");
-            });
-            row(ui, "Battery saver", |ui| {
-                egui::ComboBox::from_id_salt("battery_saver")
-                    .selected_text(s.battery_saver.label())
-                    .show_ui(ui, |ui| {
-                        for mode in BatterySaver::ALL {
-                            ui.selectable_value(&mut s.battery_saver, mode, mode.label());
-                        }
-                    })
-                    .response
-                    .on_hover_text(format!(
-                        "Waits for the display to save power. Low: on battery at {}% or less",
-                        crate::power::LOW_PERCENT
-                    ));
-            });
-            row(ui, "Frame rate limit", |ui| {
-                ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
-                    egui::ComboBox::from_id_salt("fps_limit").selected_text(fps_label(s.fps_limit)).show_ui(ui, |ui| {
-                        for fps in FPS_LIMITS {
-                            ui.selectable_value(&mut s.fps_limit, fps, fps_label(fps));
-                        }
-                    });
-                })
-                .response
-                .on_disabled_hover_text(if vsync_now {
-                    "With vsync the display sets the frame rate"
-                } else {
-                    "Set by the TRATTO_FPS environment variable"
+        // The web: the browser paces the frames and picks the graphics API.
+        if !cfg!(target_arch = "wasm32") {
+            section(ui, "Display");
+            rows(ui, "global_display", |ui| {
+                row(ui, "Vsync", |ui| {
+                    ui.add_enabled(!vsync_forced, egui::Checkbox::new(&mut s.vsync, "Wait for the display"))
+                        .on_hover_text("Saves power, but the ink trails the pen a little more")
+                        .on_disabled_hover_text("Set by the TRATTO_VSYNC environment variable");
                 });
-            });
-        });
-        if saving_power && !s.vsync {
-            hint(ui, "The battery saver is on: Tratto waits for the display.");
-        } else {
-            hint(ui, "A lower limit uses less GPU while you write or scroll.");
-        }
-
-        if !GraphicsBackend::CHOICES.is_empty() {
-            let env_backend = eframe::egui_wgpu::wgpu::Backends::from_env().is_some();
-            rows(ui, "global_graphics", |ui| {
-                row(ui, "Graphics", |ui| {
-                    ui.add_enabled_ui(!env_backend, |ui| {
-                        egui::ComboBox::from_id_salt("graphics_backend")
-                            .selected_text(s.graphics_backend.label())
-                            .show_ui(ui, |ui| {
-                                for &backend in GraphicsBackend::CHOICES {
-                                    ui.selectable_value(&mut s.graphics_backend, backend, backend.label());
+                row(ui, "Battery saver", |ui| {
+                    egui::ComboBox::from_id_salt("battery_saver")
+                        .selected_text(s.battery_saver.label())
+                        .show_ui(ui, |ui| {
+                            for mode in BatterySaver::ALL {
+                                ui.selectable_value(&mut s.battery_saver, mode, mode.label());
+                            }
+                        })
+                        .response
+                        .on_hover_text(format!(
+                            "Waits for the display to save power. Low: on battery at {}% or less",
+                            crate::power::LOW_PERCENT
+                        ));
+                });
+                row(ui, "Frame rate limit", |ui| {
+                    ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
+                        egui::ComboBox::from_id_salt("fps_limit").selected_text(fps_label(s.fps_limit)).show_ui(
+                            ui,
+                            |ui| {
+                                for fps in FPS_LIMITS {
+                                    ui.selectable_value(&mut s.fps_limit, fps, fps_label(fps));
                                 }
-                            });
+                            },
+                        );
                     })
                     .response
-                    .on_hover_text(
-                        "The graphics API the window draws with; try another if the screen flickers or stutters",
-                    )
-                    .on_disabled_hover_text("Set by the WGPU_BACKEND environment variable");
+                    .on_disabled_hover_text(if vsync_now {
+                        "With vsync the display sets the frame rate"
+                    } else {
+                        "Set by the TRATTO_FPS environment variable"
+                    });
                 });
             });
-            let in_use = backend_in_use.map(settings::backend_name).unwrap_or("none");
-            if s.graphics_backend != backend_chosen {
-                hint(ui, "Takes effect when Tratto restarts.");
-            } else if backend_chosen.backend().is_some_and(|b| Some(b) != backend_in_use) {
-                hint(ui, &format!("{} is not available here: Tratto draws with {in_use}.", backend_chosen.label()));
+            if saving_power && !s.vsync {
+                hint(ui, "The battery saver is on: Tratto waits for the display.");
             } else {
-                hint(ui, &format!("Drawing with {in_use}."));
+                hint(ui, "A lower limit uses less GPU while you write or scroll.");
+            }
+
+            if !GraphicsBackend::CHOICES.is_empty() {
+                let env_backend = eframe::egui_wgpu::wgpu::Backends::from_env().is_some();
+                rows(ui, "global_graphics", |ui| {
+                    row(ui, "Graphics", |ui| {
+                        ui.add_enabled_ui(!env_backend, |ui| {
+                            egui::ComboBox::from_id_salt("graphics_backend")
+                                .selected_text(s.graphics_backend.label())
+                                .show_ui(ui, |ui| {
+                                    for &backend in GraphicsBackend::CHOICES {
+                                        ui.selectable_value(&mut s.graphics_backend, backend, backend.label());
+                                    }
+                                });
+                        })
+                        .response
+                        .on_hover_text(
+                            "The graphics API the window draws with; try another if the screen flickers or stutters",
+                        )
+                        .on_disabled_hover_text("Set by the WGPU_BACKEND environment variable");
+                    });
+                });
+                let in_use = backend_in_use.map(settings::backend_name).unwrap_or("none");
+                if s.graphics_backend != backend_chosen {
+                    hint(ui, "Takes effect when Tratto restarts.");
+                } else if backend_chosen.backend().is_some_and(|b| Some(b) != backend_in_use) {
+                    hint(ui, &format!("{} is not available here: Tratto draws with {in_use}.", backend_chosen.label()));
+                } else {
+                    hint(ui, &format!("Drawing with {in_use}."));
+                }
             }
         }
 
@@ -426,14 +432,18 @@ impl InkApp {
         if !standalone {
             section(ui, "Library");
             rows(ui, "global_library", |ui| {
-                row(ui, "Folder", |ui| {
-                    ui.add(egui::Label::new(theme::muted(&s.library_root)).truncate()).on_hover_text(&s.library_root);
-                });
-                row(ui, "", |ui| {
-                    if ui.button(format!("{}  Change...", icon::FOLDER_OPEN)).clicked() {
-                        change_folder = true;
-                    }
-                });
+                // The web: the library lives in the browser, there is no folder to choose.
+                if !cfg!(target_arch = "wasm32") {
+                    row(ui, "Folder", |ui| {
+                        ui.add(egui::Label::new(theme::muted(&s.library_root)).truncate())
+                            .on_hover_text(&s.library_root);
+                    });
+                    row(ui, "", |ui| {
+                        if ui.button(format!("{}  Change...", icon::FOLDER_OPEN)).clicked() {
+                            change_folder = true;
+                        }
+                    });
+                }
                 row(ui, "Recent notes", |ui| {
                     ui.add(DragValue::new(&mut s.recent_count).range(4..=48))
                         .on_hover_text("Shown on the library screen");

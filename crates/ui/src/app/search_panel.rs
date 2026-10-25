@@ -26,7 +26,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, Align2, Key, Sense, Ui, text::LayoutJob};
@@ -257,9 +256,9 @@ impl InkApp {
         let stop = Arc::new(AtomicBool::new(false));
         let (found, receiver) = mpsc::channel();
         let (thread_stop, ctx) = (stop.clone(), ctx.clone());
-        let spawned = thread::Builder::new()
-            .name("notebook search".into())
-            .spawn(move || search_notes(notes, open, &query, &thread_stop, &found, &ctx));
+        let spawned = crate::background::spawn("notebook search", move || {
+            search_notes(notes, open, &query, &thread_stop, &found, &ctx)
+        });
         if spawned.is_ok() {
             panel.running = Some(Running { stop, found: receiver });
         }

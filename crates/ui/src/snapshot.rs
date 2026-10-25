@@ -118,7 +118,7 @@ pub fn export(ctx: &egui::Context, snap: Snapshot, system: Arc<Mutex<SystemCopy>
     *system.lock().unwrap_or_else(|e| e.into_inner()) = SystemCopy::Pending(id);
     let scene = scene(ctx, &snap, MAX_SIDE, MAX_DENSITY);
     let shared = system.clone();
-    let spawned = std::thread::Builder::new().name("copy-picture".into()).spawn(move || {
+    let spawned = crate::background::spawn("copy-picture", move || {
         let image = rasterise(&scene);
         let done = put_on_clipboard(&image).unwrap_or_default();
         let mut system = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -139,7 +139,7 @@ pub fn save_png(ctx: &egui::Context, snap: Snapshot, path: PathBuf) -> Receiver<
     let (tx, rx) = mpsc::channel();
     let failed = tx.clone();
     let ctx = ctx.clone();
-    let spawned = std::thread::Builder::new().name("save-picture".into()).spawn(move || {
+    let spawned = crate::background::spawn("save-picture", move || {
         let image = rasterise(&scene);
         let [w, h] = image.size;
         let saved = tratto_core::images::encode_png(w as u32, h as u32, image.bytes)

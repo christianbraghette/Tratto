@@ -620,6 +620,11 @@ fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Ve
             picks.push(Pick::Act(Act::Duplicate(note.path.clone())));
             ui.close();
         }
+        #[cfg(target_arch = "wasm32")]
+        if entry(ui, icon::DOWNLOAD_SIMPLE, "Download note", "", true) {
+            picks.push(Pick::Act(Act::Download(note.path.clone())));
+            ui.close();
+        }
         if entry(ui, icon::COPY_SIMPLE, "Copy", "", true) {
             picks.push(Pick::Act(Act::Clip(note.path.clone(), false)));
             ui.close();

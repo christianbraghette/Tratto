@@ -22,7 +22,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 /// Windows and macOS always have a file dialog, so a path is chosen with it
 /// straight away. Elsewhere (Linux: the desktop portal may be missing) the
 /// app's own path box comes first, with a Browse button.
-pub const DIRECT: bool = cfg!(any(windows, target_os = "macos"));
+pub const DIRECT: bool = cfg!(any(windows, target_os = "macos", target_arch = "wasm32"));
 
 /// What a dialog chooses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,9 +85,26 @@ impl<F> FilePicker<F> {
         self.pending = Some((req.field, rx));
     }
 
-    /// The web: no file dialogs yet, nothing opens.
+    /// The web: the browser's file picker for a file to open (read into
+    /// memory, see `web_files`); a file to save goes to the downloads at
+    /// once; no folders.
     #[cfg(target_arch = "wasm32")]
-    pub fn open<W>(&mut self, _ctx: &egui::Context, _parent: &W, _req: Request<F>) {}
+    pub fn open<W>(&mut self, ctx: &egui::Context, _parent: &W, req: Request<F>) {
+        if self.is_open() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        match req.pick {
+            Pick::Open(_, extensions) => crate::web_files::pick(ctx, extensions, tx),
+            Pick::Save(_, extensions) => {
+                let _ = tx.send(Some(crate::web_files::download_path(&req.current, extensions)));
+            }
+            Pick::Folder => {
+                let _ = tx.send(None);
+            }
+        }
+        self.pending = Some((req.field, rx));
+    }
 
     /// The chosen path once the dialog has closed: `None` while it is open
     /// and when it was cancelled.
