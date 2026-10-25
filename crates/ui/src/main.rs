@@ -183,8 +183,15 @@ fn main() -> eframe::Result<()> {
     // The integrated GPU: pages and strokes are light work for it, and on a
     // laptop with two GPUs the discrete one would stay powered while Tratto
     // is open (egui asks for it by default). WGPU_POWER_PREF=high overrides.
+    // Windows: DirectX 12. With Vulkan the drivers take the fullscreen window
+    // for an exclusive one, and the screen flashes black whenever another
+    // window comes over it (Alt+Tab, the taskbar, the system's gestures).
+    // WGPU_BACKEND overrides.
     if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
         setup.power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::LowPower);
+        if cfg!(windows) && wgpu::Backends::from_env().is_none() {
+            setup.instance_descriptor.backends = wgpu::Backends::DX12;
+        }
     }
 
     let options = eframe::NativeOptions {
