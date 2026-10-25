@@ -88,8 +88,8 @@ pub enum Title<'a> {
 /// A swipe down from the top edge shows it until a press below it (a finger
 /// leaves no pointer to stay near the bar).
 fn fullscreen_reveal(ctx: &egui::Context, pinned: bool) -> f32 {
-    let id = Id::new("title_bar_reveal");
-    let swipe_id = Id::new("title_bar_swiped");
+    let id = Id::unique("title_bar_reveal");
+    let swipe_id = Id::unique("title_bar_swiped");
     let shown = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
     let mut swiped = ctx.data(|d| d.get_temp::<bool>(swipe_id)).unwrap_or(false);
     let top = ctx.viewport_rect().top();
@@ -119,10 +119,10 @@ fn fullscreen_reveal(ctx: &egui::Context, pinned: bool) -> f32 {
 /// Out of full screen: the full screen bar is hidden, at once, so going full
 /// screen does not start by sliding it away.
 fn hide_fullscreen_bar(ctx: &egui::Context) {
-    let id = Id::new("title_bar_reveal");
+    let id = Id::unique("title_bar_reveal");
     ctx.data_mut(|d| {
         d.insert_temp(id, false);
-        d.insert_temp(Id::new("title_bar_swiped"), false);
+        d.insert_temp(Id::unique("title_bar_swiped"), false);
     });
     ctx.animate_bool_with_time(id, false, 0.0);
 }
@@ -182,7 +182,7 @@ pub fn title_bar(
             // The background first, so every widget added later wins the hit
             // test. On Windows the system moves the window (`win_frame`).
             if controls && !win_frame::active() {
-                let resp = ui.interact(bar, Id::new("title_bar_drag"), Sense::click_and_drag());
+                let resp = ui.interact(bar, Id::unique("title_bar_drag"), Sense::click_and_drag());
                 if resp.double_clicked() {
                     ctx.send_viewport_cmd(ViewportCommand::Maximized(!state.maximized));
                 } else if resp.drag_started_by(PointerButton::Primary) {
@@ -291,8 +291,16 @@ fn editable_title(
     };
     let rect = Rect::from_min_size(pos2(x, bar.center().y - 12.0), vec2(w, 24.0));
 
-    let resp =
-        theme::inline_edit(ui, rect, Id::new("note_title_edit"), text, hint, font, Align::Center, color::text_muted());
+    let resp = theme::inline_edit(
+        ui,
+        rect,
+        Id::unique("note_title_edit"),
+        text,
+        hint,
+        font,
+        Align::Center,
+        color::text_muted(),
+    );
     Some(resp.on_hover_text("Rename the note"))
 }
 
@@ -404,7 +412,7 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
     // Windows 10 draws no border along the top, where the caption was.
     if win_frame::active() {
         if !DWM_FRAME.load(Ordering::Relaxed) {
-            let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("window_outline")));
+            let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::unique("window_outline")));
             let r = ctx.viewport_rect();
             let y = r.top() + 0.5;
             painter.hline(r.x_range(), y, Stroke::new(1.0, color::border_strong()));
@@ -452,7 +460,7 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
         ),
     ];
     for (i, (dir, rect, cursor)) in zones.into_iter().enumerate() {
-        egui::Area::new(Id::new("resize_border").with(i))
+        egui::Area::new(Id::unique("resize_border").with(i))
             .order(Order::Foreground)
             .fixed_pos(rect.min)
             .constrain(false)
@@ -472,7 +480,7 @@ pub fn window_frame(ctx: &egui::Context, state: WindowState) {
 /// The window's 1 px outline, unless DWM draws the (rounded) border itself.
 fn paint_outline(ctx: &egui::Context) {
     if !DWM_FRAME.load(Ordering::Relaxed) {
-        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("window_outline")));
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::unique("window_outline")));
         let r = ctx.viewport_rect();
         painter.rect_stroke(r.shrink(0.5), 0.0, Stroke::new(1.0, color::border_strong()), StrokeKind::Middle);
     }
@@ -912,7 +920,7 @@ mod tests {
     fn fullscreen_bar_shows_after_a_swipe_down_until_a_press_below() {
         let ctx = egui::Context::default();
         let mut open = false;
-        let shown = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<bool>(Id::new("title_bar_reveal")));
+        let shown = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<bool>(Id::unique("title_bar_reveal")));
         frame(&ctx, &mut open, vec![at(300.0, 300.0)]);
         // A finger lands on the top edge (not at it, as a mouse would be) and swipes down.
         frame(&ctx, &mut open, vec![at(300.0, 10.0), button(300.0, 10.0, true)]);

@@ -17,8 +17,8 @@ repository = "https://github.com/christianbraghette/Tratto"
 tratto-core = { path = "crates/core" }
 # `emath` is the math crate egui is built on; sharing it keeps core types
 # (Pos2, Rect) directly usable by the UI without pulling egui into core.
-emath = "0.36.2"
-eframe = { version = "0.36.2", features = ["wgpu", "persistence"] }
+emath = "0.37.0"
+eframe = { version = "0.37.0", features = ["wgpu", "persistence"] }
 # `rc`: stroke points are shared (`Arc<[Point]>`), encoded like a `Vec`.
 serde = { version = "1", features = ["derive", "rc"] }
 

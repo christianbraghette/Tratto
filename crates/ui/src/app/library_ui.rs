@@ -265,7 +265,8 @@ impl InkApp {
             && let Some(p) = ctx.input(|i| i.pointer.interact_pos())
         {
             ctx.set_cursor_icon(CursorIcon::Grabbing);
-            let ghost = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("note_card_ghost")));
+            let ghost =
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("note_card_ghost")));
             theme::paint_toast(&ghost, p + vec2(60.0, 20.0), &d.title);
         }
 
@@ -436,7 +437,7 @@ impl InkApp {
                                 acts.push(Act::NewNote(target_dir.to_path_buf()));
                             }
                         }
-                        let menu = Id::new("lib_import_menu");
+                        let menu = Id::unique("lib_import_menu");
                         let import = ui.button(format!("{}  Import  {}", icon::DOWNLOAD_SIMPLE, icon::CARET_DOWN));
                         button_menu(menu, &import, |ui| {
                             if entry(ui, icon::BOOK_OPEN, "Read a PDF...", "", true) {
@@ -482,7 +483,7 @@ impl InkApp {
         if self.status.is_empty() {
             return;
         }
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("lib_toast")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("lib_toast")));
         theme::paint_toast(&painter, ctx.viewport_rect().center_bottom() - vec2(0.0, 48.0), &self.status);
         // Once more when it is gone (it does not fade).
         ctx.request_repaint_after(left);
@@ -550,7 +551,7 @@ impl InkApp {
         };
 
         egui::Window::new(title)
-            .id(super::menus::LIBRARY_DIALOG.into())
+            .id(egui::Id::unique(super::menus::LIBRARY_DIALOG))
             .collapsible(false)
             // Above the notches and the toolbar.
             .order(egui::Order::Foreground)
@@ -918,7 +919,7 @@ fn heading_with_sort(ui: &mut Ui, text: &str, sort: LibrarySort, acts: &mut Vec<
         ui.label(theme::heading(text));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             theme::ghost_buttons(ui);
-            let menu = Id::new(("lib_sort", text));
+            let menu = Id::unique(("lib_sort", text));
             let button = ui.button(format!("{}  {}  {}", icon::SORT_ASCENDING, sort.label(), icon::CARET_DOWN));
             button_menu(menu, &button, |ui| {
                 for s in [LibrarySort::Manual, LibrarySort::Edited, LibrarySort::Title] {
@@ -1041,7 +1042,7 @@ fn home_view(
             notebook_cover(ui, nb, acts);
         }
         let (rect, _) = ui.allocate_exact_size(vec2(COVER_W, COVER_H), Sense::hover());
-        if theme::add_tile(ui, rect, Id::new("new_notebook_tile"), "New notebook").clicked() {
+        if theme::add_tile(ui, rect, Id::unique("new_notebook_tile"), "New notebook").clicked() {
             acts.push(Act::Dialog(Dialog::NewNotebook(String::new())));
         }
     });
@@ -1062,7 +1063,7 @@ fn recent_pdfs(ui: &mut Ui, pdfs: &[String], acts: &mut Vec<Act>) {
                     ui,
                     row.rect,
                     0,
-                    Id::new(("forget_pdf", path)),
+                    Id::unique(("forget_pdf", path)),
                     icon::X,
                     "Remove from this list",
                     false,
@@ -1355,7 +1356,7 @@ fn note_grid(
         ui.spacing_mut().item_spacing = vec2(space::L, space::L);
         if let Some(dir) = new_in {
             let (rect, _) = ui.allocate_exact_size(vec2(CARD_W, CARD_W * 1.414), Sense::hover());
-            if theme::add_tile(ui, rect, Id::new(("new_note_tile", dir)), "New note").clicked() {
+            if theme::add_tile(ui, rect, Id::unique(("new_note_tile", dir)), "New note").clicked() {
                 acts.push(Act::NewNote(dir.to_path_buf()));
             }
         }
@@ -1406,7 +1407,7 @@ fn note_card(ui: &mut Ui, note: &NoteInfo, root: &Path, show_location: bool, act
         let p = ui.painter();
         p.add(theme::card_shadow().as_shape(rect, egui::CornerRadius::from(radius::SMALL)));
         paint_preview(&ui.painter_at(rect), rect, note);
-        let menu = Id::new(("note_card_menu", &note.path));
+        let menu = Id::unique(("note_card_menu", &note.path));
         let menu_open = egui::Popup::is_id_open(ui.ctx(), menu);
         let hovered = ui.rect_contains_pointer(rect);
         if hovered || menu_open {
@@ -1540,7 +1541,7 @@ fn paint_preview(painter: &egui::Painter, rect: Rect, note: &NoteInfo) {
     let ctx = painter.ctx();
     let (frame, ppp) = (ctx.cumulative_frame_nr(), ctx.pixels_per_point());
     let cache =
-        ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<PreviewCache>>>(Id::new("note_previews")).clone());
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<PreviewCache>>>(Id::unique("note_previews")).clone());
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
     if cache.frame != frame {
         cache.frame = frame;

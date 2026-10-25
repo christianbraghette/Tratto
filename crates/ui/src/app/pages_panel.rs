@@ -89,7 +89,7 @@ impl InkApp {
         let switched = self.chrome.sidebar_fullscreen != Some(fullscreen);
         self.chrome.sidebar_fullscreen = Some(fullscreen);
         let time = if switched { 0.0 } else { SLIDE_TIME };
-        let reveal = ui.ctx().animate_bool_with_time(Id::new("sidebar_reveal"), shown, time);
+        let reveal = ui.ctx().animate_bool_with_time(Id::unique("sidebar_reveal"), shown, time);
         self.chrome.sidebar_reveal = reveal;
         if reveal <= 0.0 {
             self.page_drag = None;
@@ -433,7 +433,7 @@ impl InkApp {
                         );
                         rects.push(rect);
                         // The whole card (page and number) is the target.
-                        let resp = ui.interact(card, ui.id().with(("page_card", i)), Sense::click_and_drag());
+                        let resp = ui.interact(card, ui.scope_id().with(("page_card", i)), Sense::click_and_drag());
                         if follow && i == current {
                             ui.scroll_to_rect(card, None);
                         }
@@ -479,7 +479,7 @@ impl InkApp {
 
                         // Delete button, registered after the card so it wins hit-testing.
                         let del_rect = Rect::from_center_size(rect.right_top() + vec2(-13.0, 13.0), vec2(22.0, 22.0));
-                        let del = ui.interact(del_rect, ui.id().with(("page_del", i)), Sense::click());
+                        let del = ui.interact(del_rect, ui.scope_id().with(("page_del", i)), Sense::click());
                         if editable && ui.rect_contains_pointer(card) && drag.is_none() {
                             let p = ui.painter();
                             let fill = if del.hovered() { color::danger() } else { color::chrome() };
@@ -541,7 +541,7 @@ impl InkApp {
                         ui.add_space(space::XS);
                         let (row, _) = ui.allocate_exact_size(vec2(avail, 36.0), Sense::hover());
                         let tile = Rect::from_center_size(row.center(), vec2(thumb_w, 36.0));
-                        if theme::add_tile(ui, tile, Id::new("add_page_tile"), "Add page").clicked() {
+                        if theme::add_tile(ui, tile, Id::unique("add_page_tile"), "Add page").clicked() {
                             add = true;
                         }
                     }
@@ -573,7 +573,7 @@ impl InkApp {
                                 // Floating label under the pen.
                                 let ghost = ui.ctx().layer_painter(egui::LayerId::new(
                                     egui::Order::Tooltip,
-                                    Id::new("page_drag_ghost"),
+                                    Id::unique("page_drag_ghost"),
                                 ));
                                 theme::paint_toast(&ghost, p + vec2(56.0, 20.0), &format!("Page {}", from + 1));
 

@@ -385,11 +385,9 @@ impl InkApp {
                             });
                     })
                     .response
-                    .on_hover_text(if cfg!(windows) {
-                        "The graphics API the window draws with; try another if the screen flickers or stutters.                          Automatic: DirectX 12 on Intel, Vulkan on NVIDIA and AMD"
-                    } else {
-                        "The graphics API the window draws with; try another if the screen flickers or stutters"
-                    })
+                    .on_hover_text(
+                        "The graphics API the window draws with; try another if the screen flickers or stutters",
+                    )
                     .on_disabled_hover_text("Set by the WGPU_BACKEND environment variable");
                 });
             });

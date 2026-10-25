@@ -183,8 +183,7 @@ impl BatterySaver {
 /// a restart). `WGPU_BACKEND` overrides it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GraphicsBackend {
-    /// Windows: DirectX 12 on Intel, Vulkan on NVIDIA and AMD (see
-    /// `main::windows_backend`); elsewhere wgpu's choice.
+    /// Windows: DirectX 12 (see `main`); elsewhere wgpu's choice.
     #[default]
     Auto,
     Vulkan,
@@ -204,6 +203,7 @@ impl GraphicsBackend {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Auto if cfg!(windows) => "Automatic (DirectX 12)",
             Self::Auto => "Automatic",
             Self::Vulkan => "Vulkan",
             Self::Dx12 => "DirectX 12",

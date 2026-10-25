@@ -197,10 +197,10 @@ const REVEAL_TIME: f32 = 0.15;
 
 /// Hides the presentation bar at once (presenting starts with it away).
 pub fn hide_presenting_bar(ctx: &egui::Context) {
-    let id = egui::Id::new("presenting_bar_reveal");
+    let id = egui::Id::unique("presenting_bar_reveal");
     ctx.data_mut(|d| {
         d.insert_temp(id, false);
-        d.insert_temp(egui::Id::new("presenting_bar_swiped"), false);
+        d.insert_temp(egui::Id::unique("presenting_bar_swiped"), false);
     });
     ctx.animate_bool_with_time(id, false, 0.0);
 }
@@ -219,11 +219,11 @@ pub fn from_bar_edge(ctx: &egui::Context, position: ToolbarPosition, p: Pos2) ->
 /// swipe it stays until a press away from it. It also stays while a field
 /// in it (the page number) is being typed into.
 fn presenting_reveal(ctx: &egui::Context, position: ToolbarPosition) -> f32 {
-    let id = egui::Id::new("presenting_bar_reveal");
-    let swipe_id = egui::Id::new("presenting_bar_swiped");
+    let id = egui::Id::unique("presenting_bar_reveal");
+    let swipe_id = egui::Id::unique("presenting_bar_swiped");
     let shown = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
     let mut swiped = ctx.data(|d| d.get_temp::<bool>(swipe_id)).unwrap_or(false);
-    let height = ctx.memory(|m| m.area_rect(egui::Id::new(PRESENTING_BAR))).map_or(48.0, |r| r.height());
+    let height = ctx.memory(|m| m.area_rect(egui::Id::unique(PRESENTING_BAR))).map_or(48.0, |r| r.height());
     let edge = |p: Pos2| from_bar_edge(ctx, position, p);
     let (pointer, origin, down, pressed) = ctx.input(|i| {
         (i.pointer.hover_pos(), i.pointer.press_origin(), i.pointer.primary_down(), i.pointer.any_pressed())
@@ -303,7 +303,7 @@ fn edge_bar<R>(
 ) -> R {
     let ctx = ui.ctx();
     let free = ui.available_rect_before_wrap();
-    let id = egui::Id::new(id);
+    let id = egui::Id::unique(id);
     // Size from the previous frame (its height a guess the first time).
     let size = ctx.memory(|m| m.area_rect(id)).map_or(vec2(0.0, 48.0), |r| r.size());
     let (width, hidden) = (size.x, size.y * (1.0 - slide));
@@ -379,7 +379,7 @@ pub fn show_joins(ui: &egui::Ui, side: SidebarSide, bottom_inset: f32) {
 
     // Above the canvas, but below menus and popups (which are foreground
     // areas).
-    let joins = ctx.layer_painter(egui::LayerId::new(Order::Middle, egui::Id::new("panel_joins")));
+    let joins = ctx.layer_painter(egui::LayerId::new(Order::Middle, egui::Id::unique("panel_joins")));
 
     // On the right, against the vertical scrollbar, which always occupies the
     // right edge of the canvas (and, being the same surface, joins the
@@ -506,7 +506,7 @@ fn notch(ctx: &egui::Context, id: &str, at: Corner, corner: Pos2, add_contents: 
         Corner::TopLeft => Align2::LEFT_TOP,
         Corner::TopRight => Align2::RIGHT_TOP,
     };
-    egui::Area::new(egui::Id::new(id)).order(Order::Foreground).pivot(pivot).fixed_pos(corner).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique(id)).order(Order::Foreground).pivot(pivot).fixed_pos(corner).show(ctx, |ui| {
         // Reserve the background slot first so it is painted below the buttons.
         let background = ui.painter().add(Shape::Noop);
         let rect = egui::Frame::NONE

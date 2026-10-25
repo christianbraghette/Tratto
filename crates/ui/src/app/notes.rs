@@ -490,7 +490,7 @@ impl InkApp {
             (hovering, dropped)
         });
         if hovering {
-            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("pdf_drop_hint")));
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("pdf_drop_hint")));
             let screen = ctx.viewport_rect();
             painter.rect_filled(screen, 0.0, Color32::from_black_alpha(120));
             theme::paint_toast(&painter, screen.center(), "Drop the PDF to read it");

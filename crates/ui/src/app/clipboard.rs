@@ -464,7 +464,7 @@ impl InkApp {
 /// Where the library's menus (free functions) find whether a note can be
 /// pasted (see `InkApp::publish_clipboard`).
 fn note_pastable_id() -> egui::Id {
-    egui::Id::new("clipboard_has_note")
+    egui::Id::unique("clipboard_has_note")
 }
 
 /// A note was copied or cut: the library's menus offer to paste it.

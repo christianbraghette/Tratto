@@ -545,7 +545,6 @@ mod tests {
                 queue: queue.clone(),
                 target_format: format,
                 renderer: Arc::new(eframe::egui::mutex::RwLock::new(renderer)),
-                surface_config: egui_wgpu::SurfaceConfig::LOW_LATENCY,
             };
             install(&state, 1);
             let target = device.create_texture(&wgpu::TextureDescriptor {

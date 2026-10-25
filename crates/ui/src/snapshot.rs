@@ -167,7 +167,7 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
     let at = |p: Pos2| ((p - area.min) * scale).to_pos2();
 
     // Bottom to top, as on the page: highlighters, text, pen.
-    let layer = LayerId::new(Order::Background, Id::new("clipboard_snapshot"));
+    let layer = LayerId::new(Order::Background, Id::unique("clipboard_snapshot"));
     let painter = Painter::new(ctx.clone(), layer, Rect::EVERYTHING);
     let strokes = |kind: tratto_core::model::StrokeKind| {
         let mut mesh = Mesh::default();

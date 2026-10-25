@@ -140,7 +140,7 @@ pub fn install(window: &impl raw_window_handle::HasWindowHandle) {
 pub fn publish_caption(ctx: &egui::Context, caption: Caption) {
     // Not inside `data_mut`: the context is locked there.
     let frame = ctx.cumulative_frame_nr();
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new("win_frame_caption"), (frame, caption)));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("win_frame_caption"), (frame, caption)));
 }
 
 /// The resize borders (`None`: none) of this frame; also takes the title
@@ -149,7 +149,7 @@ pub fn publish_border(ctx: &egui::Context, border: Option<f32>) {
     let ppp = ctx.pixels_per_point();
     let frame = ctx.cumulative_frame_nr();
     let caption = ctx
-        .data(|d| d.get_temp::<(u64, Caption)>(egui::Id::new("win_frame_caption")))
+        .data(|d| d.get_temp::<(u64, Caption)>(egui::Id::unique("win_frame_caption")))
         .filter(|(nr, _)| *nr == frame)
         .map(|(_, c)| c)
         .unwrap_or_default();

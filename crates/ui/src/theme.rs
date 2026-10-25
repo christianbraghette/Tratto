@@ -262,7 +262,10 @@ pub fn install(ctx: &egui::Context) {
     // pixel grid and look lighter.
     fonts.font_data.insert("inter-italic".into(), inter(include_bytes!("../assets/fonts/Inter-MediumItalic.ttf")));
     fonts.font_data.insert("inter-bold-italic".into(), inter(include_bytes!("../assets/fonts/Inter-BoldItalic.ttf")));
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // The icon font's bytes (egui-phosphor's `add_to_fonts` is built for
+    // another egui version).
+    let phosphor = FontData::from_static(egui_phosphor::Variant::Regular.font_bytes());
+    fonts.font_data.insert("phosphor".into(), Arc::new(phosphor));
     // Inter first; then the icons (Unicode private use area, which the
     // bundled Inter leaves free, see assets/fonts/README.md) and egui's own
     // fonts (emoji, symbols) as fallbacks.
@@ -442,8 +445,7 @@ pub fn inline_edit(
             .font(font)
             .text_color(if focused || hovered { color::text_strong() } else { idle })
             .hint_text(hint)
-            .horizontal_align(align)
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2([align, egui::Align::Center]))
             // A custom frame: no background of its own (painted below).
             .frame(egui::Frame::NONE.inner_margin(Margin::symmetric(space::S as i8, 2)))
             .char_limit(120),
@@ -535,7 +537,7 @@ pub fn row_button(
 /// A window that appears and disappears at once, closed with
 /// [`window_close_button`] (egui's own is a bare "×").
 pub fn window<'a>(id: &str, title: &'a str) -> egui::Window<'a> {
-    egui::Window::new(title).id(egui::Id::new(id)).fade_in(false)
+    egui::Window::new(title).id(egui::Id::unique(id)).fade_in(false)
 }
 
 /// The close button in the title bar of a [`window`]: `window` is its

@@ -110,7 +110,7 @@ impl InkApp {
                             let resp = theme::inline_edit(
                                 ui,
                                 rect,
-                                Id::new("notebook_name_edit"),
+                                Id::unique("notebook_name_edit"),
                                 &mut name,
                                 "Notebook name",
                                 theme::font_strong(size::HEADING),
@@ -206,7 +206,7 @@ impl InkApp {
                     Some((_, name)) => format!("{}  {}  {name}", d.title, icon::ARROW_RIGHT),
                     None => d.title.clone(),
                 };
-                let ghost = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("note_drag_ghost")));
+                let ghost = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("note_drag_ghost")));
                 theme::paint_toast(&ghost, p + vec2(64.0, 22.0), &label);
             }
             if ctx.input(|i| !i.pointer.any_down()) {
@@ -323,7 +323,7 @@ fn quick_tree(ui: &mut Ui, root: &Path, notes: &[NoteInfo], trash: &[&TrashItem]
 /// section, "⋯"), then its notes. A note dragged in from another group drops
 /// into it.
 fn group(ui: &mut Ui, g: &Group, t: &mut Tree) {
-    let id = Id::new(("panel_group", g.dir));
+    let id = Id::unique(("panel_group", g.dir));
     let has_current = g.notes.iter().any(|n| Some(n.path.as_path()) == t.current);
     let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, g.default_open || has_current);
     let dragging = t.drag.is_some();
@@ -478,7 +478,7 @@ fn trash_group(ui: &mut Ui, scope: &Path, items: &[&TrashItem], t: &mut Tree) {
         return;
     }
     ui.add_space(space::S);
-    let id = Id::new(("panel_trash", scope));
+    let id = Id::unique(("panel_trash", scope));
     let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
     let (row, header) = ui.allocate_exact_size(vec2(ui.available_width(), theme::ROW_HEIGHT), Sense::click());
     let hovered = t.drag.is_none() && ui.rect_contains_pointer(row);
@@ -513,7 +513,7 @@ fn trash_group(ui: &mut Ui, scope: &Path, items: &[&TrashItem], t: &mut Tree) {
 fn trash_row(ui: &mut Ui, item: &TrashItem, picks: &mut Vec<Pick>) {
     let glyph = if item.is_folder { icon::FOLDER_SIMPLE } else { icon::NOTE_BLANK };
     let resp = theme::list_row(ui, glyph, &item.name, false, 2.0 * theme::ROW_BUTTON);
-    let id = Id::new(("trash_item", &item.path));
+    let id = Id::unique(("trash_item", &item.path));
     let erase = || Pick::Act(Act::Dialog(Dialog::DeleteForever { path: item.path.clone(), label: item.name.clone() }));
     let restore = || Pick::Act(Act::Restore(item.path.clone()));
     if ui.rect_contains_pointer(resp.rect) {
@@ -597,7 +597,7 @@ fn note_row(ui: &mut Ui, note: &NoteInfo, current: Option<&Path>, picks: &mut Ve
     let trash = || Pick::Act(Act::Dialog(Dialog::Trash { path: note.path.clone(), label: note.meta.title.clone() }));
     let dragging = ui.ctx().dragged_id().is_some();
     if !is_current && !dragging && ui.rect_contains_pointer(resp.rect) {
-        let id = Id::new(("note_trash", &note.path));
+        let id = Id::unique(("note_trash", &note.path));
         if theme::row_button(ui, resp.rect, 0, id, icon::TRASH, "Delete", true).clicked() {
             picks.push(trash());
             return resp;

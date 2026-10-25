@@ -468,7 +468,7 @@ impl InkApp {
                     egui::Tooltip::always_open(
                         ui.ctx().clone(),
                         ui.layer_id(),
-                        Id::new("pdf_link"),
+                        Id::unique("pdf_link"),
                         egui::PopupAnchor::Pointer,
                     )
                     .show(|ui| ui.label(uri));
@@ -544,7 +544,7 @@ impl InkApp {
         let hbar_rect = Rect::from_min_max(pos2(full.left(), canvas.bottom()), pos2(canvas.right(), full.bottom()));
         let vstate = scrollbar::update(
             ui,
-            Id::new("vbar"),
+            Id::unique("vbar"),
             vbar_rect,
             true,
             &mut self.scroll.y,
@@ -556,7 +556,7 @@ impl InkApp {
         let hstate = hbar.then(|| {
             scrollbar::update(
                 ui,
-                Id::new("hbar"),
+                Id::unique("hbar"),
                 hbar_rect,
                 false,
                 &mut self.scroll.x,
@@ -827,7 +827,7 @@ impl InkApp {
             let editor = frame.shrink2(vec2(2.0 + side_margin, 2.0));
             let margin = egui::Margin { left: 0, right: 0, ..EDIT_MARGIN };
 
-            let id = Id::new(("text_edit", e.id));
+            let id = Id::unique(("text_edit", e.id));
             let color = Color32::from_rgb(e.color[0], e.color[1], e.color[2]);
             let size = (e.size * scale).max(6.0);
             // The Markdown in the styles it makes, its marks dimmed.
@@ -878,7 +878,7 @@ impl InkApp {
         if btn.intersects(canvas) && !self.reading() {
             let mut tile = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
             tile.set_clip_rect(canvas);
-            if theme::add_tile(&mut tile, btn, Id::new("add_page"), "Add page").clicked() {
+            if theme::add_tile(&mut tile, btn, Id::unique("add_page"), "Add page").clicked() {
                 self.insert_page(self.doc.page_count);
             }
         }

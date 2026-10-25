@@ -184,23 +184,21 @@ fn main() -> eframe::Result<()> {
     // The integrated GPU: pages and strokes are light work for it, and on a
     // laptop with two GPUs the discrete one would stay powered while Tratto
     // is open (egui asks for it by default). WGPU_POWER_PREF=high overrides.
-    // Windows: the backend depends on the GPU (`windows_backend`), so both
-    // are started and the GPU picked first. Another backend can be chosen in
-    // the settings; WGPU_BACKEND overrides.
+    // Windows: DirectX 12. With Vulkan the drivers take the fullscreen window
+    // for an exclusive one, and the screen flashes black whenever another
+    // window comes over it (Alt+Tab, the taskbar, the system's gestures).
+    // Another backend can be chosen in the settings; WGPU_BACKEND overrides.
     if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
         let power = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::LowPower);
         setup.power_preference = power;
         if wgpu::Backends::from_env().is_none() {
-            let chosen = saved.and_then(|s| s.graphics_backend.backend());
             if cfg!(windows) {
-                setup.instance_descriptor.backends = wgpu::Backends::DX12 | wgpu::Backends::VULKAN;
+                setup.instance_descriptor.backends = wgpu::Backends::DX12;
             }
-            if let Some(chosen) = chosen {
+            if let Some(chosen) = saved.and_then(|s| s.graphics_backend.backend()) {
                 // The automatic backends stay as a fallback, for a choice the
                 // system lacks (otherwise the window would never open).
                 setup.instance_descriptor.backends |= chosen.into();
-            }
-            if cfg!(windows) || chosen.is_some() {
                 setup.native_adapter_selector =
                     Some(std::sync::Arc::new(move |adapters, surface| pick_adapter(adapters, surface, chosen, power)));
             }
@@ -244,44 +242,28 @@ fn main() -> eframe::Result<()> {
     result
 }
 
-/// The GPU to draw with, one that can draw the window: the integrated or
-/// the discrete one as `power` prefers. With a backend `chosen` in the
-/// settings, on that backend if there is one; otherwise on the backend that
-/// suits the GPU (`windows_backend`).
+/// The GPU to draw with when a backend was chosen in the settings: one that
+/// can draw the window, on the `chosen` backend if there is one, the
+/// integrated or the discrete GPU as `power` prefers.
 fn pick_adapter(
     adapters: &[wgpu::Adapter],
     surface: Option<&wgpu::Surface<'_>>,
-    chosen: Option<wgpu::Backend>,
+    chosen: wgpu::Backend,
     power: wgpu::PowerPreference,
 ) -> Result<wgpu::Adapter, String> {
     let wanted = match power {
         wgpu::PowerPreference::HighPerformance => wgpu::DeviceType::DiscreteGpu,
         _ => wgpu::DeviceType::IntegratedGpu,
     };
-    let fit = |info: &wgpu::AdapterInfo| (info.device_type == wanted, info.device_type != wgpu::DeviceType::Cpu);
-    let usable = || adapters.iter().filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)));
-    let adapter = match chosen {
-        Some(chosen) => usable().max_by_key(|a| {
+    adapters
+        .iter()
+        .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
+        .max_by_key(|a| {
             let info = a.get_info();
-            (info.backend == chosen, fit(&info))
-        }),
-        None => usable().max_by_key(|a| {
-            let info = a.get_info();
-            (fit(&info), info.backend == windows_backend(info.vendor))
-        }),
-    };
-    adapter.cloned().ok_or_else(|| "no GPU can draw the window".to_owned())
-}
-
-/// The automatic backend on Windows for a GPU of `vendor` (PCI id).
-/// DirectX 12 on Intel: with Vulkan its drivers take the fullscreen window
-/// for an exclusive one, and the screen flashes black whenever another window
-/// comes over it (Alt+Tab, the taskbar, the system's gestures). Vulkan on
-/// NVIDIA and AMD: with DirectX 12 the canvas breaks up there while zooming
-/// and scrolling, even with vsync (cause unknown).
-fn windows_backend(vendor: u32) -> wgpu::Backend {
-    const INTEL: u32 = 0x8086;
-    if vendor == INTEL { wgpu::Backend::Dx12 } else { wgpu::Backend::Vulkan }
+            (info.backend == chosen, info.device_type == wanted, info.device_type != wgpu::DeviceType::Cpu)
+        })
+        .cloned()
+        .ok_or_else(|| "no GPU can draw the window".to_owned())
 }
 
 /// One egui frame for tests: runs `ui` and returns the textures it frees
@@ -296,14 +278,6 @@ fn test_frame(ctx: &egui::Context, input: egui::RawInput, ui: impl FnMut(&mut eg
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn windows_backend_by_vendor() {
-        use super::{wgpu::Backend, windows_backend};
-        assert_eq!(windows_backend(0x8086), Backend::Dx12);
-        assert_eq!(windows_backend(0x10DE), Backend::Vulkan);
-        assert_eq!(windows_backend(0x1002), Backend::Vulkan);
-    }
-
     #[test]
     fn bundled_icon_decodes() {
         let icon = eframe::icon_data::from_png_bytes(super::ICON_PNG).unwrap();

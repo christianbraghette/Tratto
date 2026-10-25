@@ -441,7 +441,7 @@ impl InkApp {
                 1.0 - ease(t)
             }
         };
-        let layer = egui::LayerId::new(Order::Debug, Id::new("fullscreen_fade"));
+        let layer = egui::LayerId::new(Order::Debug, Id::unique("fullscreen_fade"));
         ctx.layer_painter(layer).rect_filled(ctx.viewport_rect(), 0.0, color.gamma_multiply(cover));
         ctx.request_repaint();
     }
@@ -808,9 +808,10 @@ impl InkApp {
             cmds.push(c);
             ui.close();
         };
-        let area = egui::Area::new(Id::new("canvas_context_menu")).order(Order::Foreground).fixed_pos(menu.pos).show(
-            ctx,
-            |ui| {
+        let area = egui::Area::new(Id::unique("canvas_context_menu"))
+            .order(Order::Foreground)
+            .fixed_pos(menu.pos)
+            .show(ctx, |ui| {
                 Frame::menu(ui.style()).show(ui, |ui| {
                     ui.set_min_width(220.0);
                     // Flat rows, like egui's own menus.
@@ -870,8 +871,7 @@ impl InkApp {
                         self.page_insert_entries(ui, page, &mut push);
                     }
                 });
-            },
-        );
+            });
 
         let rect = area.response.rect;
         let (pressed_outside, escape) = ctx.input(|i| {
@@ -1379,7 +1379,7 @@ impl InkApp {
         // The last window on top. Not egui's top layer itself: a dropdown's
         // popup stays at the top of its order after it closes.
         if let Some(top) = ctx.memory(|m| m.areas().top_layer_id(Order::Foreground))
-            && ESCAPE_WINDOWS.iter().chain([&LIBRARY_DIALOG]).any(|w| top.id == Id::new(w))
+            && ESCAPE_WINDOWS.iter().chain([&LIBRARY_DIALOG]).any(|w| top.id == Id::unique(w))
         {
             self.top_window = Some(top.id);
         }
@@ -1387,7 +1387,7 @@ impl InkApp {
             return;
         }
         // A library dialog closes itself.
-        if self.top_window == Some(Id::new(LIBRARY_DIALOG)) && self.lib_ui.dialog.is_some() {
+        if self.top_window == Some(Id::unique(LIBRARY_DIALOG)) && self.lib_ui.dialog.is_some() {
             return;
         }
         let is_open = |app: &Self, w: &str| match w {
@@ -1399,7 +1399,7 @@ impl InkApp {
             _ => false,
         };
         // The one on top if still open, else any.
-        let top = ESCAPE_WINDOWS.iter().find(|w| self.top_window == Some(Id::new(w)));
+        let top = ESCAPE_WINDOWS.iter().find(|w| self.top_window == Some(Id::unique(w)));
         let Some(&window) =
             top.filter(|w| is_open(self, w)).or_else(|| ESCAPE_WINDOWS.iter().find(|w| is_open(self, w)))
         else {

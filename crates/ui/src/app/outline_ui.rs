@@ -160,7 +160,8 @@ fn outline_row(
     }
     let indent = rect.left() + space::XS + e.depth as f32 * INDENT;
     let caret_rect = Rect::from_min_size(pos2(indent, rect.top()), vec2(CARET_W, rect.height()));
-    let caret_resp = caret.map(|_| ui.interact(caret_rect, ui.id().with(("outline_caret", index)), Sense::click()));
+    let caret_resp =
+        caret.map(|_| ui.interact(caret_rect, ui.scope_id().with(("outline_caret", index)), Sense::click()));
     let hovered = ui.rect_contains_pointer(rect);
     let p = ui.painter();
     if marked {

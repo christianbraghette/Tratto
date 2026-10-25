@@ -715,13 +715,26 @@ impl InkApp {
     /// Presents with vsync when the setting, the battery saver or
     /// TRATTO_VSYNC asks for it. The surface is reconfigured only when that
     /// changes (plugging in, a setting), never in the middle of writing.
+    ///
+    /// Without vsync, DirectX 12 presents in mailbox mode: wgpu's choice
+    /// there (immediate) tears, the edge of a page turns into steps while
+    /// zooming. Mailbox shows the newest whole frame at the next refresh,
+    /// without waiting for it. The window starts with wgpu's choice (the
+    /// backend is only known once it exists) and switches on the first frame.
     fn present_mode(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let vsync = self.settings.vsync || self.frame_limit.vsync_forced() || self.saving_power(ctx);
-        if vsync == self.frame_limit.vsync() || self.busy() {
+        let mode = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else if self.backend_in_use == Some(wgpu::Backend::Dx12) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        let Some(mut config) = frame.wgpu_surface_config() else { return };
+        if config.present_mode == mode || self.busy() {
             return;
         }
-        let Some(mut config) = frame.wgpu_surface_config() else { return };
-        config.present_mode = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
+        config.present_mode = mode;
         frame.set_wgpu_surface_config(config);
         self.frame_limit.set_vsync(vsync);
     }
@@ -1010,7 +1023,7 @@ fn is_pdf(path: &Path) -> bool {
 /// what is happening, and every click absorbed.
 fn loading_screen(ctx: &egui::Context, label: &str) {
     let screen = ctx.viewport_rect();
-    egui::Area::new(Id::new("loading_screen")).order(egui::Order::Tooltip).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::unique("loading_screen")).order(egui::Order::Tooltip).fixed_pos(screen.min).show(ctx, |ui| {
         ui.allocate_response(screen.size(), Sense::click_and_drag());
         ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
         let card = Rect::from_center_size(screen.center(), vec2(320.0, 128.0));

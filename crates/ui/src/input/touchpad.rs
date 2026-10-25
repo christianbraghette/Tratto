@@ -17,7 +17,7 @@
 //! Mouse wheel notches, zoom (Ctrl / Cmd + wheel) and everything without
 //! smooth scrolling pass through untouched.
 
-use eframe::egui::{Event, Modifiers, MouseWheelUnit, RawInput, TouchPhase, Vec2};
+use eframe::egui::{Event, Modifiers, MouseWheelSource, MouseWheelUnit, RawInput, TouchPhase, Vec2};
 
 use crate::kinetic::Kinetic;
 
@@ -90,6 +90,7 @@ impl Touchpad {
             unit: MouseWheelUnit::Point,
             delta,
             phase,
+            source: MouseWheelSource::Unknown,
             modifiers,
         };
         if moved != Vec2::ZERO {
@@ -132,6 +133,7 @@ mod tests {
             unit: MouseWheelUnit::Line,
             delta: vec2(0.0, delta),
             phase: TouchPhase::Move,
+            source: MouseWheelSource::Unknown,
             modifiers: Modifiers::NONE,
         };
         RawInput { time: Some(time), events: vec![event], ..Default::default() }
