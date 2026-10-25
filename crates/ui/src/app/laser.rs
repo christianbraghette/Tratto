@@ -7,8 +7,8 @@
 //! nothing and is never saved.
 //!
 //! With the laser on, dragging on the paper draws the trail instead of
-//! moving around; the wheel, the keys, a finger and a drag off the paper
-//! still do.
+//! moving around, a finger's too; the wheel, the keys and a drag off the
+//! paper still move around.
 
 use eframe::egui::{self, Color32, Mesh, Painter, Pos2, Response, Shape, Vec2};
 
@@ -53,7 +53,14 @@ impl InkApp {
     /// The laser is on and points: the pointer tool on a note, or a PDF in
     /// the reader, not a finger moving around.
     pub(super) fn lasering(&self) -> bool {
-        self.laser && (self.tool == Tool::Pointer || self.reading() || self.presenting.is_some()) && !self.finger_nav
+        self.laser_on() && !self.finger_nav
+    }
+
+    /// The laser is on where it points: the pointer tool on a note, the
+    /// reader or a presentation. Fingers point with it too. The pen's side
+    /// button turns it on with the pointer tool while held.
+    pub(super) fn laser_on(&self) -> bool {
+        self.pen_laser || self.laser && (self.tool == Tool::Pointer || self.reading() || self.presenting.is_some())
     }
 
     /// Adds where the pointer went this frame (`moves`) to the trail while

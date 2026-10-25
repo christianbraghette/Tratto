@@ -287,10 +287,11 @@ impl InkApp {
         self.hbar_visible = hbar;
         self.view_scale = scale;
 
-        // A finger pressed on a note moves around it, unless the pen was
-        // picked to write with fingers too.
+        // A finger pressed on a note moves around it, unless the pen, the
+        // highlighter or the eraser was picked to use with fingers too, or
+        // the select tool is in hand, or the laser is on.
         if idle && ui.input(|i| i.pointer.any_pressed()) {
-            self.finger_nav = self.finger(ui.ctx()) && !(self.tool == Tool::Pen && self.finger_ink);
+            self.finger_nav = self.finger(ui.ctx()) && !self.finger_uses_tool();
         }
         // A swipe in from a fullscreen edge (see `edge_swipe`) neither
         // writes nor pans.

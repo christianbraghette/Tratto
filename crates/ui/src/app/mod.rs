@@ -363,14 +363,19 @@ pub struct InkApp {
     carry_view: Option<NoteView>,
     /// Pages to turn on the next frame (the reader; negative = back).
     page_turn: i32,
-    /// A finger writes with the pen tool: it was picked by the user (from
-    /// the toolbar, a menu or a shortcut). Otherwise fingers move around.
-    finger_ink: bool,
+    /// The tool a finger uses, while it is the tool in hand: the pen,
+    /// highlighter or eraser picked by the user (from the toolbar, a menu
+    /// or a shortcut). The select tool always takes fingers (see
+    /// `finger_uses_tool`). Otherwise fingers move around.
+    finger_tool: Option<Tool>,
     /// The press being held is a finger's that moves around the note
-    /// (see `finger_ink`), until it is released.
+    /// (see `finger_tool`), until it is released.
     finger_nav: bool,
     /// The pointer tool shows a laser pointer (see `laser`), and its trail.
     laser: bool,
+    /// The pen's side button held with the pointer tool: the laser while
+    /// it is (see `laser`).
+    pen_laser: bool,
     laser_trail: Vec<laser::LaserPoint>,
     /// The laser was pressed on the canvas last frame.
     laser_down: bool,
@@ -548,9 +553,10 @@ impl InkApp {
             reader: None,
             carry_view: None,
             page_turn: 0,
-            finger_ink: false,
+            finger_tool: None,
             finger_nav: false,
             laser: false,
+            pen_laser: false,
             laser_trail: Vec::new(),
             laser_down: false,
             screen: Screen::Library,
@@ -727,7 +733,7 @@ impl InkApp {
     }
 
     /// The canvas moves around instead of writing: the reader, a note with
-    /// the pointer tool, or a finger on a note (see `finger_ink`). Drag to
+    /// the pointer tool, or a finger on a note (see `finger_tool`). Drag to
     /// scroll, tap to follow a PDF link.
     fn navigating(&self) -> bool {
         self.reading() || self.tool == Tool::Pointer || self.finger_nav || self.presenting.is_some()
@@ -741,10 +747,18 @@ impl InkApp {
         touch && !self.pen_input.down && !self.pen_input.windows_touch
     }
 
-    /// The user picks a tool: fingers write only with the pen picked.
+    /// The user picks a tool: fingers use it if it is one they take.
     pub(super) fn pick_tool(&mut self, tool: Tool) {
         self.tool = tool;
-        self.finger_ink = tool == Tool::Pen;
+        self.finger_tool = matches!(tool, Tool::Pen | Tool::Highlighter | Tool::Eraser).then_some(tool);
+    }
+
+    /// A finger uses the tool in hand, not moves around: the user picked
+    /// it, or it is the select tool (also when the app switched to it, say
+    /// after a paste, so the pasted item moves under the finger), or the
+    /// laser is on (see `laser_on`).
+    pub(super) fn finger_uses_tool(&self) -> bool {
+        self.tool == Tool::Select || self.finger_tool == Some(self.tool) || self.laser_on()
     }
 
     /// The zoom the view follows: presentation mode's while presenting,
@@ -779,14 +793,20 @@ impl InkApp {
         // Pen side button = eraser while held. Wayland pens report it through
         // `pen_input.barrel`, Windows pens through `pen_input.windows`; on X11 it can arrive
         // as the middle mouse button. (The right button opens the context
-        // menu.) Never switch in the middle of a stroke.
+        // menu.) Never switch in the middle of a stroke. With the pointer
+        // tool the side button is the laser while held instead.
         if !self.busy() && self.edit.is_none() && !self.reading() {
             let button_held = ctx.input(|i| i.pointer.middle_down());
             let win = self.pen_input.windows.as_ref().map(|p| p.buttons()).unwrap_or_default();
-            // The eraser end always erases; the side button only if enabled.
             let side = win.barrel || self.pen_input.barrel || button_held;
-            let eraser = self.pen_input.eraser || win.eraser_end || (self.settings.side_button_eraser && side);
+            let eraser_end = self.pen_input.eraser || win.eraser_end;
+            let pointer = self.tool == Tool::Pointer && self.saved_tool.is_none();
+            self.pen_laser = pointer && side && !eraser_end;
+            // The eraser end always erases; the side button only if enabled.
+            let eraser = eraser_end || (!pointer && self.settings.side_button_eraser && side);
             self.apply_pen_eraser(eraser);
+        } else if self.reading() || self.edit.is_some() {
+            self.pen_laser = false;
         }
         // Leaving the text tool ends editing.
         if self.tool != Tool::Text && self.edit.is_some() {
