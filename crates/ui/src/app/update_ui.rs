@@ -96,8 +96,11 @@ impl InkApp {
             UpdateState::UpToDate => hint(ui, "Tratto is up to date."),
             UpdateState::Available(release) => {
                 hint(ui, &format!("Tratto {} is available.", release.version));
+                if let Some(why) = &release.blocked {
+                    hint(ui, why);
+                }
                 ui.horizontal(|ui| {
-                    if release.installable
+                    if release.installable()
                         && ui.add(theme::primary_button(format!("{}  Install", icon::DOWNLOAD_SIMPLE))).clicked()
                     {
                         install = true;

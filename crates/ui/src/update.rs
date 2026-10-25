@@ -67,9 +67,15 @@ pub struct Release {
     pub page: String,
     /// The archive for this platform, if the release has one.
     archive: Option<Asset>,
-    /// The app can install it itself: there is an archive for this
-    /// installation and the user may write to it.
-    pub installable: bool,
+    /// Why the app cannot install it itself (`None`: it can, there is an
+    /// archive for this installation and the user may write to it).
+    pub blocked: Option<String>,
+}
+
+impl Release {
+    pub fn installable(&self) -> bool {
+        self.blocked.is_none()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -137,7 +143,7 @@ impl Updater {
         self.run(ctx, move |send| match latest_release(channel) {
             Err(e) => send(State::Failed(e)),
             Ok(None) => send(State::UpToDate),
-            Ok(Some(release)) if install && release.installable => download_and_install(release, send),
+            Ok(Some(release)) if install && release.installable() => download_and_install(release, send),
             Ok(Some(release)) => send(State::Available(release)),
         });
     }
@@ -145,7 +151,7 @@ impl Updater {
     /// Installs the release found by a check that only notified.
     pub fn install(&mut self, ctx: &egui::Context) {
         let State::Available(release) = &self.state else { return };
-        if !release.installable {
+        if !release.installable() {
             return;
         }
         let release = release.clone();
@@ -184,7 +190,7 @@ impl Updater {
 
 fn download_and_install(release: Release, send: &dyn Fn(State)) {
     send(State::Downloading(release.clone()));
-    let (Some(asset), Some(installed)) = (&release.archive, Install::find()) else {
+    let (Some(asset), Ok(installed)) = (&release.archive, Install::find()) else {
         return send(State::Available(release));
     };
     match download(asset).and_then(|bytes| installed.install(&bytes)) {
@@ -226,8 +232,12 @@ fn latest_release(channel: UpdateChannel) -> Result<Option<Release>, String> {
     };
     let name = Install::locate().map_or_else(|| format!("tratto-{TARGET}.zip"), |i| i.asset_name());
     let archive = gh.assets.into_iter().find(|a| a.name == name);
-    let installable = archive.is_some() && Install::find().is_some();
-    Ok(Some(Release { version, page: gh.html_url, archive, installable }))
+    let blocked = match (&archive, Install::find()) {
+        (None, _) => Some(format!("This release has no {name} to update from.")),
+        (Some(_), Err(why)) => Some(why),
+        (Some(_), Ok(_)) => None,
+    };
+    Ok(Some(Release { version, page: gh.html_url, archive, blocked }))
 }
 
 /// `a` is a later version than `b` ("1.10.0" > "1.9.2"). Pre-releases come
@@ -303,21 +313,27 @@ enum Install {
 }
 
 impl Install {
-    /// The installation, if the app may update it itself.
-    fn find() -> Option<Self> {
+    /// The installation, if the app may update it itself; else why not.
+    fn find() -> Result<Self, String> {
         if cfg!(debug_assertions) {
-            return None;
+            return Err("This is a development build: it does not update itself.".to_owned());
         }
-        let found = Self::locate()?;
+        let unknown = || "Tratto cannot tell where it is installed.".to_owned();
+        let found = Self::locate().ok_or_else(unknown)?;
         let dir = match &found {
             Install::Folder(dir) => dir.clone(),
-            Install::Bundle(path) | Install::AppImage(path) => path.parent()?.to_path_buf(),
+            Install::Bundle(path) | Install::AppImage(path) => path.parent().ok_or_else(unknown)?.to_path_buf(),
         };
         // Writable by this user: not installed by a package manager.
         let probe = dir.join(".tratto-update-probe");
-        std::fs::write(&probe, b"").ok()?;
+        if std::fs::write(&probe, b"").is_err() {
+            return Err(format!(
+                "Tratto cannot write to {}. Move it to a folder of yours, or download the update.",
+                dir.display()
+            ));
+        }
         let _ = std::fs::remove_file(&probe);
-        Some(found)
+        Ok(found)
     }
 
     /// The installation, writable or not.

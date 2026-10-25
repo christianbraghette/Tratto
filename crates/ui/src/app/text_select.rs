@@ -243,7 +243,7 @@ impl InkApp {
     pub(super) fn text_input(&mut self, ctx: &egui::Context, resp: &egui::Response, view: &View, now: f64) -> bool {
         // The pen selects as the mouse does.
         let mouse = !self.finger(ctx);
-        let pen = self.pen_input.down || self.pen_input.windows_touch;
+        let pen = self.pen_input.down || self.pen_input.clicked || self.pen_input.windows_touch;
         let (pressed, down, pointer) =
             ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos()));
         let press = ctx.input(|i| i.pointer.press_origin());

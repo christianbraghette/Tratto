@@ -64,6 +64,10 @@ impl InkApp {
         let zoom = ctx.zoom_factor();
         // As of the last frame (the raw input has no modifier state).
         let modifiers = ctx.input(|i| i.modifiers);
+        // A click of the mouse (winit's) is not the pen's.
+        if raw_input.events.iter().any(|e| matches!(e, Event::PointerButton { .. })) {
+            self.pen_input.clicked = false;
+        }
 
         for ev in events {
             match ev {
@@ -74,6 +78,7 @@ impl InkApp {
                     raw_input.events.push(Event::PointerMoved(pos));
                     if down != self.pen_input.down {
                         self.pen_input.down = down;
+                        self.pen_input.clicked = true;
                         raw_input.events.push(Event::PointerButton {
                             pos,
                             button: PointerButton::Primary,

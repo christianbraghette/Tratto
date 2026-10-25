@@ -226,6 +226,9 @@ struct PenInput {
     /// The sources above were started (on the first frame).
     started: bool,
     down: bool,
+    /// Wayland: the pen made the last press or release (it is up already on
+    /// the frame of a release, a double click's).
+    clicked: bool,
     pos: Pos2,
     /// Wayland: where the pen hovers (in range, not touching).
     hover: Option<Pos2>,
