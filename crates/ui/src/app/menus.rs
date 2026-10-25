@@ -119,13 +119,12 @@ pub(super) enum Command {
     About,
 }
 
-/// Going in or out of full screen (or presenting) through a fade: the
-/// window fades to `color`, switches while covered, then fades back in. The
-/// switch (the window changing size) is never seen.
+/// Presenting, in and out, through a fade: the window fades to black,
+/// switches while covered, then fades back in. The switch (the window
+/// changing size) is never seen.
 pub(super) struct Fade {
     /// The switch, run once the window is covered.
     command: Command,
-    color: Color32,
     phase: FadePhase,
 }
 
@@ -147,6 +146,26 @@ const FADE_IN: f64 = 0.18;
 const FADE_SETTLE_FRAMES: u64 = 3;
 /// A switch that does not happen in this long (s) is faded in anyway.
 const FADE_TIMEOUT: f64 = 1.5;
+
+/// Going in or out of full screen with the window growing to the screen
+/// or shrinking back to its place. The window itself switches at once
+/// (coming out, once shrunk): what grows and shrinks is everything drawn
+/// in it, scaled, over black.
+#[derive(Clone, Copy)]
+pub(super) enum Grow {
+    /// Switched in: drawn at the window's old place until it is full
+    /// screen, since (s).
+    Entering(f64),
+    /// Growing to the screen, since (s).
+    Growing(f64),
+    /// Shrinking to the window's place, since (s); switches out when done.
+    Shrinking(f64),
+    /// Switched out: drawn at the window's place until it is there, since (s).
+    Leaving(f64),
+}
+
+/// Time (s) the window takes to grow or shrink.
+const GROW_TIME: f64 = 0.25;
 
 /// Where the canvas context menu was opened and what is under it.
 pub(super) struct ContextMenu {
@@ -380,19 +399,102 @@ impl InkApp {
             self.run_command(ctx, cmd);
         }
         self.fade_step(ctx);
+        self.grow_step(ctx);
     }
 
-    /// Starts going in or out of full screen (or presenting, `cmd`) through
-    /// a fade, unless one is running. Returns whether `cmd` waits for it.
+    /// Going in or out of full screen by itself (not presenting): starts
+    /// the window growing, or shrinking. Returns whether the switch waits
+    /// for it (coming out, or with one already running).
+    fn grow_first(&mut self, ctx: &egui::Context) -> bool {
+        let (fullscreen, inner, now) =
+            ctx.input(|i| (i.viewport().fullscreen.unwrap_or(false), i.viewport().inner_rect, i.time));
+        if !fullscreen {
+            self.chrome.windowed = inner;
+        }
+        if self.chrome.fade_running || self.chrome.windowed.is_none() {
+            return false;
+        }
+        if self.chrome.grow.is_some() {
+            return true;
+        }
+        ctx.request_repaint();
+        if fullscreen {
+            self.chrome.grow = Some(Grow::Shrinking(now));
+            true
+        } else {
+            self.chrome.grow = Some(Grow::Entering(now));
+            false
+        }
+    }
+
+    /// Advances the grow and scales everything drawn this frame to it.
+    fn grow_step(&mut self, ctx: &egui::Context) {
+        let Some(grow) = self.chrome.grow else { return };
+        let (now, fullscreen, inner) =
+            ctx.input(|i| (i.time, i.viewport().fullscreen.unwrap_or(false), i.viewport().inner_rect));
+        let screen = ctx.viewport_rect();
+        // The window's place out of full screen, in the window as it is now,
+        // and everything fitted into it against its top right corner, so it
+        // grows from the right border (the whole window when it is there).
+        let place = match (self.chrome.windowed, inner) {
+            (Some(w), Some(inner)) => w.translate(-inner.min.to_vec2()),
+            _ => screen,
+        };
+        let s = (place.width() / screen.width()).min(place.height() / screen.height());
+        let small = Align2::RIGHT_TOP.align_size_within_rect(screen.size() * s, place);
+        let there = (place.size() - screen.size()).length() < 1.0;
+        let mut done = false;
+        let at = match grow {
+            Grow::Entering(since) => {
+                if fullscreen && !there {
+                    self.chrome.grow = Some(Grow::Growing(now));
+                }
+                done = now - since > FADE_TIMEOUT;
+                small
+            }
+            Grow::Growing(since) => {
+                let t = ((now - since) / GROW_TIME) as f32;
+                done = t >= 1.0;
+                small.lerp_towards(&screen, egui::emath::easing::cubic_out(t.min(1.0)))
+            }
+            Grow::Shrinking(since) => {
+                let t = ((now - since) / GROW_TIME) as f32;
+                if t >= 1.0 {
+                    // Shrunk: the switch, now.
+                    self.chrome.fade_running = true;
+                    self.run_command(ctx, Command::Fullscreen);
+                    self.chrome.fade_running = false;
+                    self.chrome.grow = Some(Grow::Leaving(now));
+                }
+                screen.lerp_towards(&small, egui::emath::easing::cubic_in_out(t.min(1.0)))
+            }
+            Grow::Leaving(since) => {
+                done = !fullscreen && there || now - since > FADE_TIMEOUT;
+                small
+            }
+        };
+        let transform = if done {
+            self.chrome.grow = None;
+            egui::emath::TSTransform::IDENTITY
+        } else {
+            ctx.request_repaint();
+            let s = at.width() / screen.width();
+            egui::emath::TSTransform::new(at.min.to_vec2() - screen.min.to_vec2() * s, s)
+        };
+        for layer in ctx.memory(|m| m.layer_ids().collect::<Vec<_>>()) {
+            ctx.set_transform_layer(layer, transform);
+        }
+    }
+
+    /// Starts going in or out of presenting (`cmd`) through a fade, unless
+    /// one is running. Returns whether `cmd` waits for it.
     fn fade_first(&mut self, ctx: &egui::Context, cmd: Command) -> bool {
         if self.chrome.fade_running {
             return false;
         }
         if self.chrome.fade.is_none() {
-            // Presenting fades through black, full screen through the desk.
-            let color = if cmd == Command::Present { Color32::BLACK } else { color::desk() };
             let now = ctx.input(|i| i.time);
-            self.chrome.fade = Some(Fade { command: cmd, color, phase: FadePhase::Out(now) });
+            self.chrome.fade = Some(Fade { command: cmd, phase: FadePhase::Out(now) });
             ctx.request_repaint();
         }
         true
@@ -404,7 +506,7 @@ impl InkApp {
         // Not inside `input`: the context is locked there.
         let frame = ctx.cumulative_frame_nr();
         let (now, fullscreen) = ctx.input(|i| (i.time, i.viewport().fullscreen.unwrap_or(false)));
-        let (color, phase, command) = (fade.color, fade.phase, fade.command);
+        let (phase, command) = (fade.phase, fade.command);
         let ease = |t: f64| egui::emath::easing::cubic_in_out(t.clamp(0.0, 1.0) as f32);
         let cover = match phase {
             FadePhase::Out(since) => {
@@ -441,8 +543,8 @@ impl InkApp {
                 1.0 - ease(t)
             }
         };
-        let layer = egui::LayerId::new(Order::Debug, Id::unique("fullscreen_fade"));
-        ctx.layer_painter(layer).rect_filled(ctx.viewport_rect(), 0.0, color.gamma_multiply(cover));
+        let layer = egui::LayerId::new(Order::Debug, Id::unique("present_fade"));
+        ctx.layer_painter(layer).rect_filled(ctx.viewport_rect(), 0.0, Color32::BLACK.gamma_multiply(cover));
         ctx.request_repaint();
     }
 
@@ -1000,8 +1102,12 @@ impl InkApp {
 
     pub(super) fn run_command(&mut self, ctx: &egui::Context, cmd: Command) {
         let editor = self.screen == Screen::Editor;
-        // In and out of full screen, and presenting, through a fade.
-        if matches!(cmd, Command::Fullscreen | Command::Present) && self.fade_first(ctx, cmd) {
+        // Presenting, in and out, through a fade.
+        if cmd == Command::Present && self.fade_first(ctx, cmd) {
+            return;
+        }
+        // Full screen by itself: the window grows to it and shrinks back.
+        if cmd == Command::Fullscreen && self.grow_first(ctx) {
             return;
         }
         match cmd {

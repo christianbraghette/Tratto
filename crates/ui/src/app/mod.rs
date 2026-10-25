@@ -257,10 +257,15 @@ struct WindowChrome {
     /// Going in or out of full screen with the window's animations off:
     /// the state to reach (full screen, maximized) and since when (s).
     switching: Option<(bool, bool, f64)>,
-    /// Going in or out of full screen (or presenting) through a fade.
+    /// Going in or out of presenting through a fade.
     fade: Option<menus::Fade>,
-    /// The fade's command is being run now, at its middle (not faded again).
+    /// The fade's or the grow's command is being run now, at its middle (not
+    /// faded or grown again).
     fade_running: bool,
+    /// Going in or out of full screen with the window growing and shrinking.
+    grow: Option<menus::Grow>,
+    /// Where the window was (screen points) when last out of full screen.
+    windowed: Option<egui::Rect>,
     /// Window title last sent to the OS.
     os_title: String,
     /// Text of the note title field in the title bar, and whether it has focus.
@@ -1163,6 +1168,10 @@ impl eframe::App for InkApp {
     /// The window background, visible only through gaps between panels:
     /// the bars' colour, so a gap can never show as a dark line.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Around the window growing to full screen or shrinking back.
+        if self.chrome.grow.is_some() {
+            return egui::Color32::BLACK.to_normalized_gamma_f32();
+        }
         color::chrome().to_normalized_gamma_f32()
     }
 
