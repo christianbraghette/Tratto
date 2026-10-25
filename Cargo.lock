@@ -3896,6 +3896,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tratto-web"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "tratto-core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "tree_magic_mini"
 version = "3.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,28 @@
+[package]
+name = "tratto-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tratto web reader: .ink notes and PDFs in the browser (WebAssembly)"
+
+[lib]
+# `cdylib`: the .wasm module; `rlib`: the tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tratto-core.workspace = true
+# Versions already in the lock file (eframe and pdfium-render use them).
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+    "CanvasRenderingContext2d",
+    "CanvasWindingRule",
+    "Document",
+    "HtmlCanvasElement",
+    "ImageData",
+    "Path2d",
+    "Window",
+] }

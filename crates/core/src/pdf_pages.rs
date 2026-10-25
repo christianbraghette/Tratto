@@ -15,16 +15,21 @@
 //! get the results back on a channel (`render`) or wait for them
 //! (`page_sizes`, `underlay`). Rasterising never blocks the UI thread.
 //!
+//! In WebAssembly there is no thread to give it: PDFium is the PDFium WASM
+//! module the page bound with `initialize_pdfium_render` (see the `web`
+//! crate), and each request is done on the caller's thread before the call
+//! returns, its answer already on the channel.
+//!
 //! `underlay` puts PDF pages under the pages of an exported PDF as vector
 //! form XObjects (text stays text), for exporting notes written on a PDF.
 
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::{self, AssertUnwindSafe};
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, OnceLock};
-use std::thread;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Sender};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{path::PathBuf, sync::OnceLock, sync::mpsc::Receiver, thread};
 
 use pdfium_render::prelude::*;
 
@@ -117,7 +122,7 @@ pub fn render(
 ) {
     let width = if region.is_some() { width.max(1) } else { width.clamp(1, MAX_RENDER_PX) };
     let job = Job::Render { file: file.clone(), page, width, region, reply, wake };
-    if let Err(mpsc::SendError(Job::Render { file, page, width, region, reply, wake })) = worker().send(job) {
+    if let Err(mpsc::SendError(Job::Render { file, page, width, region, reply, wake })) = send(job) {
         let err = PdfError::Unavailable("the PDF worker stopped".into());
         let _ = reply.send(RenderedPage { key: file.key, page, requested_width: width, region, image: Err(err) });
         wake();
@@ -138,9 +143,7 @@ pub struct Underlay {
 /// file) and returns the new file. Blocks until done.
 pub fn underlay(pdf: Vec<u8>, pages: Vec<Underlay>) -> Result<Vec<u8>, PdfError> {
     let (reply, answer) = mpsc::channel();
-    worker()
-        .send(Job::Underlay { pdf, pages, reply })
-        .map_err(|_| PdfError::Unavailable("the PDF worker stopped".into()))?;
+    send(Job::Underlay { pdf, pages, reply }).map_err(|_| PdfError::Unavailable("the PDF worker stopped".into()))?;
     answer.recv().map_err(|_| PdfError::Unavailable("the PDF worker stopped".into()))?
 }
 
@@ -217,7 +220,7 @@ pub struct PageLinks {
 /// called after sending it.
 pub fn outline(file: &Arc<PdfFile>, reply: Sender<Outline>, wake: Arc<dyn Fn() + Send + Sync>) {
     let job = Job::Outline { file: file.clone(), reply, wake };
-    if let Err(mpsc::SendError(job)) = worker().send(job) {
+    if let Err(mpsc::SendError(job)) = send(job) {
         fail(job, PdfError::Unavailable("the PDF worker stopped".into()));
     }
 }
@@ -227,7 +230,7 @@ pub fn outline(file: &Arc<PdfFile>, reply: Sender<Outline>, wake: Arc<dyn Fn() +
 /// `reply`; `wake` is called after sending it.
 pub fn links(file: &Arc<PdfFile>, page: u32, reply: Sender<PageLinks>, wake: Arc<dyn Fn() + Send + Sync>) {
     let job = Job::Links { file: file.clone(), page, reply, wake };
-    if let Err(mpsc::SendError(job)) = worker().send(job) {
+    if let Err(mpsc::SendError(job)) = send(job) {
         fail(job, PdfError::Unavailable("the PDF worker stopped".into()));
     }
 }
@@ -236,7 +239,7 @@ pub fn links(file: &Arc<PdfFile>, page: u32, reply: Sender<PageLinks>, wake: Arc
 /// The answer arrives on `reply`; `wake` is called after sending it.
 pub fn text(file: &Arc<PdfFile>, page: u32, reply: Sender<PageText>, wake: Arc<dyn Fn() + Send + Sync>) {
     let job = Job::Text { file: file.clone(), page, reply, wake };
-    if let Err(mpsc::SendError(job)) = worker().send(job) {
+    if let Err(mpsc::SendError(job)) = send(job) {
         fail(job, PdfError::Unavailable("the PDF worker stopped".into()));
     }
 }
@@ -245,8 +248,7 @@ pub fn text(file: &Arc<PdfFile>, page: u32, reply: Sender<PageText>, wake: Arc<d
 /// Blocks until the worker answers (opening a PDF is quick).
 pub fn page_sizes(file: &Arc<PdfFile>) -> Result<Vec<[f32; 2]>, PdfError> {
     let (reply, answer) = mpsc::channel();
-    worker()
-        .send(Job::Sizes { file: file.clone(), reply })
+    send(Job::Sizes { file: file.clone(), reply })
         .map_err(|_| PdfError::Unavailable("the PDF worker stopped".into()))?;
     answer.recv().map_err(|_| PdfError::Unavailable("the PDF worker stopped".into()))?
 }
@@ -320,6 +322,7 @@ impl Job {
     }
 
     /// The same render asked for again (the older one need not be done).
+    #[cfg(not(target_arch = "wasm32"))]
     fn same_render(&self, other: &Job) -> bool {
         match (self, other) {
             (
@@ -331,17 +334,46 @@ impl Job {
     }
 }
 
-fn worker() -> &'static Sender<Job> {
+/// Hands `job` to the worker.
+#[cfg(not(target_arch = "wasm32"))]
+fn send(job: Job) -> Result<(), mpsc::SendError<Job>> {
     static WORKER: OnceLock<Sender<Job>> = OnceLock::new();
-    WORKER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel();
-        let _ = thread::Builder::new().name("pdfium".into()).spawn(move || run(rx));
-        tx
-    })
+    WORKER
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel();
+            let _ = thread::Builder::new().name("pdfium".into()).spawn(move || run(rx));
+            tx
+        })
+        .send(job)
+}
+
+/// Does `job` now, on this thread (WebAssembly has no other).
+#[cfg(target_arch = "wasm32")]
+fn send(job: Job) -> Result<(), mpsc::SendError<Job>> {
+    use std::cell::RefCell;
+    thread_local! {
+        static OPEN: RefCell<Option<Open<'static>>> = const { RefCell::new(None) };
+    }
+    OPEN.with_borrow_mut(|open| {
+        // Not bound yet: tried again on every request, the page may bind the
+        // PDFium module later than its first request.
+        if open.is_none() {
+            match bind() {
+                Ok(pdfium) => {
+                    let pdfium: &'static Pdfium = Box::leak(Box::new(pdfium));
+                    *open = Some(Open { pdfium, documents: Vec::new(), pages: Vec::new() });
+                }
+                Err(e) => return fail(job, e),
+            }
+        }
+        serve(open.as_mut().expect("bound above"), job);
+    });
+    Ok(())
 }
 
 /// Where PDFium is looked for first: the executable's folder, or in a
 /// macOS app bundle its `Contents/Frameworks`.
+#[cfg(not(target_arch = "wasm32"))]
 fn library_next_to_exe() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let next_to = Pdfium::pdfium_platform_library_name_at_path(&dir);
@@ -349,6 +381,7 @@ fn library_next_to_exe() -> Option<PathBuf> {
     Some(if cfg!(target_os = "macos") && !next_to.exists() && frameworks.exists() { frameworks } else { next_to })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn bind() -> Result<Pdfium, PdfError> {
     let chosen = std::env::var_os("TRATTO_PDFIUM").map(PathBuf::from).or_else(library_next_to_exe);
     let bindings = match chosen.filter(|p| p.exists()) {
@@ -356,6 +389,12 @@ fn bind() -> Result<Pdfium, PdfError> {
         None => Pdfium::bind_to_system_library(),
     };
     bindings.map(Pdfium::new).map_err(|e| PdfError::Unavailable(e.to_string()))
+}
+
+/// The PDFium WASM module bound with `initialize_pdfium_render`.
+#[cfg(target_arch = "wasm32")]
+fn bind() -> Result<Pdfium, PdfError> {
+    Pdfium::bind_to_system_library().map(Pdfium::new).map_err(|e| PdfError::Unavailable(e.to_string()))
 }
 
 /// A document the worker keeps open, read from the bytes of its file (not a
@@ -423,6 +462,7 @@ impl Drop for Open<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run(jobs: Receiver<Job>) {
     let pdfium = bind();
     let mut open = pdfium.as_ref().ok().map(|pdfium| Open { pdfium, documents: Vec::new(), pages: Vec::new() });
@@ -434,16 +474,7 @@ fn run(jobs: Receiver<Job>) {
         loop {
             if !pending.iter().any(|later| job.same_render(later)) {
                 match open.as_mut() {
-                    Some(open) => {
-                        // A bug (or a PDF that trips one) fails its request
-                        // only: the worker, and every other PDF, go on.
-                        let answer = job.answerable();
-                        if panic::catch_unwind(AssertUnwindSafe(|| handle(open, job))).is_err() {
-                            open.pages.clear();
-                            open.documents.clear();
-                            fail(answer, PdfError::Unreadable("PDFium failed on this PDF".into()));
-                        }
-                    }
+                    Some(open) => serve(open, job),
                     None => fail(job, pdfium.as_ref().err().cloned().expect("not bound")),
                 }
             }
@@ -452,6 +483,17 @@ fn run(jobs: Receiver<Job>) {
             }
             job = pending.remove(0);
         }
+    }
+}
+
+/// Does `job`. A bug (or a PDF that trips one) fails its request only: the
+/// worker, and every other PDF, go on.
+fn serve(open: &mut Open, job: Job) {
+    let answer = job.answerable();
+    if panic::catch_unwind(AssertUnwindSafe(|| handle(open, job))).is_err() {
+        open.pages.clear();
+        open.documents.clear();
+        fail(answer, PdfError::Unreadable("PDFium failed on this PDF".into()));
     }
 }
 

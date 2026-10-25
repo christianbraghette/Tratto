@@ -529,22 +529,31 @@ fn replay(bytes: &[u8], mut at: usize, doc: &mut Document, version: u32) -> Resu
 
 /// Reads a note; with `writer`, also the layout and document to append to.
 fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Written>), StorageError> {
-    let bytes = fs::read(path)?;
-    let (version, slot_size) = parse_header(&bytes)?;
-    let slots = part(&bytes, HEADER_LEN, 2 * slot_size as u64)?;
+    parse_note(&fs::read(path)?, writer, |doc| meta_from_file(path, doc))
+}
+
+/// Reads the note file `bytes`. `recover` makes the meta when both slots
+/// are torn.
+fn parse_note(
+    bytes: &[u8],
+    writer: bool,
+    recover: impl FnOnce(&Document) -> NoteMeta,
+) -> Result<(NoteMeta, Document, Option<Written>), StorageError> {
+    let (version, slot_size) = parse_header(bytes)?;
+    let slots = part(bytes, HEADER_LEN, 2 * slot_size as u64)?;
     let newest = [decode_slot(&slots[..slot_size]), decode_slot(&slots[slot_size..])]
         .into_iter()
         .flatten()
         .max_by_key(|s| s.0)
         .map(|s| s.1);
     let pdf_at = HEADER_LEN + 2 * slot_size;
-    let pdf = sized_part(&bytes, pdf_at)?;
+    let pdf = sized_part(bytes, pdf_at)?;
     let mut at = pdf_at + 8 + pdf.len();
-    let snapshot = sized_part(&bytes, at)?;
+    let snapshot = sized_part(bytes, at)?;
     at += 8 + snapshot.len();
     // Checked before it is decoded: damage that still decodes is refused too.
     if version == FORMAT_VERSION {
-        let crc = u32::from_le_bytes(part(&bytes, at, 4)?.try_into().expect("4 bytes"));
+        let crc = u32::from_le_bytes(part(bytes, at, 4)?.try_into().expect("4 bytes"));
         if crc32(&[&bytes[pdf_at..at]]) != crc {
             return Err(StorageError::Corrupt);
         }
@@ -561,9 +570,9 @@ fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Wr
         }
         p.file = Some(PdfFile::new(pdf.to_vec()));
     }
-    let end = replay(&bytes, at, &mut doc, version)?;
+    let end = replay(bytes, at, &mut doc, version)?;
     // Both slots torn: rebuilt from the document, written at the next save.
-    let meta = newest.unwrap_or_else(|| meta_from_file(path, &doc));
+    let meta = newest.unwrap_or_else(|| recover(&doc));
     // Nothing is appended to a file of the old format: the first save
     // writes it whole, in the new one.
     let written = (writer && version == FORMAT_VERSION).then(|| Written {
@@ -584,6 +593,21 @@ pub fn open_note(path: &Path) -> Result<(NoteMeta, Document, NoteWriter), Storag
 
 pub fn load_note(path: &Path) -> Result<(NoteMeta, Document), StorageError> {
     read_note(path, false).map(|(meta, doc, _)| (meta, doc))
+}
+
+/// Reads a note from the bytes of its file (no file system: the web reader).
+/// A note whose slots are both torn gets its meta from the document, with
+/// unknown dates (0).
+pub fn load_note_bytes(bytes: &[u8]) -> Result<(NoteMeta, Document), StorageError> {
+    let recover = |doc: &Document| NoteMeta {
+        title: "Recovered note".to_owned(),
+        auto_title: false,
+        created: 0,
+        modified: 0,
+        pages: doc.page_count,
+        preview: make_preview(doc),
+    };
+    parse_note(bytes, false, recover).map(|(meta, doc, _)| (meta, doc))
 }
 
 /// Reads only the meta (a few KB), not the document.
@@ -677,6 +701,9 @@ mod tests {
         let (m2, d2) = load_note(&path).unwrap();
         assert_eq!(m2.title, "Renamed");
         assert_eq!(d2.texts.len(), 1);
+        // The web reader has the file's bytes, not its path.
+        let (m3, d3) = load_note_bytes(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!((m3.title.as_str(), d3.strokes[0].points.len()), ("Renamed", d2.strokes[0].points.len()));
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("ink.bak"));
     }

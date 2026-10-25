@@ -435,12 +435,14 @@ crates/
 │           model, history (undo/redo), stroke_builder, stroke_path,
 │           storage + journal (.ink files), library (notebooks/notes),
 │           pdf_export, pdf_pages (PDFium)
-└── ui/     tratto-ui: the `tratto` executable (egui + wgpu)
-            app (editor, library, menus), chrome (title bar), theme (design
-            system), view, render, stroke_mesh, stroke_gpu (strokes kept on
-            the GPU), pdf_view, toolbar, kinetic (scrolling), scrollbar,
-            settings, saver (background saves), update, input (Wayland
-            tablet / Windows pen)
+├── ui/     tratto-ui: the `tratto` executable (egui + wgpu)
+│           app (editor, library, menus), chrome (title bar), theme (design
+│           system), view, render, stroke_mesh, stroke_gpu (strokes kept on
+│           the GPU), pdf_view, toolbar, kinetic (scrolling), scrollbar,
+│           settings, saver (background saves), update, input (Wayland
+│           tablet / Windows pen)
+└── web/    tratto-web: a web reader for .ink notes and PDFs (WebAssembly),
+            the core compiled for the browser, painting on a canvas
 ```
 
 `tratto-core` depends only on `emath` (the geometry types egui is built on),
@@ -449,6 +451,8 @@ without a window or GPU. The UI crate depends on the core, never the other way
 around. PDFium itself is loaded at runtime: see
 [crates/ui/pdfium/README.md](crates/ui/pdfium/README.md) to fetch it for
 development builds.
+The web reader is built with `scripts/build-web.sh`, see
+[crates/web/README.md](crates/web/README.md).
 
 ## Contributing
 

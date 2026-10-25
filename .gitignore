@@ -4,7 +4,9 @@ target/
 *.ink
 # PDFium binaries (fetched, see crates/ui/pdfium/README.md)
 crates/ui/pdfium/*/
-# Release archives (scripts/package.sh)
+# PDFium WASM build (fetched by scripts/build-web.sh)
+crates/web/pdfium/
+# Release archives (scripts/package.sh), the web reader (scripts/build-web.sh)
 dist/
 
 .VSCodeCounter
