@@ -886,7 +886,7 @@ impl InkApp {
             Act::ForgetPdf(path) => self.settings.forget_pdf(&path),
             Act::SetRoot(text) => {
                 let p = PathBuf::from(text.trim());
-                match std::fs::create_dir_all(&p) {
+                match tratto_core::fs::create_dir_all(&p) {
                     Ok(()) => {
                         self.settings.library_root = p.to_string_lossy().into_owned();
                         self.lib_ui.notebook = None;

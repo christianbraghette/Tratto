@@ -42,7 +42,7 @@ pub(super) struct LibraryScan {
 fn cannot_open(path: &Path, e: &storage::StorageError) -> String {
     let bak = path.with_extension("ink.bak");
     match e {
-        storage::StorageError::Corrupt if bak.is_file() => {
+        storage::StorageError::Corrupt if tratto_core::fs::is_file(&bak) => {
             let name = bak.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             format!("Cannot open note: {e}. Its last backup is next to it: rename \u{201c}{name}\u{201d} to .ink")
         }
@@ -79,7 +79,7 @@ impl InkApp {
             return;
         }
         // Gone meanwhile (deleted, renamed elsewhere): no longer shown.
-        self.external_notebooks.retain(|p| p.is_dir());
+        self.external_notebooks.retain(|p| tratto_core::fs::is_dir(p));
         let (root, external) = (self.library_root(), self.external_notebooks.clone());
         let (tx, done) = mpsc::channel();
         let ctx = self.egui_ctx.clone();
@@ -95,7 +95,7 @@ impl InkApp {
 
     /// Re-reads the library folder now, for what needs it as it is on disk.
     pub(super) fn refresh_library_now(&mut self) {
-        self.external_notebooks.retain(|p| p.is_dir());
+        self.external_notebooks.retain(|p| tratto_core::fs::is_dir(p));
         let scanned = scan_library(&self.library_root(), &self.external_notebooks);
         self.library_scanned(scanned);
     }
@@ -140,13 +140,13 @@ impl InkApp {
     /// outside the library is shown as a notebook for this session.
     pub(super) fn open_path(&mut self, ctx: &egui::Context, path: &Path) {
         let is_note = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ink"));
-        if path.is_dir() {
+        if tratto_core::fs::is_dir(path) {
             self.open_folder(path);
-        } else if path.is_file() && is_pdf(path) {
+        } else if tratto_core::fs::is_file(path) && is_pdf(path) {
             self.open_pdf(ctx, path);
-        } else if path.is_file() && is_note {
+        } else if tratto_core::fs::is_file(path) && is_note {
             self.open_note(path);
-        } else if !path.exists() {
+        } else if !tratto_core::fs::exists(path) {
             self.toast(format!("Cannot open \u{201c}{}\u{201d}: it does not exist", path.display()));
         } else {
             self.toast(format!("Cannot open \u{201c}{}\u{201d}: not a PDF, a note or a folder", path.display()));
@@ -273,7 +273,7 @@ impl InkApp {
     pub(super) fn open_note(&mut self, path: &Path) {
         // It may be the note being saved.
         self.finish_saves();
-        let large = std::fs::metadata(path).is_ok_and(|m| m.len() > LOAD_IN_BACKGROUND);
+        let large = tratto_core::fs::metadata(path).is_ok_and(|m| m.len() > LOAD_IN_BACKGROUND);
         if large {
             let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let path = path.to_path_buf();
@@ -316,21 +316,6 @@ impl InkApp {
         self.screen = Screen::Editor;
     }
 
-    /// The web spike: the editor on a new note, kept in memory (no file:
-    /// never saved).
-    #[cfg(target_arch = "wasm32")]
-    pub fn scratch_note(&mut self) {
-        self.standalone = None;
-        self.doc = Document::default();
-        self.note_meta = NoteMeta::default();
-        self.note_path = None;
-        self.reader = None;
-        self.ensure_pages();
-        self.reset_editing_state();
-        self.pick_tool(Tool::Pen);
-        self.screen = Screen::Editor;
-    }
-
     /// Opens a PDF in the reader (read-only), read in the background. The
     /// open note is saved and closed first; stays put if that fails. A
     /// reader-only window keeps its PDF until the new one is read.
@@ -347,7 +332,7 @@ impl InkApp {
         let path = path.to_path_buf();
         self.in_background(format!("Opening \u{201c}{name}\u{201d}..."), move || {
             let failed = |e: String| format!("Cannot open the PDF: {e}");
-            let file = PdfFile::new(std::fs::read(&path).map_err(|e| failed(e.to_string()))?);
+            let file = PdfFile::new(tratto_core::fs::read(&path).map_err(|e| failed(e.to_string()))?);
             let sizes = pdf_pages::page_sizes(&file).map_err(|e| failed(e.to_string()))?;
             if sizes.is_empty() {
                 return Err(failed("it has no pages".into()));

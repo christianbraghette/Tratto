@@ -49,7 +49,31 @@ arboard = { version = "3.7", default-features = false, features = ["image-data",
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["Document", "Element", "EventTarget", "HtmlCanvasElement", "MouseEvent", "PointerEvent", "Window"] }
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+    "Blob",
+    "console",
+    "Document",
+    "DomException",
+    "Element",
+    "EventTarget",
+    "File",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetDirectoryOptions",
+    "FileSystemGetFileOptions",
+    "FileSystemHandle",
+    "FileSystemHandleKind",
+    "FileSystemRemoveOptions",
+    "FileSystemWritableFileStream",
+    "HtmlCanvasElement",
+    "MouseEvent",
+    "Navigator",
+    "PointerEvent",
+    "StorageManager",
+    "Window",
+    "WritableStream",
+] }
 
 # Native Wayland tablet (pen) and drag and drop support. Versions match what
 # winit 0.30 uses so there is a single wayland-client in the dependency tree.

@@ -32,6 +32,7 @@
 //! - `snapshot`       a picture of what was copied, for other apps
 //! - `update`         updates from the GitHub releases
 //! - `web`            the web app: the same app in a browser's canvas
+//! - `web_storage`    the web: notes in the browser's private storage
 
 // A GUI program on Windows: started from Explorer or a shortcut, no console
 // window opens next to it. See `attach_console` for output in a terminal.
@@ -65,6 +66,8 @@ mod update;
 mod view;
 #[cfg(target_arch = "wasm32")]
 mod web;
+#[cfg(target_arch = "wasm32")]
+mod web_storage;
 mod win_frame;
 
 #[cfg(any(test, not(target_arch = "wasm32")))]

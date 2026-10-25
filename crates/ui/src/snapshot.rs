@@ -144,7 +144,7 @@ pub fn save_png(ctx: &egui::Context, snap: Snapshot, path: PathBuf) -> Receiver<
         let [w, h] = image.size;
         let saved = tratto_core::images::encode_png(w as u32, h as u32, image.bytes)
             .map_err(|e| e.to_string())
-            .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()))
+            .and_then(|png| tratto_core::fs::write(&path, png).map_err(|e| e.to_string()))
             .map(|()| path);
         let _ = tx.send(saved);
         ctx.request_repaint();

@@ -23,7 +23,6 @@
 //!   text; such pages get no rules.
 
 use std::collections::HashMap;
-use std::fs;
 use std::io::{self, Write};
 use std::ops::RangeInclusive;
 use std::path::Path;
@@ -31,6 +30,7 @@ use std::path::Path;
 use flate2::{Compression, write::ZlibEncoder};
 use serde::{Deserialize, Serialize};
 
+use crate::fs;
 use crate::images;
 use crate::model::{
     self, Document, ImageData, PageKind, RunStyle, Stroke, StrokeKind, TextBox, TextLayout, TextMark, TextRun,

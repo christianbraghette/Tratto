@@ -114,7 +114,7 @@ fn file_request(path: &Path, at: Option<(u32, Pos2)>) -> PictureRequest {
 }
 
 fn read_picture(path: &Path) -> Result<Arc<ImageData>, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = tratto_core::fs::read(path).map_err(|e| e.to_string())?;
     ImageData::from_file(bytes).map_err(|e| e.to_string())
 }
 

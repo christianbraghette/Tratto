@@ -45,13 +45,13 @@
 //! `StorageError::UnsupportedVersion`.
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::fs::{self, File, OpenOptions};
 use crate::journal::{self, Delta, DeltaV6};
 use crate::model::{Document, DocumentV6, Stroke};
 use crate::pdf_pages::PdfFile;
@@ -437,13 +437,17 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
 
 /// Keeps one previous version, refreshed at most every `BACKUP_MIN_AGE`.
 fn rolling_backup(path: &Path) {
-    if !path.exists() {
+    if !fs::exists(path) {
         return;
     }
     let bak = path.with_extension("ink.bak");
     let stale = fs::metadata(&bak)
         .and_then(|m| m.modified())
-        .map(|t| t.elapsed().map_or(true, |e| e >= BACKUP_MIN_AGE))
+        // Not `elapsed`: std's clock panics in the browser.
+        .map(|t| {
+            let modified = t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            now_secs().saturating_sub(modified) >= BACKUP_MIN_AGE.as_secs()
+        })
         .unwrap_or(true);
     if stale {
         let _ = fs::copy(path, &bak);

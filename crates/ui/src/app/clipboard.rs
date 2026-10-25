@@ -456,7 +456,7 @@ impl InkApp {
     /// one there.
     pub(super) fn paste_note(&mut self, dir: PathBuf) {
         let Some((path, cut)) = self.clipboard.note().map(|(p, cut)| (p.clone(), cut)) else { return };
-        if !path.is_file() {
+        if !tratto_core::fs::is_file(&path) {
             self.clipboard.clip = None;
             self.toast("The note copied is no longer there");
             return;

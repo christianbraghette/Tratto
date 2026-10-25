@@ -19,10 +19,10 @@
 //! one damaged note cannot affect the others, and users can see their data.
 
 use std::error::Error;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::fs;
 use crate::model::Document;
 use crate::pdf_pages::{self, PdfFile};
 use crate::storage::{self, NoteMeta};
@@ -73,6 +73,13 @@ pub struct Library {
     pub trash: Vec<TrashItem>,
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn default_root() -> PathBuf {
+    // The browser's storage (see `fs`): the library is all there is.
+    PathBuf::from("/Tratto")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn default_root() -> PathBuf {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
     match home {
@@ -100,7 +107,7 @@ impl Library {
             if name.starts_with('.') {
                 continue;
             }
-            if path.is_dir() {
+            if fs::is_dir(&path) {
                 lib.notebooks.push(scan_notebook(&path, name));
             } else if is_note(&path)
                 && let Some(n) = read_note(&path)
@@ -150,7 +157,7 @@ impl Library {
 }
 
 fn is_note(path: &Path) -> bool {
-    path.is_file() && path.extension().is_some_and(|e| e == NOTE_EXT)
+    fs::is_file(path) && path.extension().is_some_and(|e| e == NOTE_EXT)
 }
 
 fn read_note(path: &Path) -> Option<NoteInfo> {
@@ -201,7 +208,7 @@ fn scan_notebook(path: &Path, name: String) -> NotebookInfo {
             if name.starts_with('.') {
                 continue;
             }
-            if p.is_dir() {
+            if fs::is_dir(&p) {
                 let mut notes: Vec<NoteInfo> = fs::read_dir(&p)
                     .map(|rd| {
                         rd.flatten().map(|e| e.path()).filter(|q| is_note(q)).filter_map(|q| read_note(&q)).collect()
@@ -254,7 +261,7 @@ pub fn unique_path(dir: &Path, stem: &str, ext: Option<&str>) -> PathBuf {
             None => name,
         };
         let p = dir.join(file);
-        if !p.exists() {
+        if !fs::exists(&p) {
             return p;
         }
         n += 1;
@@ -271,7 +278,7 @@ pub fn create_note(dir: &Path, title: &str) -> Result<PathBuf> {
 
 /// New notebook with a first section, like OneNote.
 pub fn create_notebook(root: &Path, name: &str) -> Result<PathBuf> {
-    let existing = fs::read_dir(root).map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count()).unwrap_or(0);
+    let existing = fs::read_dir(root).map(|rd| rd.flatten().filter(|e| fs::is_dir(e.path())).count()).unwrap_or(0);
     let color = NOTEBOOK_COLORS[existing % NOTEBOOK_COLORS.len()];
     let path = unique_path(root, &sanitize(name), None);
     fs::create_dir_all(path.join("Section 1"))?;
@@ -337,7 +344,7 @@ pub fn rename_note_file(path: &Path, title: &str) -> Result<PathBuf> {
     };
     fs::rename(path, &target)?;
     let bak = path.with_extension("ink.bak");
-    if bak.exists() {
+    if fs::exists(&bak) {
         let _ = fs::rename(&bak, target.with_extension("ink.bak"));
     }
     if let Some(dir) = path.parent() {
@@ -384,7 +391,7 @@ pub fn move_note(path: &Path, to_dir: &Path) -> Result<PathBuf> {
     let target = unique_path(to_dir, &stem, Some(NOTE_EXT));
     move_path(path, &target)?;
     let bak = path.with_extension("ink.bak");
-    if bak.exists() {
+    if fs::exists(&bak) {
         let _ = move_path(&bak, &target.with_extension("ink.bak"));
     }
     Ok(target)
@@ -407,7 +414,7 @@ fn move_path(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
-    if !from.is_dir() {
+    if !fs::is_dir(from) {
         return fs::copy(from, to).map(drop);
     }
     fs::create_dir(to)?;
@@ -419,7 +426,7 @@ fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 fn remove_path(path: &Path) -> io::Result<()> {
-    if path.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
+    if fs::is_dir(path) { fs::remove_dir_all(path) } else { fs::remove_file(path) }
 }
 
 /// Moves a note, notebook or section into `<root>/.trash`, remembering where
@@ -513,10 +520,10 @@ pub fn list_trash(root: &Path) -> Vec<TrashItem> {
     let mut items: Vec<TrashItem> = rd
         .flatten()
         .map(|e| e.path())
-        .filter(|p| !file_name(p).starts_with('.') && (p.is_dir() || is_note(p)))
+        .filter(|p| !file_name(p).starts_with('.') && (fs::is_dir(p) || is_note(p)))
         .map(|path| {
             let entry = index.iter().find(|e| e.name == file_name(&path));
-            let is_folder = path.is_dir();
+            let is_folder = fs::is_dir(&path);
             let name = if is_folder {
                 file_name(&path)
             } else {
@@ -547,7 +554,7 @@ pub fn restore(root: &Path, item: &Path) -> Result<PathBuf> {
         .unwrap_or_else(|| root.join(file_name(item)));
     let parent = origin.parent().unwrap_or(root);
     fs::create_dir_all(parent)?;
-    let target = if item.is_dir() {
+    let target = if fs::is_dir(item) {
         unique_path(parent, &file_name(&origin), None)
     } else {
         let stem = origin.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -564,7 +571,7 @@ pub fn delete_forever(root: &Path, item: &Path) -> Result<()> {
     if item.parent() != Some(root.join(TRASH_DIR).as_path()) {
         return Err("not in the trash".into());
     }
-    if item.is_dir() {
+    if fs::is_dir(item) {
         fs::remove_dir_all(item)?;
     } else {
         fs::remove_file(item)?;

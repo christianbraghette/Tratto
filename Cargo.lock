@@ -3877,6 +3877,7 @@ dependencies = [
  "bytemuck",
  "eframe",
  "egui-phosphor",
+ "js-sys",
  "pollster 1.0.1",
  "pulldown-cmark",
  "raw-window-handle",

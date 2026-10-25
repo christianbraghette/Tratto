@@ -10,6 +10,9 @@
 //! strokes' points are shared. [`Saver::wait`] returns once everything
 //! asked for is written, for whatever must not overlap a save (closing the
 //! app or the note, moving or renaming files).
+//!
+//! The web has no threads: a save is written at once, into the file system
+//! kept in memory (fast; `web_storage` takes it to the browser's storage).
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -19,6 +22,8 @@ use eframe::egui;
 use tratto_core::model::Document;
 use tratto_core::storage::{NoteMeta, NoteWriter};
 
+// The web: no thread to send jobs to.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum Job {
     /// The writer of the note opened from now on.
     Writer(NoteWriter),
@@ -38,12 +43,17 @@ pub struct Saved {
 }
 
 pub struct Saver {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     jobs: Sender<Job>,
     done: Receiver<Saved>,
     /// Saves asked for whose result has not been taken yet.
     pending: usize,
-    /// Saves that could not be handed to the thread (it stopped).
-    lost: Vec<Saved>,
+    /// Saves finished without the thread, for `poll`: those it could not
+    /// take (it stopped) and, on the web, every save.
+    ready: Vec<Saved>,
+    /// The web: the writer of the open note (saves are written here).
+    #[cfg(target_arch = "wasm32")]
+    writer: NoteWriter,
 }
 
 impl Saver {
@@ -51,7 +61,7 @@ impl Saver {
     pub fn new(ctx: egui::Context) -> Self {
         let (jobs, todo) = mpsc::channel::<Job>();
         let (finished, done) = mpsc::channel();
-        // The web has no threads: saves fail (`lost`), the note stays in memory.
+        // The web has no threads (see the module docs): `spawn` fails.
         let _ = thread::Builder::new().name("note saver".to_owned()).spawn(move || {
             let mut writer = NoteWriter::default();
             for job in todo {
@@ -67,23 +77,42 @@ impl Saver {
                 }
             }
         });
-        Self { jobs, done, pending: 0, lost: Vec::new() }
+        Self {
+            jobs,
+            done,
+            pending: 0,
+            ready: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            writer: NoteWriter::default(),
+        }
     }
 
     /// The writer of the note opened from now on (after the saves already
     /// asked for).
     pub fn set_writer(&mut self, writer: NoteWriter) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.writer = writer;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = self.jobs.send(Job::Writer(writer));
     }
 
     /// Saves `doc` to `path` in the background; `meta` is updated there (see
     /// `NoteWriter::save`) and comes back with the result.
     pub fn save(&mut self, path: PathBuf, meta: NoteMeta, doc: Document) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut meta = meta;
+            let result = self.writer.save(&path, &mut meta, &doc).map(|()| meta).map_err(|e| e.to_string());
+            self.ready.push(Saved { path, result });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         match self.jobs.send(Job::Save { path, meta, doc }) {
             Ok(()) => self.pending += 1,
             Err(mpsc::SendError(job)) => {
                 if let Job::Save { path, .. } = job {
-                    self.lost.push(Saved { path, result: Err("the saving thread stopped".to_owned()) });
+                    self.ready.push(Saved { path, result: Err("the saving thread stopped".to_owned()) });
                 }
             }
         }
@@ -96,7 +125,7 @@ impl Saver {
 
     /// The saves finished since the last call, in order.
     pub fn poll(&mut self) -> Vec<Saved> {
-        let mut out = std::mem::take(&mut self.lost);
+        let mut out = std::mem::take(&mut self.ready);
         while self.pending > 0 {
             match self.done.try_recv() {
                 Ok(saved) => {
@@ -112,7 +141,7 @@ impl Saver {
 
     /// Waits until every save asked for is written; their results, in order.
     pub fn wait(&mut self) -> Vec<Saved> {
-        let mut out = std::mem::take(&mut self.lost);
+        let mut out = std::mem::take(&mut self.ready);
         while self.pending > 0 {
             match self.done.recv() {
                 Ok(saved) => {

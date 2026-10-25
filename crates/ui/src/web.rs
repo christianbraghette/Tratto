@@ -5,14 +5,15 @@
 //! canvas (`<canvas id="tratto">`, see `crates/ui/web/index.html`), drawn
 //! with WebGPU where the browser has it, else WebGL 2.
 //!
-//! A spike: the editor on a new note, kept in memory. What the desktop
-//! needs the system for (the library's folders, file dialogs, the
-//! clipboard's pictures, printing, updates) is not there yet.
+//! The library lives in the browser's private storage (`web_storage`),
+//! loaded before the app starts. What the desktop needs the system for
+//! (file dialogs, the clipboard's pictures, printing, updates) is not there
+//! yet.
 
 use eframe::wasm_bindgen::JsCast;
 use eframe::web_sys;
 
-use crate::{app, stroke_gpu};
+use crate::{app, stroke_gpu, web_storage};
 
 /// The id of the canvas the app runs in.
 const CANVAS_ID: &str = "tratto";
@@ -22,6 +23,11 @@ pub fn start() {
     let options = eframe::WebOptions::default();
     wasm_bindgen_futures::spawn_local(async {
         let document = web_sys::window().and_then(|w| w.document()).expect("a page");
+        // The notes first: the app reads its library as it starts.
+        if let Err(e) = web_storage::load().await {
+            web_sys::console::warn_2(&"Tratto: the browser's storage cannot be read, notes are not kept:".into(), &e);
+        }
+        web_storage::keep_saved();
         let canvas = document
             .get_element_by_id(CANVAS_ID)
             .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
@@ -34,9 +40,7 @@ pub fn start() {
                     if let Some(render_state) = cc.wgpu_render_state.as_ref() {
                         stroke_gpu::install(render_state, 1);
                     }
-                    let mut app = app::InkApp::new(cc, false, None, false);
-                    app.scratch_note();
-                    Ok(Box::new(app))
+                    Ok(Box::new(app::InkApp::new(cc, false, None, false)))
                 }),
             )
             .await;

@@ -651,7 +651,7 @@ impl InkApp {
             external_notebooks: Vec::new(),
             standalone: None,
         };
-        if let Some(path) = open.as_ref().filter(|p| reader && p.is_file() && is_pdf(p)) {
+        if let Some(path) = open.as_ref().filter(|p| reader && tratto_core::fs::is_file(p) && is_pdf(p)) {
             // Just the PDF: no library, no update check from every reader window.
             app.standalone = Some(Standalone { start: app.settings.clone(), pdfs: Vec::new() });
             app.open_pdf(&cc.egui_ctx, path);
@@ -668,7 +668,7 @@ impl InkApp {
         }
         // Back where the app was closed: the note that was open, if any.
         let last = app.settings.last_note.clone().filter(|_| app.settings.reopen_last_note).map(PathBuf::from);
-        if let Some(path) = last.filter(|p| p.is_file()) {
+        if let Some(path) = last.filter(|p| tratto_core::fs::is_file(p)) {
             if is_pdf(&path) {
                 let ctx = cc.egui_ctx.clone();
                 app.open_pdf(&ctx, &path);

@@ -4,6 +4,7 @@
 //! Tratto core: everything that does not depend on the UI toolkit.
 //!
 //! - `model`          serializable data model (`Point`, `Stroke`, `Document`)
+//! - `fs`             the file system notes live in (the computer's, or the browser's in memory)
 //! - `geometry`       point-to-segment math used by the eraser
 //! - `history`        action-based undo/redo (no document cloning)
 //! - `images`         pictures: their files, decoded for the screen and the PDF
@@ -15,6 +16,7 @@
 //! - `pdf_export`     vector PDF export (hand-written PDF writer)
 //! - `pdf_pages`      reading and rasterising PDF pages to write on (PDFium)
 
+pub mod fs;
 pub mod geometry;
 pub mod history;
 pub mod images;
