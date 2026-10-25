@@ -402,16 +402,25 @@ fn edge(a: Pos2, b: Pos2, c: Pos2) -> f32 {
 /// Puts `image` on the system clipboard; what is there then. The clipboard
 /// is kept for the whole run: on Linux what it offers goes with it.
 fn put_on_clipboard(image: &Rgba) -> Option<SystemCopy> {
-    static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
-    let mut clipboard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
-    if clipboard.is_none() {
-        *clipboard = arboard::Clipboard::new().ok();
+    // The web: not written to the browser's clipboard yet.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = image;
+        None
     }
-    let clipboard = clipboard.as_mut()?;
-    let [w, h] = image.size;
-    let data = arboard::ImageData { width: w, height: h, bytes: image.bytes.clone().into() };
-    clipboard.set_image(data).ok()?;
-    Some(SystemCopy::Image(image.size))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+        let mut clipboard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        if clipboard.is_none() {
+            *clipboard = arboard::Clipboard::new().ok();
+        }
+        let clipboard = clipboard.as_mut()?;
+        let [w, h] = image.size;
+        let data = arboard::ImageData { width: w, height: h, bytes: image.bytes.clone().into() };
+        clipboard.set_image(data).ok()?;
+        Some(SystemCopy::Image(image.size))
+    }
 }
 
 #[cfg(test)]

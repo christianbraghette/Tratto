@@ -53,6 +53,8 @@ pub(super) fn is_picture(path: &Path) -> bool {
 
 /// A picture to insert, made into a note's picture in the background (a
 /// photo takes a while to shrink): see `InkApp::insert_pictures`.
+// The web: not made by its stand-ins (the system is not there yet).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(super) enum PictureSource {
     File(PathBuf),
     /// RGBA pixels, row by row (the clipboard's).
@@ -85,15 +87,24 @@ pub(super) struct PictureJob {
 /// The clipboard's picture: its pixels (a screenshot, a picture copied in a
 /// browser), else the first picture file copied (in the file manager).
 pub(super) fn clipboard_picture() -> Result<Option<PictureSource>, String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    if let Ok(img) = clipboard.get_image() {
-        let (w, h) = (img.width as u32, img.height as u32);
-        return Ok(Some(PictureSource::Pixels(w, h, img.bytes.into_owned())));
+    // The web: the browser's clipboard cannot be read without asking.
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(None)
     }
-    if let Some(path) = clipboard.get().file_list().ok().and_then(|files| files.into_iter().find(|p| is_picture(p))) {
-        return Ok(Some(PictureSource::File(path)));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        if let Ok(img) = clipboard.get_image() {
+            let (w, h) = (img.width as u32, img.height as u32);
+            return Ok(Some(PictureSource::Pixels(w, h, img.bytes.into_owned())));
+        }
+        let files = clipboard.get().file_list().ok();
+        if let Some(path) = files.and_then(|files| files.into_iter().find(|p| is_picture(p))) {
+            return Ok(Some(PictureSource::File(path)));
+        }
+        Ok(None)
     }
-    Ok(None)
 }
 
 /// The picture file `path` to insert at `at`.

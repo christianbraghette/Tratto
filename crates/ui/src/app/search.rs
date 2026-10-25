@@ -13,9 +13,12 @@
 
 use std::ops::Range;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::{self, Id, Ui};
+
+// `Instant` that works in the browser too (std's panics there).
+use web_time::Instant;
 
 use super::InkApp;
 use super::text_select::{Glyph, find_all, is_blank, line_rects, normalize_query, searchable};

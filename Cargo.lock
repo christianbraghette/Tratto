@@ -3866,6 +3866,7 @@ dependencies = [
  "image",
  "pdfium-render",
  "serde",
+ "web-time",
 ]
 
 [[package]]
@@ -3886,9 +3887,13 @@ dependencies = [
  "sha2",
  "tratto-core",
  "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
+ "web-sys",
+ "web-time",
  "windows-sys 0.61.2",
  "winresource",
  "zbus",

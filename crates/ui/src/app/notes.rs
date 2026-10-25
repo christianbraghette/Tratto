@@ -7,7 +7,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
-use std::time::Instant;
 
 use eframe::egui::{self, Color32, Id, Vec2, vec2};
 
@@ -15,6 +14,9 @@ use tratto_core::library::{self, Library};
 use tratto_core::model::Document;
 use tratto_core::pdf_pages::{self, PdfFile};
 use tratto_core::storage::{self, NoteMeta, NoteWriter};
+
+// `Instant` that works in the browser too (std's panics there).
+use web_time::Instant;
 
 use crate::settings::{NoteView, Sidebar};
 use crate::theme;
@@ -311,6 +313,21 @@ impl InkApp {
         self.settings.last_note = Some(key.into_owned());
         self.last_fp = self.current_fingerprint();
         self.dirty = false;
+        self.screen = Screen::Editor;
+    }
+
+    /// The web spike: the editor on a new note, kept in memory (no file:
+    /// never saved).
+    #[cfg(target_arch = "wasm32")]
+    pub fn scratch_note(&mut self) {
+        self.standalone = None;
+        self.doc = Document::default();
+        self.note_meta = NoteMeta::default();
+        self.note_path = None;
+        self.reader = None;
+        self.ensure_pages();
+        self.reset_editing_state();
+        self.pick_tool(Tool::Pen);
         self.screen = Screen::Editor;
     }
 

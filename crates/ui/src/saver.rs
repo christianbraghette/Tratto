@@ -51,24 +51,22 @@ impl Saver {
     pub fn new(ctx: egui::Context) -> Self {
         let (jobs, todo) = mpsc::channel::<Job>();
         let (finished, done) = mpsc::channel();
-        thread::Builder::new()
-            .name("note saver".to_owned())
-            .spawn(move || {
-                let mut writer = NoteWriter::default();
-                for job in todo {
-                    match job {
-                        Job::Writer(w) => writer = w,
-                        Job::Save { path, mut meta, doc } => {
-                            let result = writer.save(&path, &mut meta, &doc).map(|()| meta).map_err(|e| e.to_string());
-                            if finished.send(Saved { path, result }).is_err() {
-                                return;
-                            }
-                            ctx.request_repaint();
+        // The web has no threads: saves fail (`lost`), the note stays in memory.
+        let _ = thread::Builder::new().name("note saver".to_owned()).spawn(move || {
+            let mut writer = NoteWriter::default();
+            for job in todo {
+                match job {
+                    Job::Writer(w) => writer = w,
+                    Job::Save { path, mut meta, doc } => {
+                        let result = writer.save(&path, &mut meta, &doc).map(|()| meta).map_err(|e| e.to_string());
+                        if finished.send(Saved { path, result }).is_err() {
+                            return;
                         }
+                        ctx.request_repaint();
                     }
                 }
-            })
-            .expect("cannot start the thread that saves notes");
+            }
+        });
         Self { jobs, done, pending: 0, lost: Vec::new() }
     }
 

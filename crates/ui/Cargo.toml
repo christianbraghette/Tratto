@@ -25,6 +25,12 @@ raw-window-handle = "0.6"
 egui-phosphor = "0.14.0"
 # Uploads the stroke meshes to the GPU (see stroke_gpu.rs; already used by egui).
 bytemuck = "1.25.2"
+pulldown-cmark = { version = "0.13.4", default-features = false }
+# `Instant` that works in the browser too (std's panics there); already used by egui.
+web-time = "1.1.0"
+
+# The desktop app only (the web build has none of these, see web.rs).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Updates from the GitHub releases (see update.rs): HTTPS with rustls, the
 # release archive (reading deflate only) and its checksum.
 ureq = { version = "3.4.2", features = ["json"] }
@@ -35,10 +41,15 @@ sha2 = "0.11.0"
 # wgpu's async device setup in the stroke pipeline test).
 rfd = "0.17.2"
 pollster = "1.0.1"
-pulldown-cmark = { version = "0.13.4", default-features = false }
 # On Linux, the Wayland clipboard where the compositor offers data control
 # (else X11, through XWayland).
 arboard = { version = "3.7", default-features = false, features = ["image-data", "wayland-data-control"] }
+
+# The web app (see web.rs): started in the page's canvas by eframe's runner.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Document", "Element", "EventTarget", "HtmlCanvasElement", "MouseEvent", "PointerEvent", "Window"] }
 
 # Native Wayland tablet (pen) and drag and drop support. Versions match what
 # winit 0.30 uses so there is a single wayland-client in the dependency tree.

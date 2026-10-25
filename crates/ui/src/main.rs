@@ -31,6 +31,7 @@
 //! - `saver`          saves the open note on a background thread
 //! - `snapshot`       a picture of what was copied, for other apps
 //! - `update`         updates from the GitHub releases
+//! - `web`            the web app: the same app in a browser's canvas
 
 // A GUI program on Windows: started from Explorer or a shortcut, no console
 // window opens next to it. See `attach_console` for output in a terminal.
@@ -62,15 +63,21 @@ mod theme;
 mod toolbar;
 mod update;
 mod view;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod win_frame;
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use eframe::egui;
+#[cfg(not(target_arch = "wasm32"))]
 use eframe::egui_wgpu::{self, wgpu};
 
 /// The app icon: the title bar's pen nib (see assets/icon).
+#[cfg(not(target_arch = "wasm32"))]
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon/icon.png");
 
 /// eframe's app id: names the folder of the saved settings.
+#[cfg(not(target_arch = "wasm32"))]
 const APP_ID: &str = "Tratto";
 
 /// Started from a terminal (`cargo run`, PowerShell), print there: a GUI
@@ -89,6 +96,7 @@ fn attach_console() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const USAGE: &str = "Usage: tratto [--reader] [PATH]
        tratto --register-pdf | --unregister-pdf
 
@@ -100,6 +108,7 @@ const USAGE: &str = "Usage: tratto [--reader] [PATH]
   --register-pdf    makes Tratto the app that opens PDFs, for this user
   --unregister-pdf  takes Tratto off the apps that open PDFs";
 
+#[cfg(not(target_arch = "wasm32"))]
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
 enum Run {
@@ -114,6 +123,7 @@ enum Run {
     Help,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Reads the arguments (after the program's name); `Err` with the message
 /// to print and quit.
 fn parse_args(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Run, String> {
@@ -135,6 +145,7 @@ fn parse_args(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Run, Str
     Ok(Run::App { open, reader })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     #[cfg(windows)]
     attach_console();
@@ -242,6 +253,7 @@ fn main() -> eframe::Result<()> {
     result
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The GPU to draw with when a backend was chosen in the settings: one that
 /// can draw the window, on the `chosen` backend if there is one, the
 /// integrated or the discrete GPU as `power` prefers.
@@ -264,6 +276,12 @@ fn pick_adapter(
         })
         .cloned()
         .ok_or_else(|| "no GPU can draw the window".to_owned())
+}
+
+/// The web: started by the page (`web::start`).
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    web::start();
 }
 
 /// One egui frame for tests: runs `ui` and returns the textures it frees

@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: 2026 Christian Braghette -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Tratto</title>
+  <link rel="icon" href="icon.png">
+  <style>
+    :root { --bg: #f4f5f7; --text: #5d6470; color-scheme: light; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { --bg: #1b1d21; --text: #9aa1ad; color-scheme: dark; }
+    }
+    :root[data-theme="dark"] { --bg: #1b1d21; --text: #9aa1ad; color-scheme: dark; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+    /* eframe sizes the canvas to this box. The pen, touch and mouse all go
+       to the app: no browser panning or zooming over it. */
+    #tratto { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; outline: none; }
+    #status {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      padding: 16px; text-align: center; color: var(--text); font: 15px/1.4 system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="tratto"></canvas>
+  <div id="status">Loading Tratto…</div>
+  <script src="pdfium/pdfium.js"></script>
+  <script type="module">
+    // The app starts itself (its `main`, see src/web.rs) once loaded.
+    import init, { initialize_pdfium_render } from "./pkg/tratto.js";
+
+    const status = document.getElementById("status");
+    try {
+      const rust = await init();
+      // PDFium, for notes written on a PDF: optional, the app works without it.
+      if (globalThis.PDFiumModule) {
+        initialize_pdfium_render(await globalThis.PDFiumModule(), rust, false);
+      }
+    } catch (e) {
+      status.textContent = `Tratto cannot start: ${e.message || e}`;
+    }
+  </script>
+</body>
+</html>

@@ -66,9 +66,10 @@ impl WindowState {
         })
     }
 
-    /// Window buttons, dragging and resizing are ours (not in fullscreen).
+    /// Window buttons, dragging and resizing are ours (not in fullscreen,
+    /// nor on the web: a browser tab has no window of its own).
     fn frame_controls(&self) -> bool {
-        self.custom && !self.fullscreen
+        self.custom && !self.fullscreen && !cfg!(target_arch = "wasm32")
     }
 }
 

@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::{self, Align2, Key, Sense, Ui, text::LayoutJob};
 use egui_phosphor::regular as icon;
@@ -35,6 +35,9 @@ use egui_phosphor::regular as icon;
 use tratto_core::library::NoteInfo;
 use tratto_core::pdf_pages::{self, TextChar};
 use tratto_core::storage;
+
+// `Instant` that works in the browser too (std's panics there).
+use web_time::Instant;
 
 use super::search::{Jump, select_all, snippet};
 use super::text_select::{NoteText, find_all, normalize_query, searchable};

@@ -31,8 +31,15 @@ impl eframe::egui::DroppedFile for DroppedPath {
         &self.0
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn bytes(&self) -> Result<Vec<u8>, String> {
         std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+
+    /// Never made on the web (the browser drops files of its own).
+    #[cfg(target_arch = "wasm32")]
+    fn bytes_async(&self) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + '_>> {
+        Box::pin(std::future::ready(Err("not a file of the browser".to_owned())))
     }
 }
 

@@ -10,12 +10,13 @@
 //! box that asked for it; the box can still be typed into, so the app works
 //! where no dialog is available.
 
-use std::future::Future;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{future::Future, path::Path, sync::mpsc, thread};
 
 use eframe::egui;
+#[cfg(not(target_arch = "wasm32"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 /// Windows and macOS always have a file dialog, so a path is chosen with it
@@ -34,6 +35,8 @@ pub enum Pick {
 }
 
 /// A dialog to show; `field` names the path box the answer goes to.
+// The web: not made by its stand-ins (the system is not there yet).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub struct Request<F> {
     pub pick: Pick,
     pub title: &'static str,
@@ -59,6 +62,7 @@ impl<F> FilePicker<F> {
     }
 
     /// Shows the dialog over `parent`, unless one is already open.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open<W: HasWindowHandle + HasDisplayHandle>(&mut self, ctx: &egui::Context, parent: &W, req: Request<F>) {
         if self.is_open() {
             return;
@@ -81,6 +85,10 @@ impl<F> FilePicker<F> {
         self.pending = Some((req.field, rx));
     }
 
+    /// The web: no file dialogs yet, nothing opens.
+    #[cfg(target_arch = "wasm32")]
+    pub fn open<W>(&mut self, _ctx: &egui::Context, _parent: &W, _req: Request<F>) {}
+
     /// The chosen path once the dialog has closed: `None` while it is open
     /// and when it was cancelled.
     pub fn poll(&mut self) -> Option<(F, PathBuf)> {
@@ -100,6 +108,7 @@ impl<F> FilePicker<F> {
 }
 
 /// Awaits the dialog on a background thread and wakes the UI when it closes.
+#[cfg(not(target_arch = "wasm32"))]
 fn wait(
     ctx: &egui::Context,
     task: impl Future<Output = Option<rfd::FileHandle>> + Send + 'static,
@@ -116,6 +125,7 @@ fn wait(
 
 /// Where a dialog starts for the path `current`: its folder (or `current`
 /// itself, if it is a folder) and its file name, for saving.
+#[cfg(not(target_arch = "wasm32"))]
 fn start(current: &str) -> (Option<PathBuf>, Option<String>) {
     let path = Path::new(current.trim().trim_matches('"'));
     if path.as_os_str().is_empty() {

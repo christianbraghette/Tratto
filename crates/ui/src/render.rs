@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
@@ -22,6 +22,9 @@ use eframe::egui::{
 };
 
 use tratto_core::model::{self, Document, Image, ImageData, PageKind, Point, Stroke, StrokeKind, TextBox, TextMark};
+
+// `Instant` that works in the browser too (std's panics there).
+use web_time::Instant;
 
 use crate::markdown;
 use crate::stroke_gpu::{self, Batch, Blend};
@@ -220,7 +223,7 @@ impl PictureTextures {
         let levels: Vec<u32> = if self.has(key) || want == smallest { vec![want] } else { vec![smallest, want] };
         self.decoding.insert((key, want));
         let (data, done, ctx) = (data.clone(), self.decoded.0.clone(), ctx.clone());
-        std::thread::spawn(move || {
+        let decode = move || {
             // Each level as soon as it is made: the smallest shows while the
             // sharper is still being made smaller.
             let mut sizes = levels.iter().copied();
@@ -236,7 +239,12 @@ impl PictureTextures {
             if read.is_err() && done.send(((key, want), None)).is_ok() {
                 ctx.request_repaint();
             }
-        });
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(decode);
+        // The web has no threads: decoded now, holding up this frame.
+        #[cfg(target_arch = "wasm32")]
+        decode();
     }
 
     /// The pictures on `pages` (those next to the ones shown, `scale`

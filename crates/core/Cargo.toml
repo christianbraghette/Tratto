@@ -16,4 +16,6 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # PDFium bindings, for notes written on a PDF. The library itself is loaded at
 # runtime (see pdf_pages.rs); no image crate needed.
 pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_latest", "thread_safe"] }
+# The clock, also in the browser (see storage::now_secs).
+web-time = "1.1.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }

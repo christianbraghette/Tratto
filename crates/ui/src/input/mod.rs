@@ -9,4 +9,6 @@ pub mod system_gestures;
 pub mod touchpad;
 pub mod wayland_drop;
 pub mod wayland_pen;
+#[cfg(target_arch = "wasm32")]
+pub mod web_pen;
 pub mod windows_pen;

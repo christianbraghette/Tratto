@@ -25,7 +25,13 @@
 //!
 //! Debug builds and installations the user cannot write to (installed by a
 //! package manager) only report the new version.
+//!
+//! The web app has no updates of its own: it is as new as the page.
 
+// The web: only the types and the version are used.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +41,7 @@ use std::time::Duration;
 
 use eframe::egui;
 use serde::Deserialize;
+#[cfg(not(target_arch = "wasm32"))]
 use sha2::{Digest, Sha256};
 
 use crate::settings::UpdateChannel;
@@ -139,13 +146,21 @@ impl Updater {
         if self.state.busy() {
             return;
         }
-        self.state = State::Checking;
-        self.run(ctx, move |send| match latest_release(channel) {
-            Err(e) => send(State::Failed(e)),
-            Ok(None) => send(State::UpToDate),
-            Ok(Some(release)) if install && release.installable() => download_and_install(release, send),
-            Ok(Some(release)) => send(State::Available(release)),
-        });
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (ctx, channel, install);
+            self.state = State::UpToDate;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.state = State::Checking;
+            self.run(ctx, move |send| match latest_release(channel) {
+                Err(e) => send(State::Failed(e)),
+                Ok(None) => send(State::UpToDate),
+                Ok(Some(release)) if install && release.installable() => download_and_install(release, send),
+                Ok(Some(release)) => send(State::Available(release)),
+            });
+        }
     }
 
     /// Installs the release found by a check that only notified.
@@ -156,7 +171,10 @@ impl Updater {
         }
         let release = release.clone();
         self.state = State::Downloading(release.clone());
+        #[cfg(not(target_arch = "wasm32"))]
         self.run(ctx, move |send| download_and_install(release, send));
+        #[cfg(target_arch = "wasm32")]
+        let _ = (ctx, release);
     }
 
     /// Takes the progress of the background work; returns the new state if
@@ -188,6 +206,7 @@ impl Updater {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn download_and_install(release: Release, send: &dyn Fn(State)) {
     send(State::Downloading(release.clone()));
     let (Some(asset), Ok(installed)) = (&release.archive, Install::find()) else {
@@ -199,6 +218,7 @@ fn download_and_install(release: Release, send: &dyn Fn(State)) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(10)))
@@ -210,6 +230,7 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The latest release of `channel` if it is newer than this version
 /// (`None`: up to date, or no release published yet).
 fn latest_release(channel: UpdateChannel) -> Result<Option<Release>, String> {
@@ -277,6 +298,7 @@ fn channel_of(version: &str, prerelease: bool) -> Option<UpdateChannel> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn download(asset: &Asset) -> Result<Vec<u8>, String> {
     if asset.size > MAX_DOWNLOAD {
         return Err(format!("The update is too large ({} MB)", asset.size / (1024 * 1024)));
@@ -360,6 +382,7 @@ impl Install {
     }
 
     /// Puts the downloaded release file in place.
+    #[cfg(not(target_arch = "wasm32"))]
     fn install(&self, bytes: &[u8]) -> Result<(), String> {
         match self {
             Install::Folder(dir) => install(bytes, dir),
@@ -399,6 +422,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Unpacks the release archive `zip` over the installation in `dir`.
 fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
     let exe_name = std::env::current_exe().ok().and_then(|p| p.file_name().map(ToOwned::to_owned));
@@ -469,6 +493,7 @@ fn install(zip: &[u8], dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Unpacks the archive's `Tratto.app` next to the bundle `app` and swaps
 /// it in whole, the old one renamed to `<app>.old`.
 fn install_bundle(zip: &[u8], app: &Path) -> Result<(), String> {
@@ -494,6 +519,7 @@ fn install_bundle(zip: &[u8], app: &Path) -> Result<(), String> {
     swapped
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Writes the downloaded AppImage next to the one at `path` and renames it
 /// over it: the running app keeps reading the old one, already open.
 fn install_app_image(bytes: &[u8], path: &Path) -> Result<(), String> {
@@ -511,6 +537,7 @@ fn install_app_image(bytes: &[u8], path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Unpacks all of `zip` into the new folder `dir`, which is left partly
 /// filled on an error.
 fn unpack(zip: &[u8], dir: &Path) -> std::io::Result<()> {
@@ -533,6 +560,7 @@ fn unpack(zip: &[u8], dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Writes what `data` reads to a new file at `path`, with the Unix
 /// permissions `mode` (if any).
 fn write_entry(data: &mut impl Read, path: &Path, mode: Option<u32>) -> std::io::Result<()> {

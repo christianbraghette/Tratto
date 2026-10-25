@@ -63,6 +63,8 @@ pub(crate) struct PageContent {
 }
 
 /// What Tratto put on the system clipboard for its last copy.
+// The web: not made by its stand-ins (the system is not there yet).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) enum SystemCopy {
     /// Nothing (or it could not).
@@ -111,16 +113,24 @@ impl Clipboard {
         if matches!(system, SystemCopy::Pending(_)) {
             return true;
         }
-        let Ok(mut clipboard) = arboard::Clipboard::new() else { return true };
-        let text = clipboard.get_text().ok().filter(|t| !t.trim().is_empty());
-        let image = clipboard.get_image().ok().map(|i| [i.width, i.height]);
-        // Files copied in a file manager.
-        let files = clipboard.get().file_list().is_ok_and(|f| !f.is_empty());
-        let empty = text.is_none() && image.is_none() && !files;
-        match system {
-            SystemCopy::Text(ours) => text.as_ref().is_some_and(|t| *t == ours) || empty,
-            SystemCopy::Image(size) => image == Some(size) || empty,
-            _ => empty,
+        // The web: the browser's clipboard cannot be read without asking.
+        #[cfg(target_arch = "wasm32")]
+        {
+            true
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Ok(mut clipboard) = arboard::Clipboard::new() else { return true };
+            let text = clipboard.get_text().ok().filter(|t| !t.trim().is_empty());
+            let image = clipboard.get_image().ok().map(|i| [i.width, i.height]);
+            // Files copied in a file manager.
+            let files = clipboard.get().file_list().is_ok_and(|f| !f.is_empty());
+            let empty = text.is_none() && image.is_none() && !files;
+            match system {
+                SystemCopy::Text(ours) => text.as_ref().is_some_and(|t| *t == ours) || empty,
+                SystemCopy::Image(size) => image == Some(size) || empty,
+                _ => empty,
+            }
         }
     }
 }
@@ -243,7 +253,10 @@ impl InkApp {
             Err(e) if !quiet => return self.toast(format!("Cannot paste: {e}")),
             Err(_) => return,
         }
+        #[cfg(not(target_arch = "wasm32"))]
         let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok().filter(|t| !t.trim().is_empty());
+        #[cfg(target_arch = "wasm32")]
+        let text: Option<String> = None;
         match text {
             Some(text) => self.paste_text(&text, at),
             None if !quiet => self.toast("There is nothing to paste"),

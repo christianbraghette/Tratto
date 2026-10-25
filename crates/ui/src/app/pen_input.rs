@@ -59,6 +59,18 @@ impl InkApp {
     /// Converts native pen events into regular egui pointer events and pressure.
     /// Called from `raw_input_hook`, i.e. before egui processes the frame.
     pub(super) fn inject_pen_events(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // The web: eframe has the pen's position and presses, the rest is here.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(pen) = &self.pen_input.web {
+            let s = pen.state();
+            if !s.pen {
+                self.pen_input.pressure = 1.0;
+            } else if s.down {
+                self.pen_input.pressure = s.pressure.clamp(0.0, 1.0);
+            }
+            self.pen_input.eraser = s.pen && s.eraser;
+            self.pen_input.barrel = s.pen && s.barrel;
+        }
         let Some(pen) = self.pen_input.wayland.as_ref() else { return };
         let events: Vec<PenEvent> = pen.try_iter().collect();
         let zoom = ctx.zoom_factor();

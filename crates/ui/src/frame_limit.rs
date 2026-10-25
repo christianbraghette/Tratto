@@ -14,7 +14,10 @@
 //! there is no cap. Vsync can change at any time (the setting, the battery
 //! saver, see `InkApp::present_mode`); `TRATTO_VSYNC=1` forces it on.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// `Instant` that works in the browser too (std's panics there).
+use web_time::Instant;
 
 /// The default of `Settings::fps_limit`.
 pub const DEFAULT_FPS: u32 = 120;
@@ -60,6 +63,10 @@ impl FrameLimiter {
     /// Waits until the next frame may start, at most `fps` frames per second
     /// (`0`: no cap).
     pub fn wait(&mut self, fps: u32) {
+        // The web: the browser paces the frames (with the display).
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
         let fps = self.env_fps.unwrap_or(fps);
         if self.vsync || fps == 0 {
             self.next = None;

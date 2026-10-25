@@ -28,7 +28,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Vec2, vec2};
 use eframe::egui_wgpu::wgpu;
@@ -38,6 +38,9 @@ use tratto_core::library::Library;
 use tratto_core::model::{Document, Point, StrokeKind, TextBox};
 use tratto_core::storage::{NoteMeta, NoteWriter};
 use tratto_core::stroke_builder::StrokeBuilder;
+
+// `Instant` that works in the browser too (std's panics there).
+use web_time::Instant;
 
 use crate::file_picker::{self, FilePicker};
 use crate::frame_limit::FrameLimiter;
@@ -91,10 +94,18 @@ const TOAST_FOR: Duration = Duration::from_millis(3500);
 /// The settings saved by the last run, read before the window exists:
 /// `main` needs some of them to create it. Mirrors eframe's file storage
 /// (not public): a RON map of keys to RON strings.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn saved_settings() -> Option<Settings> {
     let file = eframe::storage_dir(crate::APP_ID)?.join("app.ron");
     let kv: std::collections::HashMap<String, String> = ron::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
     ron::from_str(kv.get(SETTINGS_KEY)?).ok()
+}
+
+/// The web: none before the app starts (it reads them from the browser's
+/// storage, `CreationContext::storage`).
+#[cfg(target_arch = "wasm32")]
+pub fn saved_settings() -> Option<Settings> {
+    None
 }
 /// Stroke currently being drawn.
 struct ActiveStroke {
@@ -223,6 +234,9 @@ struct PenInput {
     drop_hover: bool,
     /// Windows: pen side button / eraser end (None elsewhere).
     windows: Option<WindowsPen>,
+    /// The web: pen pressure, side button and eraser end.
+    #[cfg(target_arch = "wasm32")]
+    web: Option<crate::input::web_pen::WebPen>,
     /// The sources above were started (on the first frame).
     started: bool,
     down: bool,
@@ -527,6 +541,7 @@ impl InkApp {
         // Windows: the caption off before the first frame (the window is still
         // hidden), so it is laid out at its final size.
         crate::win_frame::own_frame(settings.custom_title_bar);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::win_frame::install(cc);
         crate::win_frame::open_maximized();
         let backend_chosen = settings.graphics_backend;
@@ -1083,6 +1098,10 @@ impl eframe::App for InkApp {
             self.pen_input.wayland = WaylandPen::start(ctx, frame);
             self.pen_input.drop = WaylandDrop::start(ctx, frame);
             self.pen_input.windows = WindowsPen::start(ctx, frame);
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.pen_input.web = crate::input::web_pen::WebPen::start();
+            }
             crate::chrome::round_corners(frame);
             crate::chrome::own_edge_swipes(frame);
             crate::print::remember_window(frame);

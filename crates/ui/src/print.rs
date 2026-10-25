@@ -17,6 +17,8 @@
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 /// What became of a print.
+// The web: not made by its stand-ins (the system is not there yet).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub enum Printed {
     /// Sent to the printer: so many pages (if known).
     Sent(Option<usize>),
@@ -52,7 +54,12 @@ pub fn remember_window(frame: &eframe::Frame) {
 pub fn print(pdf: Vec<u8>, title: &str) -> Result<Printed, String> {
     #[cfg(windows)]
     return windows::print(pdf, title, WINDOW.load(Ordering::Relaxed));
-    #[cfg(not(windows))]
+    #[cfg(target_arch = "wasm32")]
+    return {
+        let _ = (pdf, title);
+        Err("printing is not available in the browser yet: export a PDF and print it".into())
+    };
+    #[cfg(not(any(windows, target_arch = "wasm32")))]
     {
         let path = temp_pdf(&pdf, title)?;
         #[cfg(target_os = "macos")]
@@ -80,7 +87,7 @@ pub fn print(pdf: Vec<u8>, title: &str) -> Result<Printed, String> {
 
 /// Writes `pdf` to a file of the temporary folder, named after `title`
 /// (the viewer and the print queue show the name).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_arch = "wasm32")))]
 fn temp_pdf(pdf: &[u8], title: &str) -> Result<std::path::PathBuf, String> {
     let name: String = title.chars().map(|c| if c.is_alphanumeric() || " -_".contains(c) { c } else { '_' }).collect();
     let name = if name.trim().is_empty() { "Tratto".to_owned() } else { name.trim().to_owned() };
