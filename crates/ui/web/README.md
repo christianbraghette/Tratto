@@ -29,6 +29,8 @@ Tested in Edge (WebGPU):
   (`stroke_gpu`); the highlighter's darken blend keeps the ink under it
 - pen pressure from the browser's Pointer Events (`input/web_pen.rs`);
   eframe takes a pen for a mouse, the pressure comes from there
+- full screen (the title bar's button, F11): the browser's full screen
+  (`web::set_fullscreen`), with the app's full-screen layout
 - the library: a quick note created, written in, saved, and opened again
   with its strokes after the page was reloaded
 - files in: *Write on a PDF* (the browser's file picker, then the PDF's
@@ -51,7 +53,7 @@ kept in the browser's local storage by eframe.
 | Printing | system print dialogs | export a PDF and print it from the browser |
 | Background work (export, search, loading, pictures) | no threads | done at once (`background::spawn`), holding up the frame; Web Workers later |
 | Updates (no Help > Check for updates, no check at start), file associations, window frame | desktop features | not needed: a web app is as new as its page |
-| Display settings (vsync, battery saver, frame rate limit, graphics backend), the library folder | the browser paces the frames and picks the graphics API; the library lives in the browser | hidden in Settings |
+| Display settings (vsync, battery saver, frame rate limit, graphics backend), the title bar choice, the library folder | the browser paces the frames and picks the graphics API; a tab has no title bar of its own; the library lives in the browser | hidden in Settings |
 
 The wasm file is about 10 MB before `wasm-opt`.
 

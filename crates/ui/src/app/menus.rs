@@ -1267,6 +1267,15 @@ impl InkApp {
                 }
             },
             Command::Laser => self.laser = !self.laser,
+            // The web: the browser shows the page full screen (eframe has no
+            // window to switch).
+            #[cfg(target_arch = "wasm32")]
+            Command::Fullscreen => {
+                self.presenting = None;
+                let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                crate::web::set_fullscreen(!fs);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             Command::Fullscreen => {
                 // Leaving full screen ends presenting too.
                 self.presenting = None;

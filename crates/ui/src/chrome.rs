@@ -558,6 +558,8 @@ pub fn window_transitions(enabled: bool) {
 /// screen's work area), and returns its own size un-maximized (in the
 /// system's workspace coordinates) for `set_normal_rect`. `None`: not done
 /// (not Windows, or not maximized).
+// The web: no window (see `Command::Fullscreen`).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn unmaximize_in_place() -> Option<[i32; 4]> {
     #[cfg(windows)]
     {

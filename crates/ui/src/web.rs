@@ -18,6 +18,25 @@ use crate::{app, stroke_gpu, web_storage};
 /// The id of the canvas the app runs in.
 const CANVAS_ID: &str = "tratto";
 
+/// The page is shown full screen.
+pub fn fullscreen() -> bool {
+    web_sys::window().and_then(|w| w.document()).is_some_and(|d| d.fullscreen_element().is_some())
+}
+
+/// Asks the browser to show the page full screen, or to stop. It does so
+/// only just after a click or a key press (as when the user asks for it),
+/// and Escape always leaves full screen; `fullscreen` says what happened.
+pub fn set_fullscreen(on: bool) {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
+    if on {
+        if let Some(page) = document.document_element() {
+            let _ = page.request_fullscreen();
+        }
+    } else {
+        document.exit_fullscreen();
+    }
+}
+
 /// Starts the app in the page's canvas.
 pub fn start() {
     let options = eframe::WebOptions::default();

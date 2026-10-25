@@ -247,10 +247,13 @@ impl InkApp {
                 )
                 .on_hover_text("Applied when you release the slider");
             });
-            row(ui, "Title bar", |ui| {
-                ui.checkbox(&mut s.custom_title_bar, "Custom, with the menus")
-                    .on_hover_text("Off: the system title bar, with the menus below it");
-            });
+            // The web: a browser tab has no title bar of its own to switch to.
+            if !cfg!(target_arch = "wasm32") {
+                row(ui, "Title bar", |ui| {
+                    ui.checkbox(&mut s.custom_title_bar, "Custom, with the menus")
+                        .on_hover_text("Off: the system title bar, with the menus below it");
+                });
+            }
             row(ui, "Toolbar", |ui| {
                 for (pos, label) in [(ToolbarPosition::Top, "Top"), (ToolbarPosition::Bottom, "Bottom")] {
                     ui.selectable_value(&mut s.toolbar_position, pos, label);

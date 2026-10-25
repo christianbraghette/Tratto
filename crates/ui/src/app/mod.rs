@@ -270,6 +270,8 @@ struct WindowChrome {
     /// The window state restored at startup has been checked.
     checked: bool,
     /// The window was maximized before entering fullscreen.
+    // The web: no window to maximize (see `Command::Fullscreen`).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     maximize_after_fullscreen: bool,
     /// Its size un-maximized then (Windows), put back once it is maximized
     /// again.
@@ -1180,6 +1182,13 @@ impl eframe::App for InkApp {
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // The web: eframe does not report full screen; the page always fills
+        // the window it is in.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(viewport) = raw_input.viewports.get_mut(&raw_input.viewport_id) {
+            viewport.fullscreen = Some(crate::web::fullscreen());
+            viewport.maximized = Some(true);
+        }
         // Wait first, so the frame gets the pen samples that arrive meanwhile.
         self.frame_limit.wait(self.settings.fps_limit);
         self.inject_pen_events(ctx, raw_input);
