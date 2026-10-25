@@ -3,7 +3,7 @@
 
 //! Kinetic scrolling: momentum, wheel acceleration and eased jumps.
 //!
-//! Three sources move the view:
+//! Four sources move the view:
 //!
 //! * **Wheel notches** add an impulse that decays exponentially, so a notch
 //!   glides instead of jumping. Notches in quick succession in the same
@@ -12,11 +12,14 @@
 //!   setting.
 //! * **Flings**: releasing a pan drag keeps the release velocity (scaled by
 //!   a setting) and lets it decay with lower friction.
+//! * **Swipes** on a touchpad behave like a finger on the screen: the view
+//!   follows the stream of small deltas (eased over a few milliseconds, as
+//!   the OS delivers them unevenly), faster the faster the swipe, and glides
+//!   on with the release velocity once the deltas stop (fingers lifted).
+//!   Where the OS adds its own inertia the stream just fades out, too slow
+//!   to fling again.
 //! * **Targets** (Page Up / Down, Home / End, jump to page) are approached with
 //!   exponential easing.
-//!
-//! Touchpad deltas are *not* routed through here: they are applied directly
-//! because the OS already provides their inertia where it exists.
 //!
 //! All quantities are in content units (seconds for time). With exponential
 //! decay `v(t) = v0·e^(-k·t)` the total travel is `v0 / k`, so an impulse of
@@ -46,6 +49,16 @@ const FLING_REST: f64 = 0.05;
 const MIN_SPEED_PT: f32 = 20.0;
 /// Fling speed limit (points/s on screen).
 const MAX_FLING_PT: f32 = 6000.0;
+/// Rate (1/s) at which swipe deltas are caught up with: ~90 % in 40 ms.
+const SWIPE_RATE: f32 = 60.0;
+/// No swipe delta for this long (s): the fingers were lifted.
+const SWIPE_LIFT: f64 = 0.04;
+/// Swipes slower than this (points/s on screen) are neither accelerated nor
+/// glide on...
+const SWIPE_SLOW_PT: f32 = 250.0;
+/// ...from this speed on they get the full extra gain, at acceleration 1.
+const SWIPE_FAST_PT: f32 = 2500.0;
+const SWIPE_BOOST: f32 = 1.5;
 
 #[derive(Default)]
 pub struct Kinetic {
@@ -55,12 +68,23 @@ pub struct Kinetic {
     boost: f32,
     last_notch: Option<(f64, Vec2)>,
     drag: VecDeque<(f64, Vec2)>,
+    /// Recent touchpad deltas, as reported (before acceleration).
+    swipe: VecDeque<(f64, Vec2)>,
+    /// The acceleration of the latest swipe delta.
+    swipe_gain: f32,
+    /// Swipe distance not yet applied to the view.
+    pending: Vec2,
 }
 
 impl Kinetic {
     /// Whether the view is still moving (the caller should keep repainting).
     pub fn is_active(&self) -> bool {
-        self.velocity != Vec2::ZERO || self.target.is_some()
+        self.velocity != Vec2::ZERO || self.target.is_some() || self.pending != Vec2::ZERO || self.is_swiping()
+    }
+
+    /// Whether a touchpad swipe is in progress (deltas still streaming).
+    pub fn is_swiping(&self) -> bool {
+        !self.swipe.is_empty()
     }
 
     /// Stops all motion (e.g. when the user starts drawing or zooms).
@@ -68,6 +92,8 @@ impl Kinetic {
         self.velocity = Vec2::ZERO;
         self.target = None;
         self.drag.clear();
+        self.swipe.clear();
+        self.pending = Vec2::ZERO;
     }
 
     /// One discrete wheel step moving the view by `delta` content units.
@@ -106,22 +132,58 @@ impl Kinetic {
     /// The drag ended; continues with the release velocity, if any, times
     /// `strength` (`0`: no fling, `1`: the default).
     pub fn release(&mut self, now: f64, scale: f32, strength: f32) {
-        let samples: Vec<_> = self.drag.drain(..).filter(|(t, _)| now - t <= FLING_WINDOW).collect();
-        let Some(&(last, _)) = samples.last() else {
+        let rested = self.drag.back().is_none_or(|(last, _)| now - last > FLING_REST);
+        let v = sample_velocity(&self.drag, now);
+        self.drag.clear();
+        if !rested && let Some(v) = v {
+            self.fling(v, scale, strength, MIN_SPEED_PT * 4.0);
+        }
+    }
+
+    /// One touchpad delta moving the view by `delta` content units, eased in
+    /// over the next frames. `accel` scales how much faster quick swipes go
+    /// (`0`: not at all, `1`: the default).
+    pub fn swipe(&mut self, delta: Vec2, now: f64, scale: f32, accel: f32) {
+        // Fingers on the pad hold the view, as on a touch screen.
+        self.velocity = Vec2::ZERO;
+        self.target = None;
+        if self.swipe.back().is_some_and(|(_, prev)| prev.dot(delta) < 0.0) {
+            // Reversed: the speed so far is the other way.
+            self.swipe.clear();
+            self.pending = Vec2::ZERO;
+        }
+        self.swipe.push_back((now, delta));
+        while self.swipe.front().is_some_and(|(t, _)| now - t > FLING_WINDOW) {
+            self.swipe.pop_front();
+        }
+        let speed_pt = sample_velocity(&self.swipe, now).map_or(0.0, |v| v.length() * scale);
+        let fast = ((speed_pt - SWIPE_SLOW_PT) / (SWIPE_FAST_PT - SWIPE_SLOW_PT)).clamp(0.0, 1.0);
+        self.swipe_gain = 1.0 + accel.max(0.0) * SWIPE_BOOST * fast;
+        self.pending += delta * self.swipe_gain;
+    }
+
+    /// Ends the swipe once its deltas have stopped coming (the fingers were
+    /// lifted): the view glides on with the release velocity times
+    /// `strength` (`0`: no glide). Call every frame.
+    pub fn swipe_idle(&mut self, now: f64, scale: f32, strength: f32) {
+        let Some(&(last, _)) = self.swipe.back() else {
             return;
         };
-        if now - last > FLING_REST {
+        if now - last < SWIPE_LIFT {
             return;
         }
-        let first = samples[0].0;
-        // Each sample is the movement of one frame, so the span starts one
-        // frame before the first sample; approximated by the mean interval.
-        let n = samples.len() as f64;
-        let span = if n > 1.0 { (last - first) * n / (n - 1.0) } else { 1.0 / 60.0 };
-        let total = samples.iter().fold(Vec2::ZERO, |acc, (_, d)| acc + *d);
-        let v = total / span.max(1.0 / 240.0) as f32;
+        let v = sample_velocity(&self.swipe, last);
+        self.swipe.clear();
+        if let Some(v) = v {
+            self.fling(v * self.swipe_gain, scale, strength, SWIPE_SLOW_PT);
+        }
+    }
+
+    /// Glides on at `v` times `strength`, if faster than `min_pt` (points/s
+    /// on screen).
+    fn fling(&mut self, v: Vec2, scale: f32, strength: f32, min_pt: f32) {
         let speed_pt = v.length() * scale;
-        if speed_pt < MIN_SPEED_PT * 4.0 || strength <= 0.0 {
+        if speed_pt < min_pt || strength <= 0.0 {
             return;
         }
         self.velocity = v * (MAX_FLING_PT / speed_pt).min(1.0) * strength;
@@ -142,6 +204,19 @@ impl Kinetic {
     /// Advances by `dt` seconds. Moves `scroll` and keeps it within `0..=max`.
     pub fn step(&mut self, scroll: &mut Vec2, dt: f32, max: Vec2, scale: f32) {
         let clamp = |v: Vec2| vec2(v.x.clamp(0.0, max.x), v.y.clamp(0.0, max.y));
+        if self.pending != Vec2::ZERO {
+            let k = 1.0 - (-SWIPE_RATE * dt).exp();
+            let moved = if self.pending.length() * scale < 0.5 { self.pending } else { self.pending * k };
+            let before = *scroll;
+            *scroll = clamp(*scroll + moved);
+            self.pending -= moved;
+            // At an edge the rest of the swipe has nowhere to go.
+            for d in 0..2 {
+                if (*scroll)[d] != before[d] + moved[d] {
+                    self.pending[d] = 0.0;
+                }
+            }
+        }
         if let Some(t) = self.target {
             let t = clamp(t);
             let k = 1.0 - (-TARGET_RATE * dt).exp();
@@ -172,6 +247,19 @@ impl Kinetic {
             self.velocity = Vec2::ZERO;
         }
     }
+}
+
+/// The velocity (content units/s) of the movement `samples` record, over
+/// the last [`FLING_WINDOW`] before `end`.
+fn sample_velocity(samples: &VecDeque<(f64, Vec2)>, end: f64) -> Option<Vec2> {
+    let recent: Vec<_> = samples.iter().filter(|(t, _)| end - t <= FLING_WINDOW).collect();
+    let (first, last) = (recent.first()?.0, recent.last()?.0);
+    // Each sample is the movement since the previous one, so the span starts
+    // one interval before the first sample; approximated by the mean one.
+    let n = recent.len() as f64;
+    let span = if n > 1.0 { (last - first) * n / (n - 1.0) } else { 1.0 / 60.0 };
+    let total = recent.iter().fold(Vec2::ZERO, |acc, (_, d)| acc + *d);
+    Some(total / span.max(1.0 / 240.0) as f32)
 }
 
 #[cfg(test)]
@@ -276,6 +364,56 @@ mod tests {
         k.drag(vec2(0.0, 20.0), 0.0);
         k.release(0.2, 1.0, 1.0);
         assert!(!k.is_active());
+    }
+
+    /// A swipe of `n` deltas of `d`, one every 1/120 s, then idle frames.
+    fn swipe(k: &mut Kinetic, s: &mut Vec2, n: usize, d: f32, accel: f32, strength: f32) {
+        let dt = 1.0 / 120.0;
+        for i in 0..n {
+            k.swipe(vec2(0.0, d), i as f64 * dt, 1.0, accel);
+            k.step(s, dt as f32, MAX, 1.0);
+        }
+        for i in n..n + 600 {
+            k.swipe_idle(i as f64 * dt, 1.0, strength);
+            k.step(s, dt as f32, MAX, 1.0);
+        }
+    }
+
+    #[test]
+    fn slow_swipe_follows_the_fingers() {
+        let mut k = Kinetic::default();
+        let mut s = Vec2::ZERO;
+        // 1 point per event: 120 points/s, below any acceleration or fling.
+        swipe(&mut k, &mut s, 30, 1.0, 1.0, 1.0);
+        assert!(!k.is_active());
+        assert!((s.y - 30.0).abs() < 0.5, "{}", s.y);
+    }
+
+    #[test]
+    fn fast_swipe_accelerates_and_glides() {
+        let travel = |accel: f32, strength: f32| {
+            let mut k = Kinetic::default();
+            let mut s = Vec2::ZERO;
+            swipe(&mut k, &mut s, 12, 30.0, accel, strength);
+            assert!(!k.is_active());
+            s.y
+        };
+        let plain = travel(0.0, 0.0);
+        assert!((plain - 360.0).abs() < 0.5, "{plain}");
+        assert!(travel(1.0, 0.0) > plain * 1.5, "accelerated");
+        assert!(travel(0.0, 1.0) > plain * 2.0, "glides on after the lift");
+    }
+
+    #[test]
+    fn touching_the_pad_stops_the_glide() {
+        let mut k = Kinetic::default();
+        let mut s = Vec2::ZERO;
+        k.notch(vec2(0.0, 100.0), 0.0, 1.0);
+        k.swipe(vec2(0.0, 1.0), 0.01, 1.0, 1.0);
+        assert_eq!(k.velocity, Vec2::ZERO);
+        k.swipe_idle(0.2, 1.0, 1.0);
+        run(&mut k, &mut s);
+        assert!(!k.is_active() && s.y <= 1.0);
     }
 
     #[test]

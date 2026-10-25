@@ -504,8 +504,8 @@ pub fn round_corners(frame: &eframe::Frame) {
 /// Windows: in fullscreen the system takes a swipe in from the screen's
 /// edges for its own gestures (the top one only shows a grabber, the left
 /// one the widgets), so the swipes that show the title bar and the sidebar
-/// never arrived. This hands them to the app, in fullscreen only. Does
-/// nothing elsewhere.
+/// never arrived. This hands them to the app, in fullscreen only, the swipe
+/// up for the taskbar too (see `show_taskbar`). Does nothing elsewhere.
 pub fn own_edge_swipes(frame: &eframe::Frame) {
     #[cfg(windows)]
     {
@@ -518,6 +518,15 @@ pub fn own_edge_swipes(frame: &eframe::Frame) {
     }
     #[cfg(not(windows))]
     let _ = frame;
+}
+
+/// Windows, fullscreen: shows the taskbar of the window's screen, as the
+/// system's swipe up from the bottom edge does (taken from it by
+/// `own_edge_swipes`). The taskbar is brought to the foreground, over the
+/// window; a tap back on the window hides it again. Does nothing elsewhere.
+pub fn show_taskbar() {
+    #[cfg(windows)]
+    taskbar::show(dwm::WINDOW.load(Ordering::Relaxed));
 }
 
 /// Windows: turns the window's own animations (maximize, restore) off or
@@ -697,6 +706,61 @@ mod placement {
         // SAFETY: our own window; `p` as read, its normal size changed.
         unsafe {
             SetWindowPlacement(hwnd, &p);
+        }
+    }
+}
+
+/// The taskbars: the main one (`Shell_TrayWnd`) and one per other screen
+/// (`Shell_SecondaryTrayWnd`), declared here so they need no optional
+/// windows-sys feature.
+#[cfg(windows)]
+mod taskbar {
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn FindWindowExW(parent: isize, after: isize, class: *const u16, title: *const u16) -> isize;
+        fn MonitorFromWindow(hwnd: isize, flags: u32) -> isize;
+        fn SetForegroundWindow(hwnd: isize) -> i32;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    /// The taskbar on the screen of `window` (the main one if none is).
+    fn of(window: isize) -> Option<isize> {
+        let (main, secondary) = (wide("Shell_TrayWnd"), wide("Shell_SecondaryTrayWnd"));
+        // SAFETY: null-terminated class names; the handles are only compared
+        // and passed back to user32.
+        unsafe {
+            let screen = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+            let primary = FindWindowExW(0, 0, main.as_ptr(), core::ptr::null());
+            if primary != 0 && MonitorFromWindow(primary, MONITOR_DEFAULTTONEAREST) == screen {
+                return Some(primary);
+            }
+            let mut bar = 0;
+            loop {
+                bar = FindWindowExW(0, bar, secondary.as_ptr(), core::ptr::null());
+                if bar == 0 {
+                    break;
+                }
+                if MonitorFromWindow(bar, MONITOR_DEFAULTTONEAREST) == screen {
+                    return Some(bar);
+                }
+            }
+            (primary != 0).then_some(primary)
+        }
+    }
+
+    pub fn show(window: isize) {
+        if window == 0 {
+            return;
+        }
+        if let Some(bar) = of(window) {
+            // SAFETY: a top-level window handle from FindWindowExW. Allowed:
+            // the swipe made this process the one with the last input.
+            unsafe { SetForegroundWindow(bar) };
         }
     }
 }

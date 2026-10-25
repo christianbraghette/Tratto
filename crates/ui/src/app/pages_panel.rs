@@ -31,6 +31,12 @@ const THUMB_MAX_W: f32 = 200.0;
 /// this far in.
 const SWIPE_EDGE: f32 = 24.0;
 const SWIPE_IN: f32 = 48.0;
+
+/// Whether `p` is close enough to the window's bottom edge to start the
+/// swipe that shows the taskbar.
+pub(super) fn from_bottom_edge(ctx: &egui::Context, p: egui::Pos2) -> bool {
+    ctx.viewport_rect().bottom() - p.y <= SWIPE_EDGE
+}
 /// Slide in / out time of the sidebar in fullscreen, in seconds.
 const SLIDE_TIME: f32 = 0.2;
 /// Fade-in time of a sidebar view opened or switched to, in seconds.
@@ -240,8 +246,9 @@ impl InkApp {
 
     /// Fullscreen, touch screens: a finger swiping in from the sidebar's
     /// window edge shows the sidebar, like its notch. The swipe down from
-    /// the top edge shows the title bar (see `chrome`); either way the
-    /// canvas ignores the finger (`edge_touch`) until it lifts.
+    /// the top edge shows the title bar (see `chrome`), the one up from the
+    /// bottom edge the taskbar (see `taskbar_swipe`); either way the canvas
+    /// ignores the finger (`edge_touch`) until it lifts.
     pub(super) fn edge_swipe(&mut self, ctx: &egui::Context, fullscreen: bool) {
         let (origin, pos, down, pressed) = ctx.input(|i| {
             (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down(), i.pointer.any_pressed())
@@ -260,7 +267,9 @@ impl InkApp {
         if pressed {
             self.edge_touch = fullscreen
                 && self.finger(ctx)
-                && origin.is_some_and(|o| o.y - screen.top() <= SWIPE_EDGE || hidden && from_side(o));
+                && origin.is_some_and(|o| {
+                    o.y - screen.top() <= SWIPE_EDGE || from_bottom_edge(ctx, o) || hidden && from_side(o)
+                });
         }
         if self.edge_touch
             && hidden
@@ -270,6 +279,31 @@ impl InkApp {
             let inward = if right { o.x - p.x } else { p.x - o.x };
             if inward >= SWIPE_IN && inward > (p.y - o.y).abs() {
                 self.show_fullscreen_sidebar();
+            }
+        }
+    }
+
+    /// Fullscreen, touch screens: a finger that started on the bottom edge
+    /// (`edge_touch`) and swipes up shows the taskbar, as outside the app
+    /// (the system's own swipe is turned off, see `chrome::own_edge_swipes`).
+    /// Once per touch.
+    pub(super) fn taskbar_swipe(&mut self, ctx: &egui::Context) {
+        let (origin, pos, down) =
+            ctx.input(|i| (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down()));
+        if !down {
+            self.taskbar_swiped = false;
+            return;
+        }
+        if self.taskbar_swiped || !self.edge_touch {
+            return;
+        }
+        if let (Some(o), Some(p)) = (origin, pos)
+            && from_bottom_edge(ctx, o)
+        {
+            let up = o.y - p.y;
+            if up >= SWIPE_IN && up > (p.x - o.x).abs() {
+                self.taskbar_swiped = true;
+                crate::chrome::show_taskbar();
             }
         }
     }

@@ -280,7 +280,7 @@ impl InkApp {
             });
             row(ui, "Touchpad", |ui| {
                 ui.add_enabled(smooth, strength_slider(&mut s.touchpad_accel))
-                    .on_hover_text("Acceleration: a quick swipe scrolls further")
+                    .on_hover_text("Acceleration and momentum: a quick swipe scrolls further and glides on")
                     .on_disabled_hover_text(off);
             });
             row(ui, "Touch", |ui| {

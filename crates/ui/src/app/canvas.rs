@@ -15,6 +15,7 @@ use eframe::egui::{
 use tratto_core::model::StrokeKind;
 use tratto_core::pdf_pages::{LinkAction, Target};
 
+use crate::input::touchpad::{self, is_wheel_notch};
 use crate::markdown;
 use crate::render::{self, Layer, Moved};
 use crate::scrollbar;
@@ -36,10 +37,6 @@ const AUTOSCROLL_EDGE: f32 = 48.0;
 const AUTOSCROLL_SPEED: f32 = 1400.0;
 /// One mouse wheel notch (points on screen): Windows' three lines.
 const WHEEL_NOTCH_PT: f32 = 100.0;
-/// Touchpad scrolling relative to the deltas it reports...
-const TOUCHPAD_GAIN: f32 = 0.6;
-/// ...doubled (at acceleration 1) for deltas this large (points per event).
-const TOUCHPAD_FAST_PT: f32 = 40.0;
 
 impl InkApp {
     pub(super) fn undo(&mut self) {
@@ -207,7 +204,8 @@ impl InkApp {
     }
 
     /// Mouse wheel and touchpad scrolling over the canvas. Wheel notches
-    /// glide and accelerate; touchpad deltas are applied directly.
+    /// glide and accelerate; touchpad swipes come already followed,
+    /// accelerated and gliding on, as points (see `input::touchpad`).
     /// Ctrl / Cmd + wheel is zoom and is handled elsewhere.
     fn wheel_input(&mut self, ui: &egui::Ui, canvas: Rect, scale: f32, now: f64) {
         let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
@@ -240,18 +238,16 @@ impl InkApp {
             let content = -d * self.settings.scroll_speed / scale;
             if notch && self.settings.smooth_scroll {
                 self.kinetic.notch(content, now, self.settings.mouse_accel);
-            } else if notch || unit == MouseWheelUnit::Page {
+            } else if notch
+                || unit == MouseWheelUnit::Page
+                || self.settings.smooth_scroll && unit == MouseWheelUnit::Point
+            {
                 self.kinetic.stop();
                 self.scroll += content;
             } else {
-                // A touchpad streams small deltas many times a second: as
-                // notches every swipe hit the maximum boost. Applied as they
-                // come (the OS adds its own inertia), with a gentle gain that
-                // grows with the swipe's speed.
+                // Without smooth scrolling the touchpad's deltas as reported.
                 self.kinetic.stop();
-                let fast = (d.length() / TOUCHPAD_FAST_PT).min(1.0);
-                let accel = if self.settings.smooth_scroll { self.settings.touchpad_accel } else { 0.0 };
-                self.scroll += content * TOUCHPAD_GAIN * (1.0 + accel * fast);
+                self.scroll += content * touchpad::GAIN;
             }
         }
     }
@@ -269,7 +265,8 @@ impl InkApp {
         // Ctrl + wheel / pinch zoom, anchored under the pointer; zoom from the
         // menu, anchored at the centre.
         let request = self.zoom_request.take();
-        if idle && (request.is_some() || ui.rect_contains_pointer(canvas)) {
+        // Not with three or four fingers down (see `system_gestures`).
+        if idle && (request.is_some() || ui.rect_contains_pointer(canvas) && !self.edge_touch) {
             let zd = request.unwrap_or_else(|| ui.input(|i| i.zoom_delta()));
             if (zd - 1.0).abs() > 1e-4 {
                 let anchor = ui
@@ -872,15 +869,6 @@ fn autoscroll_velocity(canvas: Rect, pointer: Pos2) -> Vec2 {
     let depth = |d: f32| ((AUTOSCROLL_EDGE - d) / AUTOSCROLL_EDGE).clamp(0.0, 1.0).powi(2);
     let axis = |p: f32, lo: f32, hi: f32| AUTOSCROLL_SPEED * (depth(hi - p) - depth(p - lo));
     vec2(axis(pointer.x, canvas.left(), canvas.right()), axis(pointer.y, canvas.top(), canvas.bottom()))
-}
-
-/// A wheel event from a mouse wheel's notches rather than a touchpad. Both
-/// arrive as lines on Windows: a notch is whole lines, a touchpad sends
-/// fractions (so does a high-resolution wheel, which then counts as a
-/// touchpad). Pixel deltas come from touchpads.
-fn is_wheel_notch(unit: MouseWheelUnit, delta: Vec2) -> bool {
-    let whole = |v: f32| (v - v.round()).abs() < 1e-3;
-    unit == MouseWheelUnit::Line && delta != Vec2::ZERO && whole(delta.x) && whole(delta.y)
 }
 
 #[cfg(test)]

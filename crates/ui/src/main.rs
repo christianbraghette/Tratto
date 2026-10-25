@@ -21,7 +21,7 @@
 //! - `toolbar`        the floating toolbars (tools, navigation, settings)
 //! - `settings`       persisted UI settings (toolbar position, tool styles)
 //! - `theme`          design system: colours, sizes, fonts, shared components
-//! - `input`          native pen input (Wayland tablet, Windows pen buttons)
+//! - `input`          native pen input (Wayland tablet, Windows pen buttons), multi-finger gestures
 //! - `desktop`        the desktop's window button layout (Linux portal)
 //! - `file_assoc`     Tratto as the system's PDF reader (file associations)
 //! - `file_picker`    the system's file dialogs, off the UI thread

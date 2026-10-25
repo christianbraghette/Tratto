@@ -41,6 +41,8 @@ use tratto_core::stroke_builder::StrokeBuilder;
 
 use crate::file_picker::{self, FilePicker};
 use crate::frame_limit::FrameLimiter;
+use crate::input::system_gestures::{self, FingerGestures};
+use crate::input::touchpad::Touchpad;
 use crate::input::wayland_drop::WaylandDrop;
 use crate::input::wayland_pen::WaylandPen;
 use crate::input::windows_pen::WindowsPen;
@@ -405,10 +407,16 @@ pub struct InkApp {
     context_menu: Option<ContextMenu>,
     /// The press that closed the context menu must not reach the canvas.
     swallow_press: bool,
-    /// Fullscreen: the finger down started on the top edge or the sidebar's
-    /// edge, a swipe that shows the title bar or the sidebar; the canvas
-    /// ignores it until it lifts.
+    /// Fullscreen: the finger down started on the top edge, the bottom one or
+    /// the sidebar's edge, a swipe that shows the title bar, the taskbar or
+    /// the sidebar; the canvas ignores it until it lifts.
     edge_touch: bool,
+    /// The finger down has already shown the taskbar (see `taskbar_swipe`).
+    taskbar_swiped: bool,
+    /// Fullscreen: three or four fingers, for the system's gestures.
+    finger_gestures: FingerGestures,
+    /// Touchpad swipes, before egui sees them (see `raw_input_hook`).
+    touchpad: Touchpad,
     /// Presentation mode (see `Presentation`).
     presenting: Option<Presentation>,
     /// Menu commands collected this frame, run after drawing.
@@ -567,6 +575,9 @@ impl InkApp {
             context_menu: None,
             swallow_press: false,
             edge_touch: false,
+            taskbar_swiped: false,
+            finger_gestures: FingerGestures::default(),
+            touchpad: Touchpad::default(),
             presenting: None,
             pending: Vec::new(),
             help: HelpWindows::default(),
@@ -817,12 +828,28 @@ impl InkApp {
             if !down {
                 self.edge_touch = false;
             } else if pressed {
+                // The bottom edge shows the taskbar, unless the bar is there.
+                let taskbar =
+                    |o| position == crate::settings::ToolbarPosition::Top && pages_panel::from_bottom_edge(ctx, o);
                 self.edge_touch = self.finger(ctx)
-                    && origin.is_some_and(|o| toolbar::from_bar_edge(ctx, position, o) <= toolbar::SWIPE_EDGE);
+                    && origin
+                        .is_some_and(|o| toolbar::from_bar_edge(ctx, position, o) <= toolbar::SWIPE_EDGE || taskbar(o));
             }
         } else {
             self.edge_swipe(ctx, fullscreen);
             self.sidebar(ui, fullscreen);
+        }
+        self.taskbar_swipe(ctx);
+        // Fullscreen: three or four fingers do what they do outside the app;
+        // the canvas ignores them.
+        let now = ctx.input(|i| i.time);
+        if let Some(gesture) = ctx.input(|i| self.finger_gestures.update(&i.events, now))
+            && fullscreen
+        {
+            system_gestures::run(gesture);
+        }
+        if fullscreen && self.finger_gestures.active() {
+            self.edge_touch = true;
         }
         if self.screen != Screen::Editor {
             // A note was picked in the notebook view and the editor closed.
@@ -1061,6 +1088,11 @@ impl eframe::App for InkApp {
         self.frame_limit.wait(self.settings.fps_limit);
         self.inject_pen_events(ctx, raw_input);
         self.inject_drop_events(raw_input);
+        let line = ctx.options(|o| o.input_options.line_scroll_speed);
+        let s = &self.settings;
+        if self.touchpad.process(raw_input, line, s.smooth_scroll, s.touchpad_accel) {
+            ctx.request_repaint();
+        }
     }
 
     /// The window background, visible only through gaps between panels:

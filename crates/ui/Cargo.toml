@@ -55,7 +55,8 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 
 # Subclasses the window to read the pen's buttons (see input/windows_pen.rs);
 # the registry for opening PDFs (see file_assoc.rs); the print dialog and
-# printing through GDI (see print.rs).
+# printing through GDI (see print.rs); the shortcuts of the system's
+# multi-finger gestures (see input/system_gestures.rs).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
@@ -66,6 +67,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Storage_Xps",
     "Win32_System_Com",
     "Win32_UI_Controls_Dialogs",
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 # Embeds the app icon (assets/icon/icon.ico) in the .exe, see build.rs.
