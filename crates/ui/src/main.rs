@@ -277,8 +277,8 @@ fn pick_adapter(
 /// DirectX 12 on Intel: with Vulkan its drivers take the fullscreen window
 /// for an exclusive one, and the screen flashes black whenever another window
 /// comes over it (Alt+Tab, the taskbar, the system's gestures). Vulkan on
-/// NVIDIA and AMD: with DirectX 12 the canvas breaks up while zooming and
-/// scrolling there.
+/// NVIDIA and AMD: with DirectX 12 the canvas breaks up there while zooming
+/// and scrolling, even with vsync (cause unknown).
 fn windows_backend(vendor: u32) -> wgpu::Backend {
     const INTEL: u32 = 0x8086;
     if vendor == INTEL { wgpu::Backend::Dx12 } else { wgpu::Backend::Vulkan }

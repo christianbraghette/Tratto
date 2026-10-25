@@ -715,27 +715,13 @@ impl InkApp {
     /// Presents with vsync when the setting, the battery saver or
     /// TRATTO_VSYNC asks for it. The surface is reconfigured only when that
     /// changes (plugging in, a setting), never in the middle of writing.
-    ///
-    /// Without vsync, DirectX 12 presents in mailbox mode: wgpu's choice
-    /// there (immediate) allows tearing, and NVIDIA's drivers flip such a
-    /// window straight to the screen, so zooming tears and scrolling splits
-    /// the page in bands. Mailbox shows the newest frame at the next refresh
-    /// instead, without waiting for it. (The window starts with wgpu's
-    /// choice, the backend is only known once it exists: switched here.)
     fn present_mode(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let vsync = self.settings.vsync || self.frame_limit.vsync_forced() || self.saving_power(ctx);
-        let mode = if vsync {
-            wgpu::PresentMode::AutoVsync
-        } else if self.backend_in_use == Some(wgpu::Backend::Dx12) {
-            wgpu::PresentMode::Mailbox
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
-        let Some(mut config) = frame.wgpu_surface_config() else { return };
-        if config.present_mode == mode || self.busy() {
+        if vsync == self.frame_limit.vsync() || self.busy() {
             return;
         }
-        config.present_mode = mode;
+        let Some(mut config) = frame.wgpu_surface_config() else { return };
+        config.present_mode = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
         frame.set_wgpu_surface_config(config);
         self.frame_limit.set_vsync(vsync);
     }
