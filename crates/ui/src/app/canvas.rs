@@ -604,9 +604,8 @@ impl InkApp {
         // ---- right click (or a finger's long press): context menu for what
         // is under the pointer
         let right_click = ui.input(|i| i.pointer.secondary_clicked());
-        let click_at = (right_click && ui.rect_contains_pointer(canvas))
-            .then(|| ui.input(|i| i.pointer.interact_pos()))
-            .flatten();
+        let click_at =
+            (right_click && ui.rect_contains_pointer(canvas)).then(|| ui.input(|i| i.pointer.interact_pos())).flatten();
         if let Some(pos) = click_at.or(held_at)
             && !self.busy()
             && self.saved_tool.is_none()

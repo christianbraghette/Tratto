@@ -17,7 +17,7 @@ use super::InkApp;
 use super::library_ui::{Dialog, location, when};
 use super::menus::SETTINGS_WINDOW;
 use crate::file_assoc;
-use crate::settings::{BatterySaver, EraserMode, SidebarSide, ToolbarPosition};
+use crate::settings::{self, BatterySaver, EraserMode, GraphicsBackend, SidebarSide, ToolbarPosition};
 use crate::theme::{self, ThemeMode, color, space};
 
 /// Note settings in the sidebar: default width and resize range.
@@ -209,6 +209,7 @@ impl InkApp {
         let vsync_forced = self.frame_limit.vsync_forced();
         let saving_power = self.saving_power(ui.ctx());
         let fps_overridden = self.frame_limit.overridden();
+        let (backend_chosen, backend_in_use) = (self.backend_chosen, self.backend_in_use);
         let s = &mut self.settings;
 
         if file_assoc::SUPPORTED {
@@ -368,6 +369,38 @@ impl InkApp {
             hint(ui, "The battery saver is on: Tratto waits for the display.");
         } else {
             hint(ui, "A lower limit uses less GPU while you write or scroll.");
+        }
+
+        if !GraphicsBackend::CHOICES.is_empty() {
+            let env_backend = eframe::egui_wgpu::wgpu::Backends::from_env().is_some();
+            rows(ui, "global_graphics", |ui| {
+                row(ui, "Graphics", |ui| {
+                    ui.add_enabled_ui(!env_backend, |ui| {
+                        egui::ComboBox::from_id_salt("graphics_backend")
+                            .selected_text(s.graphics_backend.label())
+                            .show_ui(ui, |ui| {
+                                for &backend in GraphicsBackend::CHOICES {
+                                    ui.selectable_value(&mut s.graphics_backend, backend, backend.label());
+                                }
+                            });
+                    })
+                    .response
+                    .on_hover_text(if cfg!(windows) {
+                        "The graphics API the window draws with; try another if the screen flickers or stutters.                          Automatic: DirectX 12 on Intel, Vulkan on NVIDIA and AMD"
+                    } else {
+                        "The graphics API the window draws with; try another if the screen flickers or stutters"
+                    })
+                    .on_disabled_hover_text("Set by the WGPU_BACKEND environment variable");
+                });
+            });
+            let in_use = backend_in_use.map(settings::backend_name).unwrap_or("none");
+            if s.graphics_backend != backend_chosen {
+                hint(ui, "Takes effect when Tratto restarts.");
+            } else if backend_chosen.backend().is_some_and(|b| Some(b) != backend_in_use) {
+                hint(ui, &format!("{} is not available here: Tratto draws with {in_use}.", backend_chosen.label()));
+            } else {
+                hint(ui, &format!("Drawing with {in_use}."));
+            }
         }
 
         section(ui, "New notes");

@@ -300,7 +300,8 @@ impl InkApp {
                     // context menu the press opens (see `touch_hold_input`).
                     let selected = !self.on_selected_text(view, pos) && self.select_word_at(view, pos);
                     self.text_handles |= selected;
-                    self.text_gesture = selected.then_some(TextGesture::Dragging { still: Some(pos), grab: Vec2::ZERO });
+                    self.text_gesture =
+                        selected.then_some(TextGesture::Dragging { still: Some(pos), grab: Vec2::ZERO });
                     self.kinetic.stop();
                 } else {
                     ctx.request_repaint_after(std::time::Duration::from_secs_f64(LONG_PRESS - (now - time)));

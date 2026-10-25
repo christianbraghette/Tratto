@@ -52,7 +52,7 @@ use crate::pdf_view::PdfTextures;
 use crate::render::{LiveStroke, PictureTextures, StrokeCache};
 use crate::saver::Saver;
 use crate::scrollbar;
-use crate::settings::{BatterySaver, NoteView, Settings, Sidebar, UpdateMode, ZoomMode};
+use crate::settings::{BatterySaver, GraphicsBackend, NoteView, Settings, Sidebar, UpdateMode, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::update::{self, Updater};
@@ -309,6 +309,10 @@ pub struct InkApp {
     pen_input: PenInput,
     /// Caps the frame rate without vsync.
     frame_limit: FrameLimiter,
+    /// The graphics backend chosen when Tratto started, and the one the
+    /// window draws with (they differ when the choice is not available).
+    backend_chosen: GraphicsBackend,
+    backend_in_use: Option<wgpu::Backend>,
     /// Tool to restore when the temporary eraser (pen eraser end / side button) is released.
     saved_tool: Option<Tool>,
     /// A drag that started on the grey area is scrolling the view.
@@ -517,6 +521,7 @@ impl InkApp {
         crate::win_frame::own_frame(settings.custom_title_bar);
         crate::win_frame::install(cc);
         crate::win_frame::open_maximized();
+        let backend_chosen = settings.graphics_backend;
 
         let mut app = Self {
             doc: Document::default(),
@@ -535,6 +540,8 @@ impl InkApp {
             status_at: None,
             pen_input: PenInput { pressure: 1.0, ..PenInput::default() },
             frame_limit: FrameLimiter::new(vsync),
+            backend_chosen,
+            backend_in_use: cc.wgpu_render_state.as_ref().map(|rs| rs.adapter.get_info().backend),
             saved_tool: None,
             panning: false,
             drag_pointer: None,
@@ -708,13 +715,27 @@ impl InkApp {
     /// Presents with vsync when the setting, the battery saver or
     /// TRATTO_VSYNC asks for it. The surface is reconfigured only when that
     /// changes (plugging in, a setting), never in the middle of writing.
+    ///
+    /// Without vsync, DirectX 12 presents in mailbox mode: wgpu's choice
+    /// there (immediate) allows tearing, and NVIDIA's drivers flip such a
+    /// window straight to the screen, so zooming tears and scrolling splits
+    /// the page in bands. Mailbox shows the newest frame at the next refresh
+    /// instead, without waiting for it. (The window starts with wgpu's
+    /// choice, the backend is only known once it exists: switched here.)
     fn present_mode(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let vsync = self.settings.vsync || self.frame_limit.vsync_forced() || self.saving_power(ctx);
-        if vsync == self.frame_limit.vsync() || self.busy() {
+        let mode = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else if self.backend_in_use == Some(wgpu::Backend::Dx12) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        let Some(mut config) = frame.wgpu_surface_config() else { return };
+        if config.present_mode == mode || self.busy() {
             return;
         }
-        let Some(mut config) = frame.wgpu_surface_config() else { return };
-        config.present_mode = if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
+        config.present_mode = mode;
         frame.set_wgpu_surface_config(config);
         self.frame_limit.set_vsync(vsync);
     }
