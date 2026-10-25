@@ -27,6 +27,7 @@ use crate::view::{Layout, MARGIN, TOP_PAD_PX, View};
 use super::InkApp;
 use super::menus::ContextMenu;
 use super::text::EDIT_MARGIN;
+use super::text_select::{LONG_PRESS, PRESS_MOVE};
 
 /// Places kept for Back (the oldest is forgotten).
 const NAV_BACK_MAX: usize = 50;
@@ -38,7 +39,67 @@ const AUTOSCROLL_SPEED: f32 = 1400.0;
 /// One mouse wheel notch (points on screen): Windows' three lines.
 const WHEEL_NOTCH_PT: f32 = 100.0;
 
+/// A finger held on the canvas, a long press opening the context menu.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum TouchHold {
+    /// Pressed at `pos` (screen) at `time`; opens the menu once held still
+    /// long enough.
+    Pressing { pos: Pos2, time: f64 },
+    /// The menu is open: the rest of the press, up to its release, does
+    /// nothing else.
+    Opened,
+}
+
 impl InkApp {
+    /// A finger's long press on the canvas (`resp`): where to open the
+    /// context menu, the frame it is held long enough. Not on text in the
+    /// reader or with the pointer tool, where it selects the word instead.
+    /// What the press began (a stroke, a lasso, a drag) ends there.
+    fn touch_hold_input(&mut self, ctx: &egui::Context, resp: &egui::Response, now: f64) -> Option<Pos2> {
+        let (pressed, down, pointer, multi) = ctx.input(|i| {
+            (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos(), i.multi_touch().is_some())
+        });
+        match self.touch_hold {
+            None => {
+                if pressed
+                    && !self.swallow_press
+                    && self.finger(ctx)
+                    && resp.is_pointer_button_down_on()
+                    && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
+                {
+                    self.touch_hold = Some(TouchHold::Pressing { pos, time: now });
+                }
+            }
+            Some(TouchHold::Pressing { pos, time }) => {
+                let moved = pointer.is_some_and(|p| p.distance(pos) > PRESS_MOVE);
+                if !down || moved || multi || self.panning || self.selecting_text() {
+                    self.touch_hold = None;
+                } else if now - time >= LONG_PRESS {
+                    self.touch_hold = Some(TouchHold::Opened);
+                    self.swallow_press = true;
+                    self.active = None;
+                    self.lasso = None;
+                    self.moving = None;
+                    self.text_press = None;
+                    self.finish_erase();
+                    self.finish_picture_drag();
+                    self.finish_transform();
+                    self.kinetic.stop();
+                    return Some(pos);
+                } else {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(LONG_PRESS - (now - time)));
+                }
+            }
+            Some(TouchHold::Opened) => {
+                self.swallow_press = true;
+                if !down {
+                    self.touch_hold = None;
+                }
+            }
+        }
+        None
+    }
+
     pub(super) fn undo(&mut self) {
         if !self.busy() && self.edit.is_none() {
             self.history.undo(&mut self.doc);
@@ -386,8 +447,9 @@ impl InkApp {
         }
         // Selecting text (the reader, the pointer tool), before taps and
         // links: a click that drops a selection does nothing else.
-        let mut click_used = false;
-        if self.navigating() && !self.busy() && !self.lasering() {
+        // The release of a long press that opened the menu is no tap.
+        let mut click_used = matches!(self.touch_hold, Some(TouchHold::Opened));
+        if self.navigating() && !self.busy() && !self.lasering() && !click_used {
             let v = View::new(canvas, self.scroll, scale, layout);
             click_used = self.text_input(ui.ctx(), &canvas_resp, &v, now);
         }
@@ -442,6 +504,8 @@ impl InkApp {
         }
         self.scroll = vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
 
+        // A finger held still opens the context menu (further down).
+        let held_at = self.touch_hold_input(ui.ctx(), &canvas_resp, now);
         let swallowed = std::mem::take(&mut self.swallow_press);
 
         // ---- drag on the grey area around the pages = pan (touch / pen friendly)
@@ -537,13 +601,15 @@ impl InkApp {
             // Out of the window (an item dragged there), where the pointer last was.
             moves.extend(canvas_resp.interact_pointer_pos().or(self.drag_pointer));
         }
-        // ---- right click: context menu for what is under the pointer
+        // ---- right click (or a finger's long press): context menu for what
+        // is under the pointer
         let right_click = ui.input(|i| i.pointer.secondary_clicked());
-        if right_click
+        let click_at = (right_click && ui.rect_contains_pointer(canvas))
+            .then(|| ui.input(|i| i.pointer.interact_pos()))
+            .flatten();
+        if let Some(pos) = click_at.or(held_at)
             && !self.busy()
             && self.saved_tool.is_none()
-            && ui.rect_contains_pointer(canvas)
-            && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
         {
             let c = view.screen_to_content(pos);
             let page = view.layout.page_at(c);

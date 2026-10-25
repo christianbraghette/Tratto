@@ -404,8 +404,13 @@ pub struct InkApp {
     text_layer: text_select::TextLayer,
     /// Selected text (the reader, the pointer tool).
     text_sel: Option<text_select::TextSelection>,
+    /// The selected text was selected with a finger or the pen: it shows
+    /// handles to drag its ends (the mouse has none).
+    text_handles: bool,
     /// A press or drag selecting text, if one is going on.
     text_gesture: Option<text_select::TextGesture>,
+    /// A finger held on the canvas, for the context menu (see `TouchHold`).
+    touch_hold: Option<canvas::TouchHold>,
     search: search::Search,
     search_panel: search_panel::SearchPanel,
     /// Canvas context menu (right click), if open.
@@ -501,6 +506,9 @@ impl InkApp {
     pub fn new(cc: &eframe::CreationContext<'_>, vsync: bool, open: Option<PathBuf>, reader: bool) -> Self {
         // We implement zoom ourselves; keep egui's UI from zooming on Ctrl +/-.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        // egui's long press on a touch screen (a context menu) takes as
+        // long as ours on the canvas and the text.
+        cc.egui_ctx.options_mut(|o| o.input_options.max_click_duration = text_select::LONG_PRESS);
         crate::theme::install(&cc.egui_ctx);
 
         let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, SETTINGS_KEY)).unwrap_or_default();
@@ -575,7 +583,9 @@ impl InkApp {
             text_press: None,
             text_layer: text_select::TextLayer::default(),
             text_sel: None,
+            text_handles: false,
             text_gesture: None,
+            touch_hold: None,
             search: search::Search::default(),
             search_panel: search_panel::SearchPanel::default(),
             context_menu: None,
@@ -745,6 +755,20 @@ impl InkApp {
     pub(super) fn finger(&self, ctx: &egui::Context) -> bool {
         let touch = ctx.input(|i| i.any_touches() || i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })));
         touch && !self.pen_input.down && !self.pen_input.windows_touch
+    }
+
+    /// A finger held still on a touch screen: a frame once it has been held
+    /// long enough, so a long press opens its context menu while still held,
+    /// everywhere (egui notices it only on a frame, else on the release).
+    fn wake_for_long_press(ctx: &egui::Context) {
+        let wait = ctx.input(|i| {
+            let p = &i.pointer;
+            let start = p.press_start_time().filter(|_| i.any_touches() && p.primary_down());
+            start.filter(|_| p.could_any_button_be_click()).map(|t| text_select::LONG_PRESS - (i.time - t))
+        });
+        if let Some(wait) = wait {
+            ctx.request_repaint_after(Duration::from_secs_f64(wait.max(0.0)));
+        }
     }
 
     /// The user picks a tool: fingers use it if it is one they take.
@@ -1038,6 +1062,7 @@ impl eframe::App for InkApp {
         // Before anything is painted: the palette of this frame.
         crate::theme::follow(ctx, self.settings.theme);
         self.present_mode(ctx, frame);
+        Self::wake_for_long_press(ctx);
         self.publish_clipboard(ctx);
         // Every frame, so that one pressed elsewhere is not pasted later.
         let hidden = self.hidden_paste(ctx);

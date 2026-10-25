@@ -158,7 +158,7 @@ impl InkApp {
     }
 
     /// Records everything erased during one drag as a single undo step.
-    fn finish_erase(&mut self) {
+    pub(super) fn finish_erase(&mut self) {
         self.last_erase_pos = None;
         if self.erase_session.is_empty() {
             return;

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, pos2};
+use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 
 use tratto_core::model::{Document, PdfBackground, TextBox};
 use tratto_core::pdf_pages::TextChar;
@@ -101,11 +101,18 @@ pub(super) enum TextGesture {
     Pressing { pos: Pos2, time: f64 },
     /// Selecting while the pointer moves, until it is released. `still`: a
     /// long press selected a word there; it stays until the pointer moves away.
-    Dragging { still: Option<Pos2> },
+    /// `grab`: from the pointer to where the selection ends (a handle is
+    /// held below the text).
+    Dragging { still: Option<Pos2>, grab: Vec2 },
 }
 
+/// The radius of a selection handle's drop, and how near a press takes it
+/// (points).
+const HANDLE: f32 = 11.0;
+const HANDLE_HIT: f32 = 26.0;
+
 /// How far a finger may move while pressed and still be a long press (points).
-const PRESS_MOVE: f32 = 8.0;
+pub(super) const PRESS_MOVE: f32 = 8.0;
 /// Near the canvas' top or bottom edge (points), a selection being dragged scrolls.
 const SCROLL_EDGE: f32 = 40.0;
 
@@ -181,6 +188,14 @@ impl InkApp {
         true
     }
 
+    /// The screen point `pos` is on a glyph of the selected text.
+    fn on_selected_text(&mut self, view: &View, pos: Pos2) -> bool {
+        let Some(sel) = self.text_sel else { return false };
+        let Some((page, i)) = self.glyph_under(view, pos) else { return false };
+        let len = self.page_glyphs(page).map_or(0, |g| g.len());
+        sel.on_page(page, len).is_some_and(|r| r.contains(&i))
+    }
+
     /// Selects all the text of `page`.
     pub(super) fn select_all_text(&mut self, page: u32) {
         match self.page_glyphs(page) {
@@ -228,6 +243,7 @@ impl InkApp {
     pub(super) fn text_input(&mut self, ctx: &egui::Context, resp: &egui::Response, view: &View, now: f64) -> bool {
         // The pen selects as the mouse does.
         let mouse = !self.finger(ctx);
+        let pen = self.pen_input.down || self.pen_input.windows_touch;
         let (pressed, down, pointer) =
             ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos()));
         let press = ctx.input(|i| i.pointer.press_origin());
@@ -235,13 +251,26 @@ impl InkApp {
 
         match self.text_gesture {
             None => {
-                if mouse
+                if pressed
+                    && resp.is_pointer_button_down_on()
+                    && let Some(p) = press
+                    && let Some((first, grab)) = self.text_handle_at(view, p)
+                    && let Some(sel) = self.text_sel
+                {
+                    // A handle pressed: its end of the selection follows, the other stays.
+                    let (start, end) = sel.ordered();
+                    let (anchor, focus) = if first { (end, start) } else { (start, end) };
+                    self.text_sel = Some(TextSelection { anchor, focus });
+                    self.text_gesture = Some(TextGesture::Dragging { still: None, grab });
+                    self.kinetic.stop();
+                } else if mouse
                     && resp.drag_started_by(egui::PointerButton::Primary)
                     && let Some(p) = press.filter(|p| self.glyph_under(view, *p).is_some())
                     && let Some(caret) = self.caret_under(view, p)
                 {
                     self.text_sel = Some(TextSelection { anchor: caret, focus: caret });
-                    self.text_gesture = Some(TextGesture::Dragging { still: None });
+                    self.text_handles = pen;
+                    self.text_gesture = Some(TextGesture::Dragging { still: None, grab: Vec2::ZERO });
                 } else if !mouse
                     && pressed
                     && resp.is_pointer_button_down_on()
@@ -253,6 +282,7 @@ impl InkApp {
                     && let Some(p) = pointer
                 {
                     used_click = self.select_word_at(view, p);
+                    self.text_handles = pen;
                 } else if resp.clicked() && self.text_sel.take().is_some() {
                     // A click elsewhere only drops the selection.
                     used_click = true;
@@ -266,14 +296,17 @@ impl InkApp {
                         used_click = true;
                     }
                 } else if now - time >= LONG_PRESS {
-                    self.text_gesture =
-                        self.select_word_at(view, pos).then_some(TextGesture::Dragging { still: Some(pos) });
+                    // On the selected text the selection stays, for the
+                    // context menu the press opens (see `touch_hold_input`).
+                    let selected = !self.on_selected_text(view, pos) && self.select_word_at(view, pos);
+                    self.text_handles |= selected;
+                    self.text_gesture = selected.then_some(TextGesture::Dragging { still: Some(pos), grab: Vec2::ZERO });
                     self.kinetic.stop();
                 } else {
                     ctx.request_repaint_after(std::time::Duration::from_secs_f64(LONG_PRESS - (now - time)));
                 }
             }
-            Some(TextGesture::Dragging { still }) => {
+            Some(TextGesture::Dragging { still, grab }) => {
                 if !down {
                     self.text_gesture = None;
                     // The release of a long press is no tap.
@@ -282,8 +315,8 @@ impl InkApp {
                     // The word a long press selected stays while held still on it.
                     && !still.is_some_and(|s| p.distance(s) <= PRESS_MOVE)
                 {
-                    self.text_gesture = Some(TextGesture::Dragging { still: None });
-                    if let (Some(caret), Some(sel)) = (self.caret_under(view, p), self.text_sel.as_mut()) {
+                    self.text_gesture = Some(TextGesture::Dragging { still: None, grab });
+                    if let (Some(caret), Some(sel)) = (self.caret_under(view, p + grab), self.text_sel.as_mut()) {
                         sel.focus = caret;
                     }
                     self.scroll_at_edge(ctx, view, p);
@@ -349,6 +382,63 @@ impl InkApp {
             if let Some(range) = selected.and_then(|s| s.on_page(page, glyphs.len())) {
                 fill(range, color::accent_alpha(80));
             }
+        }
+        self.paint_text_handles(painter, view);
+    }
+
+    /// The ends of text selected with a finger or the pen on screen, where
+    /// it can be selected (see `text_input`): the left edge of its first
+    /// line and the right edge of its last, each as the middle of that edge
+    /// and the line's height.
+    fn selection_ends(&mut self, view: &View) -> Option<[(Pos2, f32); 2]> {
+        if !self.text_handles || !self.navigating() || self.lasering() {
+            return None;
+        }
+        let sel = self.text_sel?;
+        let (start, end) = sel.ordered();
+        let mut line = |page: u32, last: bool| {
+            let glyphs = self.page_glyphs(page)?;
+            let lines = line_rects(&glyphs, sel.on_page(page, glyphs.len())?);
+            let r = if last { lines.last() } else { lines.first() }?;
+            let origin = view.page_origin_screen(page);
+            let x = if last { r.right() } else { r.left() };
+            Some((origin + vec2(x, r.center().y) * view.scale, r.height() * view.scale))
+        };
+        Some([line(start.page, false)?, line(end.page, true)?])
+    }
+
+    /// The handle of the selection near the screen point `pos`: whether it is
+    /// the first one, and from `pos` to the end of the selection it moves.
+    fn text_handle_at(&mut self, view: &View, pos: Pos2) -> Option<(bool, Vec2)> {
+        let ends = self.selection_ends(view)?;
+        let (first, (mid, _)) = ends
+            .into_iter()
+            .enumerate()
+            .map(|(i, end)| (i == 0, end))
+            .filter(|(_, (mid, h))| handle_center(*mid, *h).distance(pos) <= HANDLE_HIT)
+            .min_by(|(_, a), (_, b)| {
+                handle_center(a.0, a.1).distance(pos).total_cmp(&handle_center(b.0, b.1).distance(pos))
+            })?;
+        Some((first, mid - pos))
+    }
+
+    /// Two drops hanging below the ends of the selection, to drag them.
+    fn paint_text_handles(&mut self, painter: &egui::Painter, view: &View) {
+        let Some(ends) = self.selection_ends(view) else { return };
+        let ink = color::accent();
+        for (mid, h) in ends {
+            let bottom = pos2(mid.x, mid.y + h * 0.5);
+            // A circle and its tangents up to the end of the line: a drop.
+            let c = handle_center(mid, h);
+            let up = (c.y - bottom.y).max(HANDLE + 0.1);
+            let a = (HANDLE / up).acos();
+            let (s, k) = (HANDLE * a.sin(), HANDLE * a.cos());
+            painter.add(Shape::convex_polygon(
+                vec![bottom, pos2(c.x + s, c.y - k), pos2(c.x - s, c.y - k)],
+                ink,
+                Stroke::NONE,
+            ));
+            painter.circle_filled(c, HANDLE, ink);
         }
     }
 }
@@ -575,12 +665,29 @@ pub(super) fn word_at(glyphs: &[Glyph], i: usize) -> Range<usize> {
 
 /// The rectangles covering `range`, one per line (gaps between the words
 /// of a line filled).
+/// The middle of the drop of a selection handle, below the end of a line at
+/// `mid` (the middle of its edge) and `h` high.
+fn handle_center(mid: Pos2, h: f32) -> Pos2 {
+    pos2(mid.x, mid.y + h * 0.5 + HANDLE * 1.5)
+}
+
 pub(super) fn line_rects(glyphs: &[Glyph], range: Range<usize>) -> Vec<Rect> {
     let mut out: Vec<Rect> = Vec::new();
     for r in glyphs[range].iter().filter_map(|g| g.rect) {
         match out.last_mut() {
             Some(last) if same_line(*last, r) && r.left() >= last.left() - r.height() => *last = last.union(r),
             _ => out.push(r),
+        }
+    }
+    // Lines whose glyphs are taller than the line spacing would overlap
+    // (and the selection look darker there): they meet halfway instead.
+    for i in 1..out.len() {
+        let (a, b) = (out[i - 1], out[i]);
+        let side_by_side = a.left() < b.right() && b.left() < a.right();
+        if side_by_side && b.top() < a.bottom() && b.top() > a.top() && b.bottom() > a.bottom() {
+            let mid = (a.bottom() + b.top()) * 0.5;
+            out[i - 1].max.y = mid;
+            out[i].min.y = mid;
         }
     }
     out
