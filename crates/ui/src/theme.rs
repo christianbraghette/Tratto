@@ -60,6 +60,8 @@ pub mod color {
         /// Paper and its rules (the same paper in both themes).
         pub page: Color32,
         pub page_rule: Color32,
+        /// The dots of dotted paper (darker than rules: they are smaller).
+        pub page_dot: Color32,
         /// The page's outline on the desk.
         pub page_edge: Color32,
     }
@@ -84,6 +86,7 @@ pub mod color {
         danger: Color32::from_rgb(222, 70, 76),
         page: Color32::WHITE,
         page_rule: Color32::from_rgb(203, 216, 232),
+        page_dot: Color32::from_rgb(160, 176, 198),
         page_edge: Color32::from_rgb(20, 21, 23),
     };
 
@@ -107,6 +110,7 @@ pub mod color {
         danger: Color32::from_rgb(205, 43, 51),
         page: Color32::WHITE,
         page_rule: Color32::from_rgb(203, 216, 232),
+        page_dot: Color32::from_rgb(160, 176, 198),
         page_edge: Color32::from_rgb(170, 176, 185),
     };
 
@@ -150,6 +154,7 @@ pub mod color {
         danger,
         page,
         page_rule,
+        page_dot,
         page_edge,
     );
 

@@ -26,7 +26,7 @@ use eframe::egui::{
     pos2,
 };
 
-use tratto_core::model::{Document, Image, ImageData, PageKind, PageStyle, Stroke, TextBox};
+use tratto_core::model::{self, Document, Image, ImageData, PageKind, PageStyle, Stroke, TextBox};
 use tratto_core::pdf_pages::{self, PdfFile};
 
 use crate::app::clipboard::{Content, PageContent, SystemCopy};
@@ -103,8 +103,9 @@ struct Scene {
     /// Points to pixels of `primitives`.
     ppp: f32,
     atlas: ColorImage,
-    /// The paper's rules (pixels).
+    /// The paper's rules and dots (pixels).
     rules: Vec<Rect>,
+    dots: Vec<Rect>,
     /// The PDF page under it, and where it goes (pixels).
     underlay: Option<(Arc<PdfFile>, u32, Rect)>,
 }
@@ -180,7 +181,7 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
     painter.add(Shape::mesh(strokes(tratto_core::model::StrokeKind::Highlighter)));
     for t in &snap.texts {
         let color = Color32::from_rgb(t.color[0], t.color[1], t.color[2]);
-        crate::render::paint_text_box(&painter, at(pos2(t.x, t.y)), scale, t, color);
+        crate::render::paint_text_box(&painter, at(pos2(t.x, t.y)), (scale, scale), t, color);
     }
     painter.add(Shape::mesh(strokes(tratto_core::model::StrokeKind::Pen)));
     // Taken back before the frame ends: never shown.
@@ -201,21 +202,45 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
     };
     let rules =
         snap.rules.map(|style| rule_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
+    let dots = snap.rules.map(|style| dot_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
     let underlay = snap.underlay.as_ref().map(|(file, page, rect)| (file.clone(), *page, px(*rect)));
-    Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, rules, underlay }
+    Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, rules, dots, underlay }
+}
+
+/// The page-local positions of the rules of a page `extent` long.
+fn rule_steps(spacing: f32, extent: f32) -> impl Iterator<Item = f32> {
+    (1..).map(move |k| k as f32 * spacing).take_while(move |v| *v < extent)
 }
 
 /// The rules (and the grid's columns) of a page `size` large on paper
 /// `style`, as on screen: lines one unit thick, every `spacing`.
 fn rule_rects(style: PageStyle, size: egui::Vec2) -> Vec<Rect> {
+    if !matches!(style.kind, PageKind::Ruled | PageKind::Grid) {
+        return Vec::new();
+    }
     let spacing = style.spacing.max(8.0);
-    let steps = |extent: f32| (1..).map(move |k| k as f32 * spacing).take_while(move |v| *v < extent);
+    let steps = |extent: f32| rule_steps(spacing, extent);
     let mut rects: Vec<Rect> =
         steps(size.y).map(|y| Rect::from_min_max(pos2(0.0, y - 0.5), pos2(size.x, y + 0.5))).collect();
     if style.kind == PageKind::Grid {
         rects.extend(steps(size.x).map(|x| Rect::from_min_max(pos2(x - 0.5, 0.0), pos2(x + 0.5, size.y))));
     }
     rects
+}
+
+/// The dots of dotted paper on a page `size` large: squares as large as
+/// the round dots of the screen and the PDF.
+fn dot_rects(style: PageStyle, size: egui::Vec2) -> Vec<Rect> {
+    if style.kind != PageKind::Dotted {
+        return Vec::new();
+    }
+    let spacing = style.spacing.max(8.0);
+    let side = model::DOT_RADIUS * std::f32::consts::PI.sqrt();
+    rule_steps(spacing, size.y)
+        .flat_map(|y| {
+            rule_steps(spacing, size.x).map(move |x| Rect::from_center_size(pos2(x, y), egui::vec2(side, side)))
+        })
+        .collect()
 }
 
 /// Premultiplied RGBA pixels.
@@ -260,6 +285,10 @@ fn rasterise(scene: &Scene) -> Rgba {
     let [r, g, b, _] = crate::theme::color::page_rule().to_array().map(|c| c as f32 / 255.0);
     for rule in &scene.rules {
         fill_rect(&mut canvas, *rule, [r, g, b, 1.0]);
+    }
+    let [r, g, b, _] = crate::theme::color::page_dot().to_array().map(|c| c as f32 / 255.0);
+    for dot in &scene.dots {
+        fill_rect(&mut canvas, *dot, [r, g, b, 1.0]);
     }
     for (rect, data) in &scene.pictures {
         draw_picture(&mut canvas, *rect, data);
@@ -502,6 +531,14 @@ mod tests {
         assert_eq!(ruled.iter().map(|r| r.center().y).collect::<Vec<_>>(), [20.0, 40.0]);
         let grid = rule_rects(PageStyle { kind: PageKind::Grid, spacing: 20.0 }, size);
         assert_eq!(grid.len(), 2 + 4);
+        let dotted = PageStyle { kind: PageKind::Dotted, spacing: 20.0 };
+        assert!(rule_rects(dotted, size).is_empty());
+        let dots = dot_rects(dotted, size);
+        assert_eq!(
+            dots.iter().map(|r| r.center()).collect::<Vec<_>>()[..3],
+            [pos2(20.0, 20.0), pos2(40.0, 20.0), pos2(60.0, 20.0)]
+        );
+        assert_eq!(dots.len(), 4 * 2);
         // Partly covered pixels are partly painted.
         let mut canvas = Canvas { size: [4, 1], px: vec![[0.0; 4]; 4] };
         fill_rect(&mut canvas, Rect::from_min_max(pos2(0.5, 0.0), pos2(2.0, 1.0)), [1.0; 4]);

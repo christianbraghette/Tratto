@@ -47,7 +47,7 @@ fn bench_paint_page() {
     crate::stroke_gpu::pretend_installed();
     let mut doc = Document::default();
     written_page(&mut doc, 0);
-    let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: 1 };
+    let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: 1, canvas: false };
     let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0));
     let ctx = egui::Context::default();
     let mut cache = StrokeCache::default();
@@ -91,7 +91,7 @@ fn bench_paint_page() {
 /// `scale`; the milliseconds of `paint_strokes` per frame.
 fn paint_frames(doc: &Document, frames: usize, scale: impl Fn(usize) -> f32) -> f64 {
     crate::stroke_gpu::pretend_installed();
-    let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: doc.page_count };
+    let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: doc.page_count, canvas: false };
     let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0));
     let ctx = egui::Context::default();
     let mut cache = StrokeCache::default();
@@ -140,7 +140,7 @@ fn bench_zoom() {
 #[test]
 #[ignore = "benchmark: run with --release -- --ignored --nocapture"]
 fn bench_live_stroke() {
-    let layout = Layout { page_w: 794.0, page_h: 1123.0, count: 1 };
+    let layout = Layout { page_w: 794.0, page_h: 1123.0, count: 1, canvas: false };
     let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0));
     let view = View::new(rect, Vec2::ZERO, 1.83, layout);
     let ctx = egui::Context::default();
@@ -209,7 +209,7 @@ fn bench_page_changes() {
     crate::stroke_gpu::pretend_installed();
     let mut doc = Document::default();
     written_page(&mut doc, 0);
-    let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: 1 };
+    let layout = Layout { page_w: doc.page_width, page_h: doc.page_height, count: 1, canvas: false };
     let view =
         View::new(Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0)), Vec2::new(0.0, 200.0), 1.83, layout);
     let ctx = egui::Context::default();

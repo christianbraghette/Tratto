@@ -81,7 +81,9 @@ pub(super) struct ExportDialog {
     /// Notes ticked for `Scope::Selection`.
     selected: HashSet<PathBuf>,
     /// Other notes, loaded once for the preview and the export (`None` =
-    /// unreadable). The open note is always taken from memory.
+    /// unreadable), an infinite canvas made a page (`Document::as_pages`).
+    /// The open note is taken from memory, unless it is a canvas: then it is
+    /// here too, made a page when the dialog opened.
     loaded: HashMap<PathBuf, Option<Document>>,
     /// Index of the previewed page among the exported pages.
     preview: usize,
@@ -229,19 +231,20 @@ impl InkApp {
             if Some(path) != self.note_path.as_ref() && !d.loaded.contains_key(path) {
                 let doc = storage::load_note(path).ok().map(|(_, mut doc)| {
                     crate::markdown::lay_out_document(&self.egui_ctx, &mut doc);
-                    doc
+                    if doc.is_canvas() { doc.as_pages().into_owned() } else { doc }
                 });
                 d.loaded.insert(path.clone(), doc);
             }
         }
     }
 
-    /// The document of a listed note (the open one from memory).
+    /// The document of a listed note (the open one from memory, but for a
+    /// canvas; see `ExportDialog::loaded`).
     fn export_doc<'a>(&'a self, loaded: &'a HashMap<PathBuf, Option<Document>>, path: &Path) -> Option<&'a Document> {
-        if Some(path) == self.note_path.as_deref() {
-            Some(&self.doc)
-        } else {
-            loaded.get(path).and_then(Option::as_ref)
+        match loaded.get(path) {
+            Some(doc) => doc.as_ref(),
+            None if Some(path) == self.note_path.as_deref() => Some(&self.doc),
+            None => None,
         }
     }
 
@@ -330,6 +333,9 @@ impl InkApp {
             preview: 0,
             export_now: false,
         };
+        if let (Some(path), true) = (&self.note_path, self.doc.is_canvas()) {
+            d.loaded.insert(path.clone(), Some(self.doc.as_pages().into_owned()));
+        }
         self.apply_scope_defaults(&mut d);
         self.export_dialog = Some(d);
     }
@@ -770,9 +776,11 @@ impl InkApp {
 
     /// Asks where to save a picture of page `page` (as it looks: paper,
     /// rules, the PDF under it), then saves it.
+    /// A canvas: what is on it (`Document::as_pages`).
     pub(super) fn save_page_png(&mut self, page: u32) {
-        let snap = Snapshot::of_note_page(&self.doc, page);
-        self.ask_png_path(snap, &format!("page {}", page + 1));
+        let snap = Snapshot::of_note_page(&self.doc.as_pages(), page);
+        let what = if self.doc.is_canvas() { "canvas".to_owned() } else { format!("page {}", page + 1) };
+        self.ask_png_path(snap, &what);
     }
 
     /// Asks where to save a picture of what is selected (transparent around
@@ -848,7 +856,7 @@ fn paint_page(
     let p = ui.painter_at(paper);
     let on_pdf = opts.include_pdf_pages && doc.pdf_page(page).is_some();
     if on_pdf {
-        textures.paint(&p, doc, page, paper, true);
+        textures.paint(&p, doc, page, paper, true, 1.0);
     }
     let rgb = |(r, g, b): (f32, f32, f32)| Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
     let paint_strokes = |kind: StrokeKind| {
@@ -872,7 +880,20 @@ fn paint_page(
     // As in the PDF: rules, pictures, highlighters, text, pen.
     if opts.include_rules && doc.ruled(page) {
         let spacing = doc.page.spacing.max(8.0);
-        if spacing * f >= 2.5 {
+        if doc.page.kind == PageKind::Dotted {
+            if spacing * f >= 4.0 {
+                let r = (tratto_core::model::DOT_RADIUS * f).max(0.4);
+                let mut y = spacing;
+                while y < doc.page_height {
+                    let mut x = spacing;
+                    while x < doc.page_width {
+                        p.circle_filled(at(x, y), r, color::page_dot());
+                        x += spacing;
+                    }
+                    y += spacing;
+                }
+            }
+        } else if spacing * f >= 2.5 {
             let rule = Stroke::new(0.6, color::page_rule());
             let mut y = spacing;
             while y < doc.page_height {
@@ -888,7 +909,7 @@ fn paint_page(
             }
         }
     }
-    pictures.paint_page(&p, &doc.images, page, origin, f, &[]);
+    pictures.paint_page(&p, &doc.images, page, origin, (f, f), &[]);
     // Highlighters darken what is under them, as in the PDF.
     if opts.include_highlighter {
         let mut mesh = Mesh::default();
@@ -903,7 +924,7 @@ fn paint_page(
     }
     if opts.include_text {
         for t in doc.texts.iter().filter(|t| t.page == page) {
-            render::paint_text_box(&p, at(t.x, t.y), f, t, rgb(opts.ink_rgb(t.color, false)));
+            render::paint_text_box(&p, at(t.x, t.y), (f, f), t, rgb(opts.ink_rgb(t.color, false)));
         }
     }
     paint_strokes(StrokeKind::Pen);

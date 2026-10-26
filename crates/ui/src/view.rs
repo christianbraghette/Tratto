@@ -16,10 +16,15 @@
 //!
 //! Because strokes are stored in page space, changing the paper size or the
 //! number of pages never moves existing ink relative to its page.
+//!
+//! An infinite canvas is laid out like any note: its one page is just very
+//! large (`model::CANVAS_SIZE`). The view has no scroll bars then, and its
+//! fit zooms show the paper at 100 %.
 
 use std::ops::RangeInclusive;
 
 use eframe::egui::{Pos2, Rect, Vec2, pos2, vec2};
+use tratto_core::model::Document;
 
 use crate::settings::ZoomMode;
 
@@ -33,15 +38,32 @@ const BOTTOM_PAD_PX: f32 = 72.0;
 /// notch must not cover the page when scrolled to the top.
 pub const TOP_PAD_PX: f32 = 48.0;
 
+/// The zooms the view can have (percent); an infinite canvas can be seen
+/// from further away.
+const ZOOM_RANGE: RangeInclusive<u32> = 25..=400;
+const CANVAS_ZOOM_RANGE: RangeInclusive<u32> = 10..=400;
+
 /// Geometry of the stacked pages.
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     pub page_w: f32,
     pub page_h: f32,
     pub count: u32,
+    /// The note is an infinite canvas (`Document::is_canvas`).
+    pub canvas: bool,
 }
 
 impl Layout {
+    /// The pages of `doc`, stacked.
+    pub fn of(doc: &Document) -> Self {
+        Self { page_w: doc.page_width, page_h: doc.page_height, count: doc.page_count.max(1), canvas: doc.is_canvas() }
+    }
+
+    /// The zooms (percent) the view of these pages can have.
+    pub fn zoom_range(&self) -> RangeInclusive<u32> {
+        if self.canvas { CANVAS_ZOOM_RANGE } else { ZOOM_RANGE }
+    }
+
     pub fn content_w(&self) -> f32 {
         self.page_w + 2.0 * MARGIN
     }
@@ -157,6 +179,9 @@ pub struct View {
     /// Content-space position shown at the top-left of `rect`.
     pub scroll: Vec2,
     pub scale: f32,
+    /// The zoom the page is made at, drawn scaled to `scale` while the view
+    /// zooms (see `zoom`); else `scale`.
+    pub made: f32,
     /// Horizontal centring offset (screen px) when the content is narrower than `rect`.
     pub pad_x: f32,
     pub layout: Layout,
@@ -166,9 +191,11 @@ impl View {
     pub fn scale_for(zoom: ZoomMode, rect: Rect, layout: &Layout) -> f32 {
         let fit_w = rect.width() / layout.content_w();
         let s = match zoom {
+            // A canvas has no width to fit.
+            ZoomMode::FitWidth | ZoomMode::FitPage if layout.canvas => 1.0,
             ZoomMode::FitWidth => fit_w,
             ZoomMode::FitPage => fit_w.min((rect.height() - TOP_PAD_PX).max(1.0) / (layout.page_h + 2.0 * MARGIN)),
-            ZoomMode::Percent(p) => p as f32 / 100.0,
+            ZoomMode::Percent(p) => p.clamp(*layout.zoom_range().start(), *layout.zoom_range().end()) as f32 / 100.0,
         };
         s.clamp(0.1, 8.0)
     }
@@ -186,7 +213,8 @@ impl View {
     }
 
     pub fn new(rect: Rect, scroll: Vec2, scale: f32, layout: Layout) -> Self {
-        Self { rect, scroll, scale, pad_x: Self::pad_x_for(rect.width(), layout.content_w(), scale), layout }
+        let pad_x = Self::pad_x_for(rect.width(), layout.content_w(), scale);
+        Self { rect, scroll, scale, made: scale, pad_x, layout }
     }
 
     pub fn content_to_screen(&self, c: Pos2) -> Pos2 {
@@ -229,7 +257,7 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout { page_w: 794.0, page_h: 1123.0, count: 3 }
+        Layout { page_w: 794.0, page_h: 1123.0, count: 3, canvas: false }
     }
 
     #[test]
@@ -242,6 +270,15 @@ mod tests {
         // Left of the paper, and below the last page.
         assert_eq!(l.page_at(pos2(5.0, 100.0)), None);
         assert_eq!(l.page_at(pos2(100.0, l.page_top(2) + 1123.0 + 10.0)), None);
+    }
+
+    #[test]
+    fn a_canvas_fits_at_100_percent_and_zooms_further_out() {
+        let canvas = Layout { page_w: 100_000.0, page_h: 100_000.0, count: 1, canvas: true };
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 700.0));
+        assert_eq!(View::scale_for(ZoomMode::FitWidth, rect, &canvas), 1.0);
+        assert_eq!(View::scale_for(ZoomMode::FitPage, rect, &canvas), 1.0);
+        assert!(canvas.zoom_range().start() < layout().zoom_range().start());
     }
 
     #[test]

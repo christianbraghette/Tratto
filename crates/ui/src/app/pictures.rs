@@ -158,13 +158,7 @@ impl InkApp {
             self.commit_edit(&ctx);
         }
         let layout = self.layout();
-        let (page, center) = at.unwrap_or_else(|| {
-            let page = self.current_page.min(layout.count - 1);
-            let top = layout.page_top(page);
-            let (from, to) = self.shown_content;
-            let middle = (from.max(top) + to.min(top + layout.page_h)) * 0.5 - top;
-            (page, pos2(layout.page_w * 0.5, middle.clamp(0.0, layout.page_h)))
-        });
+        let (page, center) = at.unwrap_or_else(|| self.paste_place());
         let id = self.doc.alloc_id();
         let image = images::place(id, page, center, data, layout.page_w, layout.page_h);
         let index = self.doc.images.len();
@@ -366,7 +360,7 @@ mod tests {
         Image { id: 1, page: 0, x: 100.0, y: 100.0, width: 200.0, height: 100.0, data }
     }
 
-    const LAYOUT: Layout = Layout { page_w: 800.0, page_h: 1000.0, count: 3 };
+    const LAYOUT: Layout = Layout { page_w: 800.0, page_h: 1000.0, count: 3, canvas: false };
 
     #[test]
     fn moving_keeps_it_on_the_page() {

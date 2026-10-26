@@ -39,12 +39,15 @@ pub(super) const LIBRARY_DIALOG: &str = "library_dialog";
 /// Minimum width of every menu (title bar, context menus).
 const MENU_MIN_WIDTH: f32 = 200.0;
 
-/// Zoom levels stepped through by Zoom in / Zoom out, in percent.
-const ZOOM_STEPS: [u32; 15] = [25, 33, 50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400];
+/// Zoom levels stepped through by Zoom in / Zoom out, in percent (those the
+/// view can have, see `Layout::zoom_range`).
+const ZOOM_STEPS: [u32; 17] = [10, 15, 25, 33, 50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Command {
     NewNote,
+    /// A new infinite canvas, where a new note would go.
+    NewCanvas,
     QuickNote,
     NewNotebook,
     Import,
@@ -572,6 +575,7 @@ impl InkApp {
                 return;
             }
             push(entry(ui, icon::NOTE_PENCIL, "New note", &shortcut(&ctx, cmd, Key::N), true), ui, Command::NewNote);
+            push(entry(ui, icon::INFINITY, "New canvas", "", true), ui, Command::NewCanvas);
             push(
                 entry(ui, icon::LIGHTNING, "Quick note", &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::N), true),
                 ui,
@@ -678,13 +682,14 @@ impl InkApp {
         if editor && !self.reading() {
             ui.menu_button("Page", |ui| {
                 open = true;
-                self.page_entries(ui, self.current_page, &mut |ui, c| push(true, ui, c));
-                ui.separator();
+                // An infinite canvas is one page: nothing to insert, move or delete.
+                if !self.doc.is_canvas() {
+                    self.page_entries(ui, self.current_page, &mut |ui, c| push(true, ui, c));
+                    ui.separator();
+                }
                 let kind = self.doc.page.kind;
-                for (k, label) in
-                    [(PageKind::Blank, "Blank paper"), (PageKind::Ruled, "Ruled paper"), (PageKind::Grid, "Grid paper")]
-                {
-                    push(check(ui, kind == k, label, ""), ui, Command::PaperStyle(k));
+                for (k, label) in PageKind::ALL {
+                    push(check(ui, kind == k, &format!("{label} paper"), ""), ui, Command::PaperStyle(k));
                 }
                 ui.separator();
                 push(entry(ui, icon::GEAR_SIX, "Note settings...", "", true), ui, Command::NoteSettings);
@@ -951,11 +956,13 @@ impl InkApp {
                         push(ui, Command::Redo);
                     }
                     if let Some(page) = menu.page {
+                        let canvas = self.doc.is_canvas();
+                        let on_page = if canvas { "" } else { " on page" };
                         ui.separator();
-                        if entry(ui, icon::SELECTION_ALL, "Select all on page", "", true) {
+                        if entry(ui, icon::SELECTION_ALL, &format!("Select all{on_page}"), "", true) {
                             push(ui, Command::SelectAll(page));
                         }
-                        if entry(ui, icon::TEXT_AA, "Select all text on page", "", true) {
+                        if entry(ui, icon::TEXT_AA, &format!("Select all text{on_page}"), "", true) {
                             push(ui, Command::SelectAllText(page));
                         }
                         ui.separator();
@@ -968,6 +975,12 @@ impl InkApp {
                             push(ui, Command::InsertPicture(menu.at));
                         }
                         ui.separator();
+                        if canvas {
+                            if entry(ui, icon::FILE_PNG, "Save canvas as PNG...", "", true) {
+                                push(ui, Command::SavePagePng(page));
+                            }
+                            return;
+                        }
                         self.page_clipboard_entries(ui, page, &mut push);
                         ui.separator();
                         self.page_insert_entries(ui, page, &mut push);
@@ -1116,6 +1129,7 @@ impl InkApp {
             Command::OpenPdf if self.standalone.is_some() => self.show_dialog(Dialog::OpenPdf(String::new())),
             Command::CloseNote if self.standalone.is_some() => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::NewNote
+            | Command::NewCanvas
             | Command::QuickNote
             | Command::NewNotebook
             | Command::Import
@@ -1140,7 +1154,7 @@ impl InkApp {
             // A PDF in the reader has no notebook: it is searched by itself.
             Command::FindInNotebook if editor => self.find(Scope::Notebook),
             Command::FindNext(forward) if editor => self.find_next(forward),
-            Command::NewNote => {
+            Command::NewNote | Command::NewCanvas => {
                 let dir = match (&self.note_path, editor) {
                     (Some(p), true) => p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.library_root()),
                     _ => self.library_target_dir(),
@@ -1149,7 +1163,7 @@ impl InkApp {
                     self.close_note(ctx);
                 }
                 if self.screen == Screen::Library {
-                    self.new_note(&dir);
+                    self.new_note(&dir, cmd == Command::NewCanvas);
                 }
             }
             Command::QuickNote => {
@@ -1158,7 +1172,7 @@ impl InkApp {
                 }
                 if self.screen == Screen::Library {
                     let root = self.library_root();
-                    self.new_note(&root);
+                    self.new_note(&root, false);
                 }
             }
             Command::NewNotebook | Command::Import | Command::ImportPdf | Command::OpenPdf | Command::LibraryFolder => {
@@ -1207,10 +1221,12 @@ impl InkApp {
             }
             Command::ZoomIn | Command::ZoomOut => {
                 let now = (self.view_scale * 100.0).round() as u32;
+                let range = self.layout().zoom_range();
+                let mut steps = ZOOM_STEPS.iter().copied().filter(|s| range.contains(s));
                 let next = if cmd == Command::ZoomIn {
-                    ZOOM_STEPS.iter().copied().find(|&s| s > now).unwrap_or(400)
+                    steps.find(|&s| s > now).unwrap_or(*range.end())
                 } else {
-                    ZOOM_STEPS.iter().rev().copied().find(|&s| s < now).unwrap_or(25)
+                    steps.rev().find(|&s| s < now).unwrap_or(*range.start())
                 };
                 self.zoom_request = Some(next as f32 / now.max(1) as f32);
             }
@@ -1240,7 +1256,10 @@ impl InkApp {
                     // From the top of the page being read, at once: easing there
                     // while the zoom changes swoops across the pages.
                     self.kinetic.stop();
-                    self.scroll = egui::vec2(0.0, self.layout().page_stop(self.current_page));
+                    // A canvas is presented from where it is.
+                    if !self.doc.is_canvas() {
+                        self.scroll = egui::vec2(0.0, self.layout().page_stop(self.current_page));
+                    }
                     crate::toolbar::hide_presenting_bar(ctx);
                 }
             },

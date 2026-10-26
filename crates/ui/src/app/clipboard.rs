@@ -251,15 +251,18 @@ impl InkApp {
         }
     }
 
-    /// Where something pasted goes when no place is given: the middle of
-    /// what is shown of the current page.
-    fn paste_place(&self) -> (u32, Pos2) {
+    /// Where something pasted (or inserted) goes when no place is given:
+    /// the middle of what is shown of the current page.
+    pub(super) fn paste_place(&self) -> (u32, Pos2) {
         let layout = self.layout();
         let page = self.current_page.min(layout.count - 1);
-        let top = layout.page_top(page);
-        let (from, to) = self.shown_content;
-        let middle = (from.max(top) + to.min(top + layout.page_h)) * 0.5 - top;
-        (page, pos2(layout.page_w * 0.5, middle.clamp(0.0, layout.page_h)))
+        let origin = layout.page_origin(page);
+        let shown = self.shown_content;
+        let middle = |from: f32, to: f32, start: f32, len: f32| {
+            ((from.max(start) + to.min(start + len)) * 0.5 - start).clamp(0.0, len)
+        };
+        let x = middle(shown.left(), shown.right(), origin.x, layout.page_w);
+        (page, pos2(x, middle(shown.top(), shown.bottom(), origin.y, layout.page_h)))
     }
 
     /// Puts a copy of `content` on the note: centred at `at`, else where it
@@ -407,6 +410,9 @@ impl InkApp {
 
     /// Inserts `pages` so that the first gets `index`; one undo step.
     fn paste_pages(&mut self, pages: &[PageContent], index: u32) {
+        if self.doc.is_canvas() {
+            return self.toast("Pages cannot be pasted on a canvas: copy what is on them instead");
+        }
         self.before_page_change();
         let index = index.min(self.doc.page_count);
         let pdf_key = self.doc.pdf.as_ref().and_then(|p| p.file.as_ref()).map(|f| f.key);

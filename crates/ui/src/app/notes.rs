@@ -307,6 +307,9 @@ impl InkApp {
             // The canvas clamps it to the note (e.g. pages deleted elsewhere).
             self.scroll = vec2(view.scroll[0], view.scroll[1]);
             self.settings.zoom = view.zoom;
+        } else if self.doc.is_canvas() {
+            // Not at the canvas' corner, far from anything: where it is written on.
+            self.scroll = self.doc.canvas_area().min.to_vec2();
         }
         self.settings.last_note = Some(key.into_owned());
         self.last_fp = self.current_fingerprint();
@@ -503,6 +506,9 @@ impl InkApp {
     fn reset_editing_state(&mut self) {
         self.cache.clear();
         self.thumb_cache.clear();
+        // Another note is made at its own zoom at once, not drawn as zoomed to.
+        self.zoom_render = Default::default();
+        self.thumb_zoom = Default::default();
         self.pdf_textures.clear();
         self.pdf_nav.clear();
         self.nav_back.clear();

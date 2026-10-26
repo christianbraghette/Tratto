@@ -53,7 +53,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::journal::{self, Delta, DeltaV6};
-use crate::model::{Document, DocumentV6, Stroke};
+use emath::{Rect, pos2, vec2};
+
+use crate::model::{self, Document, DocumentV6, Stroke};
 use crate::pdf_pages::PdfFile;
 
 const MAGIC: &[u8; 4] = b"INK1";
@@ -103,6 +105,7 @@ pub struct NoteMeta {
     /// Seconds since the Unix epoch.
     pub created: u64,
     pub modified: u64,
+    /// The number of pages; 0 for an infinite canvas.
     pub pages: u32,
     pub preview: Preview,
 }
@@ -118,7 +121,22 @@ pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// What the library shows of a note's page count (`NoteMeta::pages`).
+fn shown_pages(doc: &Document) -> u32 {
+    if doc.is_canvas() { 0 } else { doc.page_count }
+}
+
+/// Page 1; of an infinite canvas, what is on it (`Document::canvas_area`),
+/// at least about as large as a page, so a few words are not shown huge.
 fn make_preview(doc: &Document) -> Preview {
+    let area = if doc.is_canvas() {
+        let a = doc.canvas_area();
+        let w = a.width().max(model::DEFAULT_PAGE_WIDTH);
+        Rect::from_min_size(a.min, vec2(w, a.height().max(w * 0.75)))
+    } else {
+        Rect::from_min_size(pos2(0.0, 0.0), vec2(doc.page_width, doc.page_height))
+    };
+    let (dx, dy) = (area.min.x, area.min.y);
     let strokes: Vec<&Stroke> = doc.strokes.iter().filter(|s| s.page == 0).collect();
     let total: usize = strokes.iter().map(|s| s.points.len()).sum();
     let step = total / PREVIEW_MAX_POINTS + 1;
@@ -131,7 +149,7 @@ fn make_preview(doc: &Document) -> Preview {
             .iter()
             .enumerate()
             .filter(|(i, _)| i % step == 0 || *i + 1 == n)
-            .map(|(_, p)| [p.x, p.y])
+            .map(|(_, p)| [p.x - dx, p.y - dy])
             .collect();
         if !pts.is_empty() {
             out.push(PreviewStroke { color: s.color, width: s.width, pts });
@@ -144,15 +162,15 @@ fn make_preview(doc: &Document) -> Preview {
             let chars = line.chars().count();
             if chars > 0 {
                 bars.push([
-                    t.x,
-                    t.y + i as f32 * t.line_h + t.line_h * 0.3,
+                    t.x - dx,
+                    t.y - dy + i as f32 * t.line_h + t.line_h * 0.3,
                     (chars as f32 * t.size * 0.5).min(t.width),
                     t.size * 0.5,
                 ]);
             }
         }
     }
-    Preview { page_w: doc.page_width, page_h: doc.page_height, strokes: out, bars }
+    Preview { page_w: area.width(), page_h: area.height(), strokes: out, bars }
 }
 
 /// First non-empty line of the top-most text box on page 1.
@@ -452,7 +470,7 @@ fn rolling_backup(path: &Path) {
 /// Modified time, page count, preview and, for auto-titled notes, the title.
 fn refresh_meta(meta: &mut NoteMeta, doc: &Document) {
     meta.modified = now_secs();
-    meta.pages = doc.page_count;
+    meta.pages = shown_pages(doc);
     meta.preview = make_preview(doc);
     if meta.auto_title
         && let Some(t) = auto_title(doc)
@@ -483,7 +501,7 @@ fn meta_from_file(path: &Path, doc: &Document) -> NoteMeta {
         auto_title: false,
         created: mtime,
         modified: mtime,
-        pages: doc.page_count,
+        pages: shown_pages(doc),
         preview: make_preview(doc),
     }
 }
@@ -649,6 +667,23 @@ mod tests {
             layout: None,
         });
         doc
+    }
+
+    #[test]
+    fn a_canvas_shows_what_is_on_it_in_the_library() {
+        let mut doc = Document::canvas(crate::model::PageStyle::default());
+        let id = doc.alloc_id();
+        let points = vec![Point::new(60_000.0, 60_000.0, 1.0), Point::new(60_100.0, 60_050.0, 1.0)];
+        doc.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 2.0, points));
+        let mut meta = NoteMeta::new("Canvas", false);
+        refresh_meta(&mut meta, &doc);
+        assert_eq!(meta.pages, 0, "a canvas, not a page count");
+        // About a page around the stroke, not the whole canvas.
+        let pv = &meta.preview;
+        assert!(pv.page_w >= model::DEFAULT_PAGE_WIDTH && pv.page_w < 1000.0, "{}", pv.page_w);
+        for [x, y] in &pv.strokes[0].pts {
+            assert!((0.0..pv.page_w).contains(x) && (0.0..pv.page_h).contains(y));
+        }
     }
 
     #[test]

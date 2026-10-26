@@ -215,9 +215,10 @@ pub fn from_bar_edge(ctx: &egui::Context, position: ToolbarPosition, p: Pos2) ->
 }
 
 /// How far the presentation bar is shown (0 hidden, 1 fully in); see
-/// `show_presenting`. A finger leaves no pointer to stay near it: after a
-/// swipe it stays until a press away from it. It also stays while a field
-/// in it (the page number) is being typed into.
+/// `show_presenting`. A finger or a pen leaves no pointer to stay near it
+/// once lifted: after a swipe, or a press on the bar, it stays until a press
+/// away from it. It also stays while a field in it (the page number) is
+/// being typed into, and while a menu of it (the zoom) is open.
 fn presenting_reveal(ctx: &egui::Context, position: ToolbarPosition) -> f32 {
     let id = egui::Id::unique("presenting_bar_reveal");
     let swipe_id = egui::Id::unique("presenting_bar_swiped");
@@ -235,11 +236,16 @@ fn presenting_reveal(ctx: &egui::Context, position: ToolbarPosition) -> f32 {
         && edge(p) - edge(o) >= SWIPE_IN
     {
         swiped = true;
-    } else if pressed && origin.is_some_and(|o| edge(o) > height + KEEP_PAST) {
-        swiped = false;
+    } else if pressed && let Some(o) = origin {
+        // A pen's or a finger's tap on the bar shown keeps it (the mouse
+        // stays near it anyway); a press away from it hides it.
+        let touch = ctx.input(|i| i.any_touches() || i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })));
+        let on_bar = shown && edge(o) <= height + KEEP_PAST;
+        swiped = on_bar && (touch || swiped);
     }
     let typing = ctx.memory(|m| m.focused().is_some());
-    let show = near || swiped || typing;
+    let menu = egui::Popup::is_any_open(ctx);
+    let show = near || swiped || typing || shown && menu;
     ctx.data_mut(|d| {
         d.insert_temp(id, show);
         d.insert_temp(swipe_id, swiped);

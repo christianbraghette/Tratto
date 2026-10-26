@@ -57,6 +57,7 @@ use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::update::{self, Updater};
 use crate::view::{Layout, View};
+use crate::zoom::ZoomRender;
 
 mod canvas;
 pub(crate) mod clipboard;
@@ -342,8 +343,12 @@ pub struct InkApp {
     picture_textures: PictureTextures,
     /// Cached anti-aliased meshes of finished strokes.
     cache: StrokeCache,
-    /// Same, at page-preview scale.
+    /// The zoom the canvas is made at while it zooms (see `zoom`).
+    zoom_render: ZoomRender,
+    /// Same, at page-preview scale, and the zoom it is made at (the panel
+    /// is resized).
     thumb_cache: StrokeCache,
+    thumb_zoom: ZoomRender,
     /// Notes written on a PDF: its pages as textures.
     pdf_textures: PdfTextures,
     /// The outline and links of the open note's PDF.
@@ -364,6 +369,8 @@ pub struct InkApp {
     panel_page: Option<u32>,
     /// Content-space y to scroll to on the next frame (jump to page).
     scroll_to: Option<f32>,
+    /// With `scroll_to`, the x to scroll to as well (a match on a canvas).
+    scroll_to_x: Option<f32>,
     /// Page in the middle of the view (highlighted in the panel).
     current_page: u32,
     /// The PDF open in the reader (read-only) instead of a note: its pages
@@ -465,8 +472,8 @@ pub struct InkApp {
     notebook_focused: bool,
     /// Zoom of the last frame (points per document unit).
     view_scale: f32,
-    /// The content shown in the last frame, from top to bottom (content y).
-    shown_content: (f32, f32),
+    /// The content shown in the last frame (content space, below the top pad).
+    shown_content: Rect,
     /// Zoom factor requested by a menu command, applied around the centre.
     zoom_request: Option<f32>,
     /// New versions from the GitHub releases (checked at startup).
@@ -562,7 +569,9 @@ impl InkApp {
             transform: None,
             picture_textures: PictureTextures::default(),
             cache: StrokeCache::default(),
+            zoom_render: ZoomRender::default(),
             thumb_cache: StrokeCache::default(),
+            thumb_zoom: ZoomRender::default(),
             pdf_textures: PdfTextures::default(),
             pdf_nav: PdfNav::default(),
             nav_back: Vec::new(),
@@ -572,6 +581,7 @@ impl InkApp {
             page_drag: None,
             panel_page: None,
             scroll_to: None,
+            scroll_to_x: None,
             current_page: 0,
             reader: None,
             carry_view: None,
@@ -628,7 +638,7 @@ impl InkApp {
             notebook_buf: String::new(),
             notebook_focused: false,
             view_scale: 1.0,
-            shown_content: (0.0, 0.0),
+            shown_content: Rect::NOTHING,
             zoom_request: None,
             updater: Updater::default(),
             file_picker: FilePicker::default(),
@@ -828,7 +838,7 @@ impl InkApp {
 
     /// The pages of the open note, stacked.
     fn layout(&self) -> Layout {
-        Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count.max(1) }
+        Layout::of(&self.doc)
     }
 
     /// One frame of the note editor.

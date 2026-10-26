@@ -3858,7 +3858,7 @@ dependencies = [
 
 [[package]]
 name = "tratto-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bincode",
  "emath 0.37.0",
@@ -3870,7 +3870,7 @@ dependencies = [
 
 [[package]]
 name = "tratto-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "bytemuck",

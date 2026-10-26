@@ -237,9 +237,10 @@ impl InkApp {
 
     /// Writing-area rectangle, zoom scale and whether a horizontal scrollbar
     /// is needed. The vertical scrollbar always occupies the right edge,
-    /// except while presenting: then the page has it all (no scroll bars).
+    /// except while presenting and on an infinite canvas: then the page has
+    /// it all (no scroll bars).
     fn canvas_geometry(&self, full: Rect, layout: &Layout) -> (Rect, f32, bool) {
-        if self.presenting.is_some() {
+        if self.presenting.is_some() || layout.canvas {
             return (full, View::scale_for(self.zoom(), full, layout), false);
         }
         let sb = scrollbar::THICKNESS;
@@ -315,8 +316,7 @@ impl InkApp {
 
     pub(super) fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         let full = ui.max_rect();
-        let layout =
-            Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count.max(1) };
+        let layout = Layout::of(&self.doc);
         ui.painter().rect_filled(full, 0.0, crate::theme::color::desk());
 
         // ---- geometry and zoom
@@ -336,7 +336,8 @@ impl InkApp {
                     .unwrap_or_else(|| canvas.center());
                 let before = View::new(canvas, self.scroll, scale, layout);
                 let c = before.screen_to_content(anchor);
-                let pct = (scale * zd * 100.0).round().clamp(25.0, 400.0) as u32;
+                let range = layout.zoom_range();
+                let pct = ((scale * zd * 100.0).round() as u32).clamp(*range.start(), *range.end());
                 *self.zoom_mut() = ZoomMode::Percent(pct);
                 (canvas, scale, hbar) = self.canvas_geometry(full, &layout);
                 let pad = View::pad_x_for(canvas.width(), layout.content_w(), scale);
@@ -435,15 +436,19 @@ impl InkApp {
                     self.ease_scroll(base - vec2(0.0, page_len));
                 }
             }
+            // A canvas: the start and the end of what is on it.
+            let area = layout.canvas.then(|| self.doc.canvas_area());
             if home {
-                self.ease_scroll(vec2(base.x, 0.0));
+                self.ease_scroll(area.map_or(vec2(base.x, 0.0), |a| a.min.to_vec2()));
             }
             if end {
-                self.ease_scroll(vec2(base.x, max.y));
+                let bottom = |a: Rect| vec2(a.min.x, (a.max.y + 2.0 * MARGIN - visible).max(a.min.y));
+                self.ease_scroll(area.map_or(vec2(base.x, max.y), bottom));
             }
         }
         if let Some(y) = self.scroll_to.take() {
-            self.ease_scroll(vec2(self.scroll.x, y));
+            let x = self.scroll_to_x.take().unwrap_or(self.scroll.x);
+            self.ease_scroll(vec2(x, y));
         }
         // Selecting text (the reader, the pointer tool), before taps and
         // links: a click that drops a selection does nothing else.
@@ -539,20 +544,23 @@ impl InkApp {
         }
         // Hovering the grey area keeps the normal arrow.
 
-        // ---- scrollbars (interaction first, so the view below is final)
+        // ---- scrollbars (interaction first, so the view below is final);
+        // none on a canvas, so large that they would only jump
         let vbar_rect = Rect::from_min_max(pos2(canvas.right(), full.top()), pos2(full.right(), canvas.bottom()));
         let hbar_rect = Rect::from_min_max(pos2(full.left(), canvas.bottom()), pos2(canvas.right(), full.bottom()));
-        let vstate = scrollbar::update(
-            ui,
-            Id::unique("vbar"),
-            vbar_rect,
-            true,
-            &mut self.scroll.y,
-            max.y,
-            canvas.height() / scale,
-            layout.content_h(scale),
-            &mut self.vbar_grab,
-        );
+        let vstate = (!layout.canvas).then(|| {
+            scrollbar::update(
+                ui,
+                Id::unique("vbar"),
+                vbar_rect,
+                true,
+                &mut self.scroll.y,
+                max.y,
+                canvas.height() / scale,
+                layout.content_h(scale),
+                &mut self.vbar_grab,
+            )
+        });
         let hstate = hbar.then(|| {
             scrollbar::update(
                 ui,
@@ -574,8 +582,13 @@ impl InkApp {
             ui.ctx().request_repaint();
         }
 
-        let view = View::new(canvas, self.scroll, scale, layout);
-        self.shown_content = (self.scroll.y, self.scroll.y + visible);
+        let mut view = View::new(canvas, self.scroll, scale, layout);
+        // While zooming, the page is drawn as made at another zoom (see `zoom`).
+        let pinching = ui.input(|i| i.multi_touch().is_some());
+        view.made = self.zoom_render.update(ui.ctx(), scale, pinching);
+        let made = view.made;
+        let (left, right) = (view.screen_to_content(canvas.left_top()).x, view.screen_to_content(canvas.right_top()).x);
+        self.shown_content = Rect::from_min_max(pos2(left, self.scroll.y), pos2(right, self.scroll.y + visible));
         let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| canvas.contains(*p));
         self.picture_input(ui.ctx(), &view, pointer);
 
@@ -649,7 +662,7 @@ impl InkApp {
         render::paint_paper(&painter, &view);
         // A note written on a PDF: its pages, right on the paper.
         for page in view.visible_pages() {
-            self.pdf_textures.paint(&painter, &self.doc, page, view.page_screen_rect(page), true);
+            self.pdf_textures.paint(&painter, &self.doc, page, view.page_screen_rect(page), true, made / scale);
             // The reader: the links of the pages shown, ready before they are pointed at.
             if let (true, Some(pdf)) = (self.navigating(), &self.doc.pdf)
                 && let (Some(file), Some(pdf_page)) = (&pdf.file, self.doc.pdf_page(page))
@@ -678,17 +691,25 @@ impl InkApp {
         picture_moves.extend(self.picture_drag.as_ref().map(|d| d.now.clone()));
         for page in view.visible_pages() {
             let origin = view.page_origin_screen(page);
-            self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scale, &picture_moves);
+            let scales = (scale, made);
+            self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scales, &picture_moves);
         }
-        // The pictures of the pages next to those shown, ready to scroll to.
+        // The pictures of the pages next to those shown, ready to scroll to;
+        // on a canvas (one page) those within a screen of the view.
         let shown = view.visible_pages();
         let near = shown.start().saturating_sub(1)..=(shown.end() + 1).min(layout.count - 1);
-        self.picture_textures.prefetch(ui.ctx(), &self.doc.images, near, scale);
+        let around = self.shown_content.expand2(self.shown_content.size()).translate(-layout.page_origin(0).to_vec2());
+        let images = self
+            .doc
+            .images
+            .iter()
+            .filter(|i| near.contains(&i.page) && (!layout.canvas || i.rect().intersects(around)));
+        self.picture_textures.prefetch(ui.ctx(), images, made);
         // Those of a selection carried far (the view scrolled while dragging),
         // their page out of view: drawn where they are now all the same.
         for img in picture_moves.iter().filter(|i| !view.visible_pages().contains(&i.page)) {
             let origin = view.page_origin_screen(img.page);
-            self.picture_textures.paint_page(&painter, std::slice::from_ref(img), img.page, origin, scale, &[]);
+            self.picture_textures.paint_page(&painter, std::slice::from_ref(img), img.page, origin, (scale, made), &[]);
         }
         let strokes = &self.doc.strokes;
         render::paint_strokes(&painter, &view, Layer::Highlight, strokes, &mut self.cache, ppp, moved.as_ref());
@@ -875,7 +896,7 @@ impl InkApp {
         // pages panel, as wide as the page.
         let last = view.page_screen_rect(layout.count - 1);
         let btn = Rect::from_min_size(pos2(last.left(), last.bottom() + 18.0), vec2(last.width(), 40.0));
-        if btn.intersects(canvas) && !self.reading() {
+        if btn.intersects(canvas) && !self.reading() && !layout.canvas {
             let mut tile = ui.new_child(egui::UiBuilder::new().max_rect(canvas));
             tile.set_clip_rect(canvas);
             if theme::add_tile(&mut tile, btn, Id::unique("add_page"), "Add page").clicked() {
@@ -899,8 +920,8 @@ impl InkApp {
         let label = format!("Page {} / {}", cur + 1, layout.count);
         let full_painter = ui.painter();
         // Presenting: no scroll bar (its track has no width then).
-        if self.presenting.is_none() {
-            scrollbar::paint(full_painter, vbar_rect, true, &vstate, Some(&label));
+        if let (Some(v), None) = (&vstate, &self.presenting) {
+            scrollbar::paint(full_painter, vbar_rect, true, v, Some(&label));
         }
         if let Some(h) = &hstate {
             scrollbar::paint(full_painter, hbar_rect, false, h, None);

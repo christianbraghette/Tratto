@@ -54,14 +54,22 @@ impl InkApp {
         self.clear_selection();
     }
 
-    /// Inserts an empty page so that it gets `index` (undoable).
+    /// Inserts an empty page so that it gets `index` (undoable). Not on an
+    /// infinite canvas, which is one page.
     pub(super) fn insert_page(&mut self, index: u32) {
+        if self.doc.is_canvas() {
+            return;
+        }
         self.before_page_change();
         self.history.exec(&mut self.doc, Action::InsertPage { index, pdf_page: None });
     }
 
-    /// Deletes a page with its content (undoable).
+    /// Deletes a page with its content (undoable). Not the page of an
+    /// infinite canvas.
     pub(super) fn delete_page(&mut self, index: u32) {
+        if self.doc.is_canvas() {
+            return;
+        }
         self.before_page_change();
         self.history.exec(&mut self.doc, Action::DeletePage { index });
         self.toast(format!("Page {} deleted (Ctrl+Z restores it)", index + 1));
@@ -146,6 +154,8 @@ impl InkApp {
             self.settings.sidebar_last = view;
         }
         let note_settings = !self.reading();
+        // An infinite canvas has no pages to show.
+        let canvas = self.doc.is_canvas();
         let (top, bottom) = (toolbar::notch_margin(true), toolbar::notch_margin(false));
         // On the right the canvas scrollbar (same surface) sits next to the
         // sidebar, so the extra margin keeps the buttons exactly where they
@@ -170,7 +180,7 @@ impl InkApp {
                 if library && toolbar::notebook_button(ui, view == Sidebar::Notebook) {
                     clicked = Some(Sidebar::Notebook);
                 }
-                if toolbar::pages_button(ui, view == Sidebar::Pages) {
+                if !canvas && toolbar::pages_button(ui, view == Sidebar::Pages) {
                     clicked = Some(Sidebar::Pages);
                 }
                 if on_pdf && toolbar::outline_button(ui, view == Sidebar::Outline) {
@@ -218,6 +228,8 @@ impl InkApp {
         ui.set_opacity(opacity * alpha);
         match view {
             Sidebar::Notebook => self.notebook_view(ui),
+            // Kept for the next note with pages.
+            Sidebar::Pages if self.doc.is_canvas() => {}
             Sidebar::Pages => self.pages_view(ui),
             Sidebar::Settings => self.note_settings_view(ui),
             Sidebar::Outline => self.outline_view(ui),
@@ -365,8 +377,7 @@ impl InkApp {
 
     fn pages_view(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
-        let layout =
-            Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count.max(1) };
+        let layout = Layout::of(&self.doc);
         let ppp = ctx.pixels_per_point();
         let current = self.current_page;
         let blue = color::accent();
@@ -379,6 +390,7 @@ impl InkApp {
         let strokes = &self.doc.strokes;
         let texts = &self.doc.texts;
         let cache = &mut self.thumb_cache;
+        let thumb_zoom = &mut self.thumb_zoom;
         let pdf_textures = &mut self.pdf_textures;
         let pictures = &mut self.picture_textures;
         let drag = &mut self.page_drag;
@@ -412,7 +424,9 @@ impl InkApp {
                 let thumb_w = (avail - 2.0 * space::M).clamp(40.0, THUMB_MAX_W);
                 let thumb_h = thumb_w * layout.page_h / layout.page_w;
                 let scale = thumb_w / layout.page_w;
-                cache.begin_frame(scale, ppp);
+                // Resizing the panel: made again once it is done.
+                let made = thumb_zoom.update(ui.ctx(), scale, false);
+                cache.begin_frame(ppp);
                 let aa = 1.0 / ppp;
                 let pointer = ui.input(|i| i.pointer.interact_pos());
                 // Room around the page inside its card (more above, so the
@@ -446,9 +460,10 @@ impl InkApp {
                             p.rect_filled(rect.translate(vec2(0.0, 2.0)), 2.0, Color32::from_black_alpha(90));
                             p.rect_filled(rect, 0.0, crate::theme::color::page());
                             let clipped = ui.painter_at(rect);
-                            pdf_textures.paint(&clipped, doc, i, rect, false);
-                            pictures.paint_page(&clipped, &doc.images, i, rect.min, scale, &[]);
-                            render::paint_page_strokes(&clipped, rect.min.to_vec2(), scale, strokes, i, cache, aa);
+                            pdf_textures.paint(&clipped, doc, i, rect, false, 1.0);
+                            pictures.paint_page(&clipped, &doc.images, i, rect.min, (scale, made), &[]);
+                            let offset = rect.min.to_vec2();
+                            render::paint_page_strokes(&clipped, offset, scale, made, strokes, i, cache, aa);
                             render::paint_page_texts(&clipped, rect.min.to_vec2(), scale, texts, i);
                             let p = ui.painter();
                             if i == current {

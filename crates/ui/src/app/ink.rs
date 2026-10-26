@@ -124,7 +124,7 @@ impl InkApp {
     }
 
     fn erase_at(&mut self, center: Pos2, radius: f32) {
-        let layout = Layout { page_w: self.doc.page_width, page_h: self.doc.page_height, count: self.doc.page_count };
+        let layout = Layout::of(&self.doc);
         // The strokes hit, and where the eraser is on their page.
         let mut hits: Vec<(u64, Pos2)> = Vec::new();
         // The eraser circle may touch two neighbouring pages near the gap.

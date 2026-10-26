@@ -370,12 +370,29 @@ pub enum TextMark {
     Check { x: f32, top: f32, size: f32, checked: bool },
 }
 
+/// The paper. New kinds go at the end: files store the variant's index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageKind {
     Blank,
     Ruled,
     Grid,
+    /// A dot where the lines of the grid would cross.
+    Dotted,
 }
+
+impl PageKind {
+    /// Every kind, with its name, in the order menus list them.
+    pub const ALL: [(PageKind, &'static str); 4] = [
+        (PageKind::Blank, "Blank"),
+        (PageKind::Ruled, "Ruled"),
+        (PageKind::Grid, "Grid"),
+        (PageKind::Dotted, "Dotted"),
+    ];
+}
+
+/// Radius of the dots of dotted paper, in document units (PDF, pictures;
+/// the screen keeps them about this large at any zoom).
+pub const DOT_RADIUS: f32 = 1.2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PageStyle {
@@ -418,6 +435,19 @@ impl PdfBackground {
         Some([(page_w - dw) * 0.5, (page_h - dh) * 0.5, dw, dh])
     }
 }
+
+/// Side of the page of an infinite canvas, in document units.
+///
+/// An infinite canvas is a note of a single page this large, square, that
+/// is written on from its middle (`CANVAS_START`): over 25 m of paper each
+/// way, more than anyone scrolls to, while every coordinate stays precise
+/// in an `f32`. Nothing else marks a canvas (see `Document::is_canvas`), so
+/// the file format is that of any note. Paper sizes stay far below it.
+pub const CANVAS_SIZE: f32 = 100_000.0;
+/// Where a new canvas is shown from: its middle.
+pub const CANVAS_START: Pos2 = pos2(CANVAS_SIZE * 0.5, CANVAS_SIZE * 0.5);
+/// Paper around what is on a canvas when it is made a page (`canvas_area`).
+const CANVAS_MARGIN: f32 = 48.0;
 
 /// The whole note: `page_count` pages of `page_width` x `page_height`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -536,6 +566,65 @@ impl Default for Document {
 }
 
 impl Document {
+    /// An empty infinite canvas, on `page` paper.
+    pub fn canvas(page: PageStyle) -> Self {
+        Self { page_width: CANVAS_SIZE, page_height: CANVAS_SIZE, page, ..Self::default() }
+    }
+
+    /// The note is an infinite canvas (see `CANVAS_SIZE`).
+    pub fn is_canvas(&self) -> bool {
+        self.page_width >= CANVAS_SIZE && self.page_height >= CANVAS_SIZE
+    }
+
+    /// What is on page `page`, as a rectangle in page space (strokes with
+    /// their width, text boxes, pictures); `None` when nothing is.
+    pub fn content_bounds(&self, page: u32) -> Option<Rect> {
+        let strokes = self.strokes.iter().filter(|s| s.page == page).map(|s| {
+            let [x0, y0, x1, y1] = s.bounds;
+            Rect::from_min_max(pos2(x0, y0), pos2(x1, y1)).expand(s.width * 0.5)
+        });
+        let texts = self.texts.iter().filter(|t| t.page == page).map(TextBox::rect);
+        let images = self.images.iter().filter(|i| i.page == page).map(Image::rect);
+        strokes.chain(texts).chain(images).reduce(|a, b| a.union(b))
+    }
+
+    /// The part of a canvas that makes a page of it (exporting, printing,
+    /// the library's preview): what is on it with some paper around, its
+    /// corner on the rules (they stay where they are on the canvas). An
+    /// empty canvas: a page of the default size at `CANVAS_START`.
+    pub fn canvas_area(&self) -> Rect {
+        let Some(content) = self.content_bounds(0) else {
+            return Rect::from_min_size(CANVAS_START, vec2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT));
+        };
+        let spacing = self.page.spacing.max(8.0);
+        let snap = |v: f32| (v / spacing).floor() * spacing;
+        let content = content.expand(CANVAS_MARGIN);
+        let min = pos2(snap(content.min.x).max(0.0), snap(content.min.y).max(0.0));
+        Rect::from_min_max(min, content.max.min(pos2(CANVAS_SIZE, CANVAS_SIZE)))
+    }
+
+    /// A canvas as one page (`canvas_area`), for what needs a page of a
+    /// sensible size; any other note as it is.
+    pub fn as_pages(&self) -> std::borrow::Cow<'_, Document> {
+        if !self.is_canvas() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let area = self.canvas_area();
+        let (dx, dy) = (-area.min.x, -area.min.y);
+        let mut doc = self.clone();
+        (doc.page_width, doc.page_height) = (area.width(), area.height());
+        for s in &mut doc.strokes {
+            s.translate(dx, dy);
+        }
+        for t in &mut doc.texts {
+            (t.x, t.y) = (t.x + dx, t.y + dy);
+        }
+        for i in &mut doc.images {
+            (i.x, i.y) = (i.x + dx, i.y + dy);
+        }
+        std::borrow::Cow::Owned(doc)
+    }
+
     /// A note written on `file`: one page per PDF page, the note's pages as
     /// large as the first PDF page (others are fitted into them), blank
     /// paper (the PDF has its own lines).
@@ -683,6 +772,27 @@ mod tests {
         let r = h.recolored([10, 20, 30]);
         assert_eq!(r.color, [10, 20, 30, 96]);
         assert_ne!(r.rev, m.rev);
+    }
+
+    #[test]
+    fn a_canvas_is_made_a_page_around_what_is_on_it() {
+        let mut doc = Document::canvas(PageStyle::default());
+        assert!(doc.is_canvas() && !Document::default().is_canvas());
+        // Empty: a page where it is written on from.
+        assert_eq!(doc.canvas_area().min, CANVAS_START);
+        let mut s = line(2.0);
+        s.translate(50_010.0, 50_100.0);
+        doc.strokes.push(s);
+        let area = doc.canvas_area();
+        // All of the stroke (and its width), the corner on the rules.
+        assert!(area.contains_rect(Rect::from_min_max(pos2(50_009.0, 50_099.0), pos2(50_111.0, 50_101.0))));
+        assert_eq!((area.min.x % 36.0, area.min.y % 36.0), (0.0, 0.0));
+        let page = doc.as_pages();
+        assert!(!page.is_canvas());
+        assert_eq!((page.page_width, page.page_height), (area.width(), area.height()));
+        assert_eq!(page.strokes[0].points[0].pos2(), pos2(50_010.0, 50_100.0) - area.min.to_vec2());
+        // A note with pages stays as it is.
+        assert!(matches!(Document::default().as_pages(), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

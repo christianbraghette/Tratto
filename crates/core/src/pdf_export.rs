@@ -518,6 +518,22 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions, pictures: &HashMap
 
 fn write_rules(c: &mut String, doc: &Document) {
     let spacing = doc.page.spacing.max(8.0);
+    if doc.page.kind == PageKind::Dotted {
+        // Same blue grey as on screen (160, 176, 198): each dot a line of no
+        // length with round caps.
+        c.push_str(&format!("0.627 0.690 0.776 RG\n{} w\n1 J\n", num(2.0 * model::DOT_RADIUS, 2)));
+        let mut y = spacing;
+        while y < doc.page_height {
+            let mut x = spacing;
+            while x < doc.page_width {
+                let (dx, dy) = (num(x, 2), num(y, 2));
+                c.push_str(&format!("{dx} {dy} m {dx} {dy} l S\n"));
+                x += spacing;
+            }
+            y += spacing;
+        }
+        return;
+    }
     // Same light blue as on screen (200, 214, 230).
     c.push_str("0.784 0.839 0.902 RG\n1 w\n0 J\n");
     let mut y = spacing;
@@ -819,6 +835,17 @@ mod tests {
         // Only the pages exported count.
         let first = PdfOptions { pages: Some(0..=0), ..PdfOptions::default() };
         assert!(unshown_chars(&note, &first).is_empty());
+    }
+
+    #[test]
+    fn dotted_paper_is_dots() {
+        let mut doc = Document::default();
+        doc.page = crate::model::PageStyle { kind: PageKind::Dotted, spacing: 100.0 };
+        let mut c = String::new();
+        write_rules(&mut c, &doc);
+        // A4 (794 x 1123): 7 x 11 dots, each a round-capped line of no length.
+        assert_eq!(c.matches(" l S").count(), 7 * 11);
+        assert!(c.contains("1 J") && c.contains("100 100 m 100 100 l S"), "{c}");
     }
 
     #[test]

@@ -63,6 +63,7 @@ mod toolbar;
 mod update;
 mod view;
 mod win_frame;
+mod zoom;
 
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};

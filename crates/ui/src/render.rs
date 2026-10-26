@@ -10,18 +10,20 @@
 //! strokes never get darker, and nothing written or printed is covered.
 
 use std::collections::{HashMap, HashSet};
-use std::ops::{Range, RangeInclusive};
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    Align2, Color32, ColorImage, FontId, Painter, Pos2, Rect, Stroke as UiStroke, StrokeKind as UiStrokeKind,
-    TextureFilter, TextureHandle, TextureId, TextureOptions, Vec2, epaint::Mesh, pos2, vec2,
+    Color32, ColorImage, FontId, Painter, Pos2, Rect, Shape, Stroke as UiStroke, StrokeKind as UiStrokeKind,
+    TextureFilter, TextureHandle, TextureId, TextureOptions, Vec2, emath::TSTransform, epaint::Mesh, pos2, vec2,
 };
 
-use tratto_core::model::{self, Document, Image, ImageData, PageKind, Point, Stroke, StrokeKind, TextBox, TextMark};
+use tratto_core::model::{
+    self, Document, Image, ImageData, PageKind, Point, Stroke, StrokeKind, TextBox, TextLayout, TextMark,
+};
 
 use crate::markdown;
 use crate::stroke_gpu::{self, Batch, Blend};
@@ -239,12 +241,12 @@ impl PictureTextures {
         });
     }
 
-    /// The pictures on `pages` (those next to the ones shown, `scale`
-    /// points per document unit), at the level made while the view moves:
-    /// there at once when scrolled into view.
-    pub fn prefetch(&mut self, ctx: &eframe::egui::Context, images: &[Image], pages: RangeInclusive<u32>, scale: f32) {
+    /// The pictures `images` (those next to the ones shown, `scale` points
+    /// per document unit), at the level made while the view moves: there at
+    /// once when scrolled into view.
+    pub fn prefetch<'i>(&mut self, ctx: &eframe::egui::Context, images: impl Iterator<Item = &'i Image>, scale: f32) {
         let ppp = ctx.pixels_per_point();
-        for img in images.iter().filter(|i| pages.contains(&i.page)) {
+        for img in images {
             let key = img.data.key;
             let shown = img.width.max(img.height) * scale * ppp;
             let level = Self::moving_level(shown, img.data.width.max(img.data.height));
@@ -285,15 +287,16 @@ impl PictureTextures {
     }
 
     /// Paints the pictures of `page`, whose top-left corner is at `origin`
-    /// on screen, `scale` points per document unit. `moved` are pictures
-    /// shown at another place (being moved or resized).
+    /// on screen, `scale` points per document unit, decoded for the zoom
+    /// `made` (the zoom the page is made at, see `zoom`). `moved` are
+    /// pictures shown at another place (being moved or resized).
     pub fn paint_page(
         &mut self,
         painter: &Painter,
         images: &[Image],
         page: u32,
         origin: Pos2,
-        scale: f32,
+        (scale, made): (f32, f32),
         moved: &[Image],
     ) {
         for img in images {
@@ -306,7 +309,7 @@ impl PictureTextures {
             if !rect.intersects(painter.clip_rect()) {
                 continue;
             }
-            let shown = rect.width().max(rect.height()) * painter.ctx().pixels_per_point();
+            let shown = rect.width().max(rect.height()) * painter.ctx().pixels_per_point() * made / scale;
             match self.texture(painter.ctx(), &img.data, shown) {
                 Picture::Ready(tex) => {
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
@@ -333,9 +336,6 @@ impl PictureTextures {
 
 /// Cache entries unused for this many frames are dropped (bounds memory).
 const CACHE_TTL_FRAMES: u64 = 512;
-/// While zooming, batches are drawn scaled; they are made again at the new
-/// zoom once it has not changed for this long.
-const ZOOM_SETTLE: Duration = Duration::from_millis(150);
 /// A batch whose strokes were removed is compacted in place, its new strokes
 /// at the end made, unless more than this many of them are new or changed.
 const COMPACT_MAX_NEW: usize = 8;
@@ -408,17 +408,15 @@ struct PageBatch {
 
 /// The strokes as batches kept on the GPU (see `stroke_gpu`), at
 /// `page_space * scale` without translation: scrolling and page-size changes
-/// keep them, a change of pixels-per-point rebuilds them. While zooming they
-/// are drawn scaled (nothing is made again at every step) and rebuilt once
-/// the zoom settles. A batch is redone when its strokes change: strokes added
-/// at the end are just added (and only they are uploaded); otherwise the
-/// triangles of the strokes that did not change are copied, not made again.
+/// keep them, a change of pixels-per-point rebuilds them. They are made at
+/// the zoom asked for, which while the view zooms is not the one shown (see
+/// `zoom`): they are drawn scaled then. A batch is redone when its strokes
+/// change: strokes added at the end are just added (and only they are
+/// uploaded); otherwise the triangles of the strokes that did not change are
+/// copied, not made again.
 #[derive(Default)]
 pub struct StrokeCache {
     batches: HashMap<BatchKey, PageBatch>,
-    scale_bits: u32,
-    /// When the zoom last changed (`None`: not since the cache was made).
-    zoomed_at: Option<Instant>,
     ppp_bits: u32,
     frame: u64,
 }
@@ -428,15 +426,11 @@ impl StrokeCache {
         self.batches.clear();
     }
 
-    pub fn begin_frame(&mut self, scale: f32, ppp: f32) {
-        let (s, p) = (scale.to_bits(), ppp.to_bits());
+    pub fn begin_frame(&mut self, ppp: f32) {
+        let p = ppp.to_bits();
         if p != self.ppp_bits {
             self.batches.clear();
             self.ppp_bits = p;
-        }
-        if s != self.scale_bits {
-            self.scale_bits = s;
-            self.zoomed_at = Some(Instant::now());
         }
         self.frame += 1;
         if self.frame.is_multiple_of(256) {
@@ -445,46 +439,14 @@ impl StrokeCache {
         }
     }
 
-    /// The zoom is changing (it changed less than `ZOOM_SETTLE` ago).
-    fn zooming(&self) -> bool {
-        self.zoomed_at.is_some_and(|t| t.elapsed() < ZOOM_SETTLE)
-    }
-
-    /// While zooming: a frame once the zoom has settled, to make the batches
-    /// drawn scaled again at the new zoom (sharp, with the right edges).
-    fn settle_later(&self, painter: &Painter) {
-        if let Some(left) = self.zoomed_at.and_then(|t| ZOOM_SETTLE.checked_sub(t.elapsed())) {
-            painter.ctx().request_repaint_after(left);
-        }
-    }
-
-    /// The batch `key` holding exactly `strokes`, in this order, and how much
-    /// larger than made to draw it: made at `scale`, or, while zooming, an
-    /// unchanged batch made at another zoom.
-    fn batch<'s>(
-        &mut self,
-        key: BatchKey,
-        strokes: impl Iterator<Item = &'s Stroke>,
-        scale: f32,
-        aa: f32,
-    ) -> (&Batch, f32) {
+    /// The batch `key` holding exactly `strokes`, in this order, made at
+    /// `scale`.
+    fn batch<'s>(&mut self, key: BatchKey, strokes: impl Iterator<Item = &'s Stroke>, scale: f32, aa: f32) -> &Batch {
         let strokes: Vec<&Stroke> = strokes.collect();
         let same = |p: &Part, s: &&Stroke| p.id == s.id && p.rev == s.rev;
-        let zooming = self.zooming();
-        let other_zoom = self.batches.get(&key).filter(|e| e.scale != scale).map(|e| {
-            zooming && e.parts.len() == strokes.len() && e.parts.iter().zip(&strokes).all(|(p, s)| same(p, s))
-        });
-        match other_zoom {
-            Some(true) => {
-                let entry = self.batches.get_mut(&key).expect("looked up above");
-                entry.last_used = self.frame;
-                return (&entry.batch, scale / entry.scale);
-            }
-            // Settled, or changed meanwhile: made again at this zoom.
-            Some(false) => {
-                self.batches.remove(&key);
-            }
-            None => {}
+        // Made at another zoom: made again at this one.
+        if self.batches.get(&key).is_some_and(|e| e.scale != scale) {
+            self.batches.remove(&key);
         }
         let entry = self.batches.entry(key).or_insert_with(|| PageBatch {
             batch: Batch::default(),
@@ -502,7 +464,7 @@ impl StrokeCache {
                     parts.extend(strokes[kept..].iter().map(|s| tessellate_part(mesh, s, scale, aa)));
                 });
             }
-            return (&entry.batch, 1.0);
+            return &entry.batch;
         }
         // The triangles of the strokes before `kept` stay where they are, on
         // the GPU too: only the rest is uploaded again.
@@ -535,7 +497,7 @@ impl StrokeCache {
             });
             entry.parts.truncate(kept);
             entry.parts.extend(new_parts);
-            return (&entry.batch, 1.0);
+            return &entry.batch;
         }
         // Changed otherwise (strokes moved, put back in the middle): the rest
         // made again, the triangles of the unchanged strokes copied.
@@ -565,7 +527,7 @@ impl StrokeCache {
         });
         entry.parts.truncate(kept);
         entry.parts.extend(new_parts);
-        (&entry.batch, 1.0)
+        &entry.batch
     }
 }
 
@@ -619,9 +581,9 @@ pub struct Moved<'a> {
 }
 
 /// Paints the strokes of one layer of all visible pages, one batch per page
-/// (see [`StrokeCache`]). Strokes in `moved` are left out there and drawn
-/// as a batch of their own, at the drag offset (nothing is redone while
-/// dragging).
+/// (see [`StrokeCache`]), made at `view.made`. Strokes in `moved` are left
+/// out there and drawn as a batch of their own, at the drag offset (nothing
+/// is redone while dragging).
 pub fn paint_strokes(
     painter: &Painter,
     view: &View,
@@ -632,30 +594,33 @@ pub fn paint_strokes(
     moved: Option<&Moved>,
 ) {
     let aa = 1.0 / ppp;
-    cache.begin_frame(view.scale, ppp);
+    cache.begin_frame(ppp);
+    let (made, k) = (view.made, view.scale / view.made);
     let is_moved = |id: u64| moved.is_some_and(|m| m.ids.contains(&id));
     for page in view.visible_pages() {
         let in_page = strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer && !is_moved(s.id));
-        let (batch, k) = cache.batch(BatchKey { page, layer, moved: false }, in_page, view.scale, aa);
+        let batch = cache.batch(BatchKey { page, layer, moved: false }, in_page, made, aa);
         stroke_gpu::paint_batch(painter, batch, view.page_origin_screen(page).to_vec2(), k, layer.blend());
     }
     if let Some(m) = moved {
         let selected =
             strokes.iter().filter(|s| s.page == m.page && Layer::of(s.kind) == layer && m.ids.contains(&s.id));
-        let (batch, k) = cache.batch(BatchKey { page: m.page, layer, moved: true }, selected, view.scale, aa);
+        let batch = cache.batch(BatchKey { page: m.page, layer, moved: true }, selected, made, aa);
         let offset = view.page_origin_screen(m.page).to_vec2() + m.offset * view.scale;
         stroke_gpu::paint_batch(painter, batch, offset, k, layer.blend());
     }
-    cache.settle_later(painter);
 }
 
-/// Paints one page's strokes at an arbitrary scale (page previews). The
-/// caller must have called `cache.begin_frame(scale, ppp)` this frame;
-/// `offset` is the screen position of the page's top-left corner.
+/// Paints one page's strokes at an arbitrary scale (page previews), made
+/// at `made` (see `zoom`). The caller must have called
+/// `cache.begin_frame(ppp)` this frame; `offset` is the screen position of
+/// the page's top-left corner.
+#[allow(clippy::too_many_arguments)]
 pub fn paint_page_strokes(
     painter: &Painter,
     offset: Vec2,
     scale: f32,
+    made: f32,
     strokes: &[Stroke],
     page: u32,
     cache: &mut StrokeCache,
@@ -664,10 +629,9 @@ pub fn paint_page_strokes(
     // Highlighters first, as on the page.
     for layer in [Layer::Highlight, Layer::Ink] {
         let in_page = strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer);
-        let (batch, k) = cache.batch(BatchKey { page, layer, moved: false }, in_page, scale, aa);
-        stroke_gpu::paint_batch(painter, batch, offset, k, layer.blend());
+        let batch = cache.batch(BatchKey { page, layer, moved: false }, in_page, made, aa);
+        stroke_gpu::paint_batch(painter, batch, offset, scale / made, layer.blend());
     }
-    cache.settle_later(painter);
 }
 
 /// Paints the text boxes in view with their stored line breaks.
@@ -691,7 +655,7 @@ pub fn paint_texts(
             continue;
         }
         let color = Color32::from_rgb(t.color[0], t.color[1], t.color[2]);
-        paint_text_box(painter, pos, view.scale, t, color);
+        paint_text_box(painter, pos, (view.scale, view.made), t, color);
         if outline {
             painter.rect_stroke(
                 rect.expand(2.0),
@@ -706,48 +670,85 @@ pub fn paint_texts(
 /// Paints the text box `t` with its top-left corner at `pos`, `scale` points
 /// per document unit: its Markdown as laid out (see `markdown`), or, not laid
 /// out, its stored lines. Lines out of the painter's clip are skipped.
-pub fn paint_text_box(painter: &Painter, pos: Pos2, scale: f32, t: &TextBox, color: Color32) {
+///
+/// The text is laid out at the zoom `made` and drawn scaled to `scale`
+/// (see `zoom`): zooming lays out (and rasterises glyphs) at no new size.
+pub fn paint_text_box(painter: &Painter, pos: Pos2, scales: (f32, f32), t: &TextBox, color: Color32) {
+    painter.extend(text_box_shapes(painter, pos, scales, t, color));
+}
+
+/// What `paint_text_box` paints.
+fn text_box_shapes(painter: &Painter, pos: Pos2, (scale, made): (f32, f32), t: &TextBox, color: Color32) -> Vec<Shape> {
+    let mut shapes = Vec::new();
     if t.size * scale < 2.0 {
-        return;
+        return shapes;
     }
-    let clip = painter.clip_rect();
-    let Some(layout) = &t.layout else {
-        let line_h = t.line_h * scale;
-        for (i, line) in t.lines.iter().enumerate() {
-            let y = pos.y + i as f32 * line_h;
-            if line.is_empty() || y > clip.bottom() || y + line_h < clip.top() {
-                continue;
+    // Made at `made` from `pos`, then scaled about `pos` to `scale`.
+    let k = scale / made;
+    let to_shown = TSTransform::new(pos.to_vec2() * (1.0 - k), k);
+    let clip = to_shown.inverse() * painter.clip_rect();
+    match &t.layout {
+        Some(layout) => text_layout_shapes(&mut shapes, painter, pos, made, clip, t, layout, color),
+        None => {
+            let line_h = t.line_h * made;
+            for (i, line) in t.lines.iter().enumerate() {
+                let y = pos.y + i as f32 * line_h;
+                if line.is_empty() || y > clip.bottom() || y + line_h < clip.top() {
+                    continue;
+                }
+                let galley = painter.layout_no_wrap(line.clone(), FontId::proportional(t.size * made), color);
+                shapes.push(Shape::galley(pos2(pos.x, y), galley, color));
             }
-            painter.text(pos2(pos.x, y), Align2::LEFT_TOP, line, FontId::proportional(t.size * scale), color);
         }
-        return;
-    };
+    }
+    if k != 1.0 {
+        for shape in &mut shapes {
+            shape.transform(to_shown);
+        }
+    }
+    shapes
+}
+
+/// The shapes of a text box laid out (see `paint_text_box`), `scale` points
+/// per document unit, those out of `clip` left out.
+#[allow(clippy::too_many_arguments)]
+fn text_layout_shapes(
+    shapes: &mut Vec<Shape>,
+    painter: &Painter,
+    pos: Pos2,
+    scale: f32,
+    clip: Rect,
+    t: &TextBox,
+    layout: &TextLayout,
+    color: Color32,
+) {
     let at = |x: f32, y: f32| pos + vec2(x, y) * scale;
     let thin = UiStroke::new((t.size * scale * 0.06).max(1.0), color);
     // Code blocks' grey first, under everything.
     for mark in &layout.marks {
         if let TextMark::Shade { x, top, width, height } = *mark {
             let r = Rect::from_min_max(at(x, top), at(x + width, top + height));
-            painter.rect_filled(r, 3.0, Color32::from_black_alpha(15));
+            shapes.push(Shape::rect_filled(r, 3.0, Color32::from_black_alpha(15)));
         }
     }
     for mark in &layout.marks {
         match *mark {
             TextMark::Line { x0, y0, x1, y1 } => {
-                painter.line_segment([at(x0, y0), at(x1, y1)], UiStroke::new(thin.width, color.gamma_multiply(0.5)));
+                let stroke = UiStroke::new(thin.width, color.gamma_multiply(0.5));
+                shapes.push(Shape::line_segment([at(x0, y0), at(x1, y1)], stroke));
             }
             TextMark::Shade { .. } => {}
             TextMark::Quote { x, top, bottom } => {
                 let bar = Rect::from_min_max(at(x, top), at(x + t.size * 0.18, bottom));
-                painter.rect_filled(bar, 1.0, color.gamma_multiply(0.45));
+                shapes.push(Shape::rect_filled(bar, 1.0, color.gamma_multiply(0.45)));
             }
             TextMark::Check { x, top, size, checked } => {
                 let r = Rect::from_min_size(at(x, top), vec2(size, size) * scale);
-                painter.rect_stroke(r, 2.0, thin, UiStrokeKind::Inside);
+                shapes.push(Shape::rect_stroke(r, 2.0, thin, UiStrokeKind::Inside));
                 if checked {
                     let tick =
                         [(0.22, 0.52), (0.42, 0.72), (0.78, 0.28)].map(|(u, v)| at(x + u * size, top + v * size));
-                    painter.line(tick.to_vec(), thin);
+                    shapes.push(Shape::line(tick.to_vec(), thin));
                 }
             }
         }
@@ -762,7 +763,7 @@ pub fn paint_text_box(painter: &Painter, pos: Pos2, scale: f32, t: &TextBox, col
                 at(run.x - 2.0, run.top + run.line_h * 0.08),
                 at(run.x + run.width + 2.0, run.top + run.line_h * 0.92),
             );
-            painter.rect_filled(bg, 2.0, Color32::from_black_alpha(15));
+            shapes.push(Shape::rect_filled(bg, 2.0, Color32::from_black_alpha(15)));
         }
         let format = TextFormat {
             font_id: markdown::font(run.style, run.size * scale),
@@ -771,10 +772,10 @@ pub fn paint_text_box(painter: &Painter, pos: Pos2, scale: f32, t: &TextBox, col
             ..Default::default()
         };
         let galley = painter.layout_job(LayoutJob::single_section(run.text.clone(), format));
-        painter.galley(at(run.x, run.baseline - run.ascent), galley, color);
+        shapes.push(Shape::galley(at(run.x, run.baseline - run.ascent), galley, color));
         if run.style.strike || run.style.underline {
             let y = if run.style.strike { run.baseline - run.size * 0.3 } else { run.baseline + run.size * 0.12 };
-            painter.line_segment([at(run.x, y), at(run.x + run.width, y)], thin);
+            shapes.push(Shape::line_segment([at(run.x, y), at(run.x + run.width, y)], thin));
         }
     }
 }
@@ -854,8 +855,20 @@ pub fn paint_paper(painter: &Painter, view: &View) {
     }
 }
 
-/// The rules (or grid) of the pages that have them (`Document::ruled`) and
-/// the edge of every visible page, over the highlighters.
+/// Dots of dotted paper closer than this on screen (points) are not drawn:
+/// they would only grey the page, and cost a shape each.
+const MIN_DOT_GAP: f32 = 10.0;
+
+/// The page-local positions `k * spacing` (`k >= 1`) from `from` to `to`
+/// and before `end`, the end of the page.
+fn rule_steps(spacing: f32, from: f32, to: f32, end: f32) -> impl Iterator<Item = f32> {
+    let first = (from / spacing).ceil().max(1.0) as i64;
+    (first..).map(move |k| k as f32 * spacing).take_while(move |v| *v <= to && *v < end)
+}
+
+/// The rules, grid or dots of the pages that have them (`Document::ruled`)
+/// and the edge of every visible page, over the highlighters. Only what is
+/// in view is drawn (a canvas is one very large page).
 pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
     let l = view.layout;
     let s = view.scale;
@@ -865,29 +878,34 @@ pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
 
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
-        let ruled = doc.ruled(page);
-        if ruled {
-            // Rules at page-local y = k * spacing; only those in view are drawn.
-            let vis_top = ((view.rect.top() - rect.top()) / s).max(0.0);
-            let vis_bottom = ((view.rect.bottom() - rect.top()) / s).min(l.page_h);
-            let mut k = ((vis_top / spacing).floor() as i64).max(1);
-            loop {
-                let ly = k as f32 * spacing;
-                if ly >= l.page_h || ly > vis_bottom {
-                    break;
+        let shown = rect.intersect(view.rect);
+        if doc.ruled(page) && shown.is_positive() {
+            // The part of the page in view, page-local.
+            let (lo, hi) = ((shown.min - rect.min) / s, (shown.max - rect.min) / s);
+            let ys = || rule_steps(spacing, lo.y, hi.y, l.page_h);
+            let xs = || rule_steps(spacing, lo.x, hi.x, l.page_w);
+            match style.kind {
+                PageKind::Dotted if spacing * s >= MIN_DOT_GAP => {
+                    let (r, dot) = ((model::DOT_RADIUS * s).clamp(0.9, 2.2), color::page_dot());
+                    for y in ys() {
+                        for x in xs() {
+                            painter.circle_filled(rect.min + vec2(x, y) * s, r, dot);
+                        }
+                    }
                 }
-                let sy = rect.top() + ly * s;
-                painter.line_segment([pos2(rect.left(), sy), pos2(rect.right(), sy)], rule);
-                k += 1;
-            }
-        }
-        if ruled && style.kind == PageKind::Grid {
-            let (y0, y1) = (rect.top().max(view.rect.top()), rect.bottom().min(view.rect.bottom()));
-            let mut x = spacing;
-            while x < l.page_w {
-                let sx = rect.left() + x * s;
-                painter.line_segment([pos2(sx, y0), pos2(sx, y1)], rule);
-                x += spacing;
+                PageKind::Dotted | PageKind::Blank => {}
+                PageKind::Ruled | PageKind::Grid => {
+                    for y in ys() {
+                        let sy = rect.top() + y * s;
+                        painter.line_segment([pos2(shown.left(), sy), pos2(shown.right(), sy)], rule);
+                    }
+                    if style.kind == PageKind::Grid {
+                        for x in xs() {
+                            let sx = rect.left() + x * s;
+                            painter.line_segment([pos2(sx, shown.top()), pos2(sx, shown.bottom())], rule);
+                        }
+                    }
+                }
             }
         }
         painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::page_edge()), UiStrokeKind::Middle);
@@ -911,6 +929,7 @@ pub fn paint_eraser_cursor(painter: &Painter, center: Pos2, radius_px: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     use tratto_core::model::Point;
 
     #[test]
@@ -1012,8 +1031,8 @@ mod tests {
         let mut strokes: Vec<Stroke> = (0..5).map(|i| stroke(i, i as f32 * 40.0, StrokeKind::Pen)).collect();
         let mut cache = StrokeCache::default();
         let check = |strokes: &[Stroke], cache: &mut StrokeCache| {
-            cache.begin_frame(1.5, 1.0);
-            let mesh = cache.batch(key, strokes.iter(), 1.5, 1.0).0.mesh().clone();
+            cache.begin_frame(1.0);
+            let mesh = cache.batch(key, strokes.iter(), 1.5, 1.0).mesh().clone();
             let expected = fresh(&strokes.iter().collect::<Vec<_>>(), 1.5);
             assert_eq!((mesh.vertices, mesh.indices), (expected.vertices, expected.indices));
         };
@@ -1051,22 +1070,48 @@ mod tests {
     }
 
     #[test]
-    fn zooming_draws_batches_scaled_until_it_settles() {
+    fn batches_are_made_again_at_another_zoom() {
         let key = BatchKey { page: 0, layer: Layer::Ink, moved: false };
         let strokes: Vec<Stroke> = (0..3).map(|i| stroke(i, i as f32 * 40.0, StrokeKind::Pen)).collect();
         let mut cache = StrokeCache::default();
-        cache.begin_frame(1.0, 1.0);
-        let made = cache.batch(key, strokes.iter(), 1.0, 1.0).0.mesh().clone();
-
-        // Zooming: the same triangles, drawn twice as large.
-        cache.begin_frame(2.0, 1.0);
-        let (batch, k) = cache.batch(key, strokes.iter(), 2.0, 1.0);
-        assert_eq!((batch.mesh().vertices.len(), k), (made.vertices.len(), 2.0));
-
-        // Settled: made again at the new zoom.
-        cache.zoomed_at = Some(Instant::now() - ZOOM_SETTLE);
-        let (batch, k) = cache.batch(key, strokes.iter(), 2.0, 1.0);
+        cache.begin_frame(1.0);
+        cache.batch(key, strokes.iter(), 1.0, 1.0);
+        let batch = cache.batch(key, strokes.iter(), 2.0, 1.0);
         let expected = fresh(&strokes.iter().collect::<Vec<_>>(), 2.0);
-        assert_eq!((&batch.mesh().vertices, k), (&expected.vertices, 1.0));
+        assert_eq!(batch.mesh().vertices, expected.vertices);
+    }
+
+    #[test]
+    fn text_is_laid_out_at_the_zoom_made_and_drawn_scaled() {
+        let ctx = eframe::egui::Context::default();
+        let t = TextBox {
+            id: 1,
+            page: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 300.0,
+            size: 20.0,
+            color: [0, 0, 0],
+            text: "Hello".into(),
+            lines: vec!["Hello".into()],
+            line_h: 24.0,
+            layout: None,
+        };
+        // The bounds of what a box paints at `scales` (shown, made).
+        let bounds = |scales: (f32, f32)| {
+            let mut rect = Rect::NOTHING;
+            crate::test_frame(&ctx, eframe::egui::RawInput::default(), |ui| {
+                for s in text_box_shapes(ui.painter(), pos2(10.0, 10.0), scales, &t, Color32::BLACK) {
+                    rect = rect.union(s.visual_bounding_rect());
+                }
+            });
+            rect
+        };
+        let sharp = bounds((2.0, 2.0));
+        let scaled = bounds((2.0, 1.0));
+        // Laid out at half the size, then drawn twice as large: about where
+        // and as large as laid out at that size.
+        assert!((scaled.min - sharp.min).length() < 2.0, "{scaled:?} {sharp:?}");
+        assert!((scaled.width() - sharp.width()).abs() < sharp.width() * 0.1, "{scaled:?} {sharp:?}");
     }
 }

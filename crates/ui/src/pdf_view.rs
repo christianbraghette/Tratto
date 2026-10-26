@@ -14,10 +14,11 @@
 //!   Small tiles keep large (e.g. scanned) PDFs fast at any zoom: nothing off
 //!   screen is rasterised and no single upload stalls a frame.
 //!
-//! While zooming, the level changes only once the size has settled; until
-//! then the tiles there are stretched, and those of the previous level stay
-//! until the new ones have arrived. Finished images become textures a few per
-//! frame, as they are (no per-pixel conversion).
+//! While zooming, the level is the width at the zoom the page is made at
+//! (see `zoom`), so it changes only when the zoom ends; until then the tiles
+//! there are stretched, and those of the previous level stay until the new
+//! ones have arrived. Finished images become textures a few per frame, as
+//! they are (no per-pixel conversion).
 //!
 //! A texture is never released in the frame it was created or painted in:
 //! egui-wgpu 0.29 destroys freed textures *before* submitting the frame, so
@@ -55,9 +56,6 @@ const TTL_TILE: f64 = 10.0;
 const TEXTURE_BUDGET: usize = 256 << 20;
 /// Frames a retired texture is kept before it is released.
 const RETIRE_FRAMES: u64 = 2;
-/// A new zoom level is used once it has been wanted this long (seconds), so
-/// zooming does not start renders at every step.
-const SETTLE_SECS: f64 = 0.15;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Part {
@@ -95,8 +93,6 @@ struct PageLevel {
     current: u32,
     /// Kept on screen until the tiles of `current` are all there.
     previous: Option<u32>,
-    /// A level wanted (not used yet) and since when.
-    wanted: Option<(u32, f64)>,
 }
 
 pub struct PdfTextures {
@@ -263,31 +259,15 @@ impl PdfTextures {
         self.entries[&key].texture.clone()
     }
 
-    /// The level to draw a page at, given the one its size asks for: a new
-    /// level is taken once it has been asked for `SETTLE_SECS`. Returns
-    /// (current, previous) and whether the current one is the one asked for.
-    fn level(&mut self, ctx: &egui::Context, file: u64, page: u32, target: u32) -> (u32, Option<u32>, bool) {
-        let now = ctx.input(|i| i.time);
-        let st = self.levels.entry((file, page)).or_insert(PageLevel { current: target, previous: None, wanted: None });
-        if st.current == target {
-            st.wanted = None;
-        } else {
-            let since = match st.wanted {
-                Some((w, since)) if w == target => since,
-                _ => {
-                    st.wanted = Some((target, now));
-                    now
-                }
-            };
-            if now - since >= SETTLE_SECS {
-                st.previous = Some(st.current);
-                st.current = target;
-                st.wanted = None;
-            } else {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(SETTLE_SECS));
-            }
+    /// The level to draw a page at, given the one its size asks for, and
+    /// the level before, kept until the tiles of the new one are there.
+    fn level(&mut self, file: u64, page: u32, target: u32) -> (u32, Option<u32>) {
+        let st = self.levels.entry((file, page)).or_insert(PageLevel { current: target, previous: None });
+        if st.current != target {
+            st.previous = Some(st.current);
+            st.current = target;
         }
-        (st.current, st.previous, st.current == target)
+        (st.current, st.previous)
     }
 
     /// Paints the tiles of `level` over `visible` (screen) of a page drawn
@@ -387,8 +367,9 @@ impl PdfTextures {
 
     /// Paints the PDF page under note page `page` (if it has one) into
     /// `page_rect`, the page on screen. `sharp` false: page previews (the
-    /// small image only).
-    pub fn paint(&mut self, painter: &Painter, doc: &Document, page: u32, page_rect: Rect, sharp: bool) {
+    /// small image only). `made`: the zoom the page is made at over the
+    /// zoom shown (see `zoom`), the tiles' level is for that zoom.
+    pub fn paint(&mut self, painter: &Painter, doc: &Document, page: u32, page_rect: Rect, sharp: bool, made: f32) {
         let Some(pdf) = doc.pdf.as_ref() else { return };
         let (Some(file), Some(pdf_page)) = (pdf.file.as_ref(), doc.pdf_page(page)) else { return };
         let Some([x, y, w, h]) = pdf.placement(pdf_page, doc.page_width, doc.page_height) else { return };
@@ -403,16 +384,16 @@ impl PdfTextures {
         if let Some(t) = self.whole(&ctx, file, pdf_page) {
             painter.image(t.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
-        let shown = rect.width() * ctx.pixels_per_point();
+        let shown = rect.width() * ctx.pixels_per_point() * made;
         if !sharp || shown <= SMALL_PX as f32 * 1.05 {
             return;
         }
-        let (current, previous, settled) = self.level(&ctx, file.key, pdf_page, level_for(shown));
+        let (current, previous) = self.level(file.key, pdf_page, level_for(shown));
         // The previous level covers the gaps until the new tiles are there.
         if let Some(prev) = previous {
             self.paint_tiles(painter, file, pdf_page, size, rect, visible, prev, false);
         }
-        let complete = self.paint_tiles(painter, file, pdf_page, size, rect, visible, current, settled);
+        let complete = self.paint_tiles(painter, file, pdf_page, size, rect, visible, current, true);
         if complete && let Some(st) = self.levels.get_mut(&(file.key, pdf_page)) {
             st.previous = None;
         }
@@ -445,22 +426,12 @@ mod tests {
     }
 
     #[test]
-    fn zooming_changes_level_once_the_size_settles() {
-        let ctx = egui::Context::default();
+    fn a_new_level_keeps_the_previous_until_its_tiles_are_there() {
         let mut tex = PdfTextures::default();
-        let at = |t: f64| RawInput { time: Some(t), ..RawInput::default() };
-        let mut level = |t: f64, target: u32| {
-            let mut out = (0, None, false);
-            crate::test_frame(&ctx, at(t), |ui| out = tex.level(ui.ctx(), 1, 0, target));
-            out
-        };
-        assert_eq!(level(0.0, 1024), (1024, None, true));
-        // Zooming: the wanted level keeps changing; the current one stays.
-        assert_eq!(level(0.05, 1448), (1024, None, false));
-        assert_eq!(level(0.10, 2048), (1024, None, false));
-        assert_eq!(level(0.20, 2048), (1024, None, false));
-        // Settled: the new level, the old one kept to cover the gaps.
-        assert_eq!(level(0.10 + SETTLE_SECS + 0.01, 2048), (2048, Some(1024), true));
+        assert_eq!(tex.level(1, 0, 1024), (1024, None));
+        // The new level, the old one kept to cover the gaps.
+        assert_eq!(tex.level(1, 0, 2048), (2048, Some(1024)));
+        assert_eq!(tex.level(1, 0, 2048), (2048, Some(1024)));
     }
 
     /// A finished render of the stand-in of page 0.

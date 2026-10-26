@@ -181,12 +181,17 @@ impl InkApp {
         let Some(glyphs) = self.page_glyphs(page) else { return };
         let Some(rect) = line_rects(&glyphs, range).into_iter().reduce(|a, b| a.union(b)) else { return };
         let layout = self.layout();
-        let (top, bottom) = (layout.page_top(page) + rect.top(), layout.page_top(page) + rect.bottom());
-        let (shown_top, shown_bottom) = self.shown_content;
-        if always || top < shown_top || bottom > shown_bottom {
-            // A third of the way down the view.
-            let y = top - (shown_bottom - shown_top) / 3.0;
+        let rect = rect.translate(layout.page_origin(page).to_vec2());
+        let shown = self.shown_content;
+        // A canvas also scrolls across: a match may be far to the side.
+        let aside = layout.canvas && (rect.left() < shown.left() || rect.right() > shown.right());
+        if always || aside || rect.top() < shown.top() || rect.bottom() > shown.bottom() {
+            // A third of the way down the view (and across, on a canvas).
+            let y = rect.top() - shown.height() / 3.0;
             self.scroll_to = Some(y.max(0.0));
+            if layout.canvas {
+                self.scroll_to_x = Some((rect.left() - shown.width() / 3.0).max(0.0));
+            }
         }
     }
 }

@@ -70,10 +70,20 @@ fn paper_rows(ui: &mut Ui, id: &str, width: &mut f32, height: &mut f32, kind: &m
             std::mem::swap(width, height);
         }
     });
+    paper_style_rows(ui, id, kind, spacing);
+}
+
+/// Paper style and line spacing rows (all an infinite canvas has). The
+/// paper is a list, like the paper size: its kinds side by side are wider
+/// than the note settings.
+fn paper_style_rows(ui: &mut Ui, id: &str, kind: &mut PageKind, spacing: &mut f32) {
     row(ui, "Paper", |ui| {
-        for (k, label) in [(PageKind::Blank, "Blank"), (PageKind::Ruled, "Ruled"), (PageKind::Grid, "Grid")] {
-            ui.selectable_value(kind, k, label);
-        }
+        let name = PageKind::ALL.iter().find(|(k, _)| k == kind).map_or("", |(_, n)| n);
+        egui::ComboBox::from_id_salt((id, "paper_kind")).selected_text(name).width(180.0).show_ui(ui, |ui| {
+            for (k, label) in PageKind::ALL {
+                ui.selectable_value(kind, k, label);
+            }
+        });
     });
     row(ui, "Line spacing", |ui| {
         ui.add(Slider::new(spacing, 16.0..=80.0));
@@ -98,6 +108,21 @@ impl InkApp {
     }
 
     fn note_settings(&mut self, ui: &mut Ui) {
+        // An infinite canvas has its paper, but no page size and no pages.
+        if self.doc.is_canvas() {
+            section(ui, "Canvas");
+            rows(ui, "note_page", |ui| {
+                paper_style_rows(ui, "note", &mut self.doc.page.kind, &mut self.doc.page.spacing)
+            });
+            hint(ui, "An infinite canvas has no pages: it goes on in every direction.");
+        } else {
+            self.page_settings(ui);
+        }
+        self.note_info(ui);
+    }
+
+    /// The page size, the paper and the pages of the open note.
+    fn page_settings(&mut self, ui: &mut Ui) {
         section(ui, "Page");
         rows(ui, "note_page", |ui| {
             let d = &mut self.doc;
@@ -130,7 +155,10 @@ impl InkApp {
                 }
             });
         });
+    }
 
+    /// The title, dates and place of the open note.
+    fn note_info(&mut self, ui: &mut Ui) {
         section(ui, "Note");
         let root = self.library_root();
         rows(ui, "note_info", |ui| {
