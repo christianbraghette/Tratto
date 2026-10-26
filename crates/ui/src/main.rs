@@ -188,21 +188,11 @@ fn main() -> eframe::Result<()> {
     // Windows: DirectX 12. With Vulkan the drivers take the fullscreen window
     // for an exclusive one, and the screen flashes black whenever another
     // window comes over it (Alt+Tab, the taskbar, the system's gestures).
-    // Another backend can be chosen in the settings; WGPU_BACKEND overrides.
+    // WGPU_BACKEND overrides.
     if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
-        let power = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::LowPower);
-        setup.power_preference = power;
-        if wgpu::Backends::from_env().is_none() {
-            if cfg!(windows) {
-                setup.instance_descriptor.backends = wgpu::Backends::DX12;
-            }
-            if let Some(chosen) = saved.and_then(|s| s.graphics_backend.backend()) {
-                // The automatic backends stay as a fallback, for a choice the
-                // system lacks (otherwise the window would never open).
-                setup.instance_descriptor.backends |= chosen.into();
-                setup.native_adapter_selector =
-                    Some(std::sync::Arc::new(move |adapters, surface| pick_adapter(adapters, surface, chosen, power)));
-            }
+        setup.power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::LowPower);
+        if cfg!(windows) && wgpu::Backends::from_env().is_none() {
+            setup.instance_descriptor.backends = wgpu::Backends::DX12;
         }
     }
 
@@ -241,30 +231,6 @@ fn main() -> eframe::Result<()> {
     // "Restart now" after an update: the window is closed and saved.
     update::restart_if_requested();
     result
-}
-
-/// The GPU to draw with when a backend was chosen in the settings: one that
-/// can draw the window, on the `chosen` backend if there is one, the
-/// integrated or the discrete GPU as `power` prefers.
-fn pick_adapter(
-    adapters: &[wgpu::Adapter],
-    surface: Option<&wgpu::Surface<'_>>,
-    chosen: wgpu::Backend,
-    power: wgpu::PowerPreference,
-) -> Result<wgpu::Adapter, String> {
-    let wanted = match power {
-        wgpu::PowerPreference::HighPerformance => wgpu::DeviceType::DiscreteGpu,
-        _ => wgpu::DeviceType::IntegratedGpu,
-    };
-    adapters
-        .iter()
-        .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
-        .max_by_key(|a| {
-            let info = a.get_info();
-            (info.backend == chosen, info.device_type == wanted, info.device_type != wgpu::DeviceType::Cpu)
-        })
-        .cloned()
-        .ok_or_else(|| "no GPU can draw the window".to_owned())
 }
 
 /// One egui frame for tests: runs `ui` and returns the textures it frees

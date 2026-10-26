@@ -3,7 +3,6 @@
 
 //! Persisted UI settings (stored through eframe's storage, not in the note file).
 
-use eframe::egui_wgpu::wgpu;
 use serde::{Deserialize, Serialize};
 use tratto_core::model::{Document, PageKind};
 use tratto_core::pdf_export::InkColors;
@@ -179,60 +178,6 @@ impl BatterySaver {
     }
 }
 
-/// The graphics API the window draws with (read at startup: switching needs
-/// a restart). `WGPU_BACKEND` overrides it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GraphicsBackend {
-    /// Windows: DirectX 12 (see `main`); elsewhere wgpu's choice.
-    #[default]
-    Auto,
-    Vulkan,
-    Dx12,
-    OpenGl,
-}
-
-impl GraphicsBackend {
-    /// The choices on this system (none on macOS, which only has Metal).
-    pub const CHOICES: &[GraphicsBackend] = if cfg!(windows) {
-        &[Self::Auto, Self::Dx12, Self::Vulkan, Self::OpenGl]
-    } else if cfg!(target_os = "macos") {
-        &[]
-    } else {
-        &[Self::Auto, Self::Vulkan, Self::OpenGl]
-    };
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto if cfg!(windows) => "Automatic (DirectX 12)",
-            Self::Auto => "Automatic",
-            Self::Vulkan => "Vulkan",
-            Self::Dx12 => "DirectX 12",
-            Self::OpenGl => "OpenGL",
-        }
-    }
-
-    /// The backend asked for (`None`: automatic).
-    pub fn backend(self) -> Option<wgpu::Backend> {
-        match self {
-            Self::Auto => None,
-            Self::Vulkan => Some(wgpu::Backend::Vulkan),
-            Self::Dx12 => Some(wgpu::Backend::Dx12),
-            Self::OpenGl => Some(wgpu::Backend::Gl),
-        }
-    }
-}
-
-/// The name of a backend wgpu draws with, for the settings.
-pub fn backend_name(backend: wgpu::Backend) -> &'static str {
-    match backend {
-        wgpu::Backend::Vulkan => "Vulkan",
-        wgpu::Backend::Dx12 => "DirectX 12",
-        wgpu::Backend::Gl => "OpenGL",
-        wgpu::Backend::Metal => "Metal",
-        _ => "another backend",
-    }
-}
-
 /// Notes whose place is remembered, at most (the least recent is forgotten).
 pub const NOTE_VIEWS: usize = 200;
 /// PDFs listed as recently read, at most.
@@ -299,7 +244,6 @@ pub struct Settings {
     pub battery_saver: BatterySaver,
     /// Frames per second at most, without vsync (`0`: no limit).
     pub fps_limit: u32,
-    pub graphics_backend: GraphicsBackend,
     pub zoom: ZoomMode,
     /// What the sidebar shows (the notebook, pages, settings...).
     #[serde(alias = "left_panel")]
@@ -473,7 +417,6 @@ impl Default for Settings {
             vsync: false,
             battery_saver: BatterySaver::default(),
             fps_limit: crate::frame_limit::DEFAULT_FPS,
-            graphics_backend: GraphicsBackend::Auto,
             zoom: ZoomMode::Percent(100),
             sidebar: Sidebar::Closed,
             sidebar_last: Sidebar::Notebook,

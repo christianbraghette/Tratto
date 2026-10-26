@@ -53,7 +53,7 @@ use crate::pdf_view::PdfTextures;
 use crate::render::{LiveStroke, PictureTextures, StrokeCache};
 use crate::saver::Saver;
 use crate::scrollbar;
-use crate::settings::{BatterySaver, GraphicsBackend, NoteView, Settings, Sidebar, UpdateMode, ZoomMode};
+use crate::settings::{BatterySaver, NoteView, Settings, Sidebar, UpdateMode, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::update::{self, Updater};
@@ -320,9 +320,7 @@ pub struct InkApp {
     pen_input: PenInput,
     /// Caps the frame rate without vsync.
     frame_limit: FrameLimiter,
-    /// The graphics backend chosen when Tratto started, and the one the
-    /// window draws with (they differ when the choice is not available).
-    backend_chosen: GraphicsBackend,
+    /// The graphics backend the window draws with.
     backend_in_use: Option<wgpu::Backend>,
     /// Tool to restore when the temporary eraser (pen eraser end / side button) is released.
     saved_tool: Option<Tool>,
@@ -540,7 +538,6 @@ impl InkApp {
         crate::win_frame::own_frame(settings.custom_title_bar);
         crate::win_frame::install(cc);
         crate::win_frame::open_maximized();
-        let backend_chosen = settings.graphics_backend;
 
         let mut app = Self {
             doc: Document::default(),
@@ -559,7 +556,6 @@ impl InkApp {
             status_at: None,
             pen_input: PenInput { pressure: 1.0, ..PenInput::default() },
             frame_limit: FrameLimiter::new(vsync),
-            backend_chosen,
             backend_in_use: cc.wgpu_render_state.as_ref().map(|rs| rs.adapter.get_info().backend),
             saved_tool: None,
             panning: false,
