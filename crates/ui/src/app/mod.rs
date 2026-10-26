@@ -7,6 +7,7 @@
 //!
 //! - `notes`          opening, showing, saving and closing notes; PDFs read or dropped
 //! - `canvas`         the editor's canvas: input routing, scrolling, zoom, painting, links
+//! - `minimap`        the note in small beside the scroll bar, to find a place and go there
 //! - `ink`            pen and highlighter strokes, the eraser
 //! - `selection`      lasso, select all, moving and deleting what is selected
 //! - `transform`      resizing, rotating and recolouring what is selected
@@ -67,6 +68,7 @@ mod laser;
 mod library_panel;
 mod library_ui;
 mod menus;
+mod minimap;
 mod notes;
 mod outline_ui;
 mod pages_panel;
@@ -349,6 +351,8 @@ pub struct InkApp {
     /// is resized).
     thumb_cache: StrokeCache,
     thumb_zoom: ZoomRender,
+    /// The minimap beside the scroll bar (see `minimap`).
+    minimap: minimap::Minimap,
     /// Notes written on a PDF: its pages as textures.
     pdf_textures: PdfTextures,
     /// The outline and links of the open note's PDF.
@@ -572,6 +576,7 @@ impl InkApp {
             zoom_render: ZoomRender::default(),
             thumb_cache: StrokeCache::default(),
             thumb_zoom: ZoomRender::default(),
+            minimap: minimap::Minimap::default(),
             pdf_textures: PdfTextures::default(),
             pdf_nav: PdfNav::default(),
             nav_back: Vec::new(),

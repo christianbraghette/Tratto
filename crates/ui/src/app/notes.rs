@@ -506,6 +506,7 @@ impl InkApp {
         // Another note is made at its own zoom at once, not drawn as zoomed to.
         self.zoom_render = Default::default();
         self.thumb_zoom = Default::default();
+        self.minimap.clear();
         self.pdf_textures.clear();
         self.pdf_nav.clear();
         self.nav_back.clear();

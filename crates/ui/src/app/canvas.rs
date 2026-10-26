@@ -576,6 +576,9 @@ impl InkApp {
             )
         });
 
+        // The minimap beside the vertical bar, which may scroll too.
+        self.minimap(ui.ctx(), canvas, vbar_rect, &vstate, &layout, scale, max);
+
         if self.vbar_grab.is_some() || self.hbar_grab.is_some() {
             self.kinetic.stop();
         }
@@ -923,7 +926,8 @@ impl InkApp {
         // Presenting: no scroll bar (its track has no width then). An
         // infinite page has no page number to show.
         if self.presenting.is_none() {
-            let label = (!layout.canvas).then_some(label.as_str());
+            // The minimap, out, shows it itself.
+            let label = (!layout.canvas && !self.minimap.out()).then_some(label.as_str());
             scrollbar::paint(full_painter, vbar_rect, true, &vstate, label);
         }
         if let Some(h) = &hstate {
