@@ -183,10 +183,10 @@ impl InkApp {
         let layout = self.layout();
         let rect = rect.translate(layout.page_origin(page).to_vec2());
         let shown = self.shown_content;
-        // A canvas also scrolls across: a match may be far to the side.
+        // An infinite page also scrolls across: a match may be far to the side.
         let aside = layout.canvas && (rect.left() < shown.left() || rect.right() > shown.right());
         if always || aside || rect.top() < shown.top() || rect.bottom() > shown.bottom() {
-            // A third of the way down the view (and across, on a canvas).
+            // A third of the way down the view (and across, on an infinite page).
             let y = rect.top() - shown.height() / 3.0;
             self.scroll_to = Some(y.max(0.0));
             if layout.canvas {

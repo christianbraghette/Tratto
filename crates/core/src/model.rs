@@ -28,6 +28,9 @@ pub const PAPERS: [(&str, &str, f32, f32); 5] = [
 
 /// Human-readable name of a page size ("A4 portrait", "Custom", ...).
 pub fn paper_label(w: f32, h: f32) -> String {
+    if w >= CANVAS_SIZE && h >= CANVAS_SIZE {
+        return "Infinite".to_owned();
+    }
     let close = |a: f32, b: f32| (a - b).abs() < 0.5;
     for (name, _, pw, ph) in PAPERS {
         if close(w, pw) && close(h, ph) {
@@ -436,17 +439,18 @@ impl PdfBackground {
     }
 }
 
-/// Side of the page of an infinite canvas, in document units.
+/// Side of an infinite page, in document units.
 ///
-/// An infinite canvas is a note of a single page this large, square, that
-/// is written on from its middle (`CANVAS_START`): over 25 m of paper each
-/// way, more than anyone scrolls to, while every coordinate stays precise
-/// in an `f32`. Nothing else marks a canvas (see `Document::is_canvas`), so
-/// the file format is that of any note. Paper sizes stay far below it.
+/// An infinite page is a paper size: a note of one page this large, square,
+/// written on from its top-left corner like any page, which the view shows
+/// only as far as it is written on (it grows as it is, like OneNote's).
+/// Over 25 m of paper each way, more than anyone writes, while every
+/// coordinate stays precise in an `f32`. Nothing else marks it (see
+/// `Document::is_canvas`), so the file format is that of any note. Other
+/// paper sizes stay far below it.
 pub const CANVAS_SIZE: f32 = 100_000.0;
-/// Where a new canvas is shown from: its middle.
-pub const CANVAS_START: Pos2 = pos2(CANVAS_SIZE * 0.5, CANVAS_SIZE * 0.5);
-/// Paper around what is on a canvas when it is made a page (`canvas_area`).
+/// Paper right of and below what is on an infinite page when it is made a
+/// page of its own (`canvas_area`).
 const CANVAS_MARGIN: f32 = 48.0;
 
 /// The whole note: `page_count` pages of `page_width` x `page_height`.
@@ -566,14 +570,15 @@ impl Default for Document {
 }
 
 impl Document {
-    /// An empty infinite canvas, on `page` paper.
-    pub fn canvas(page: PageStyle) -> Self {
-        Self { page_width: CANVAS_SIZE, page_height: CANVAS_SIZE, page, ..Self::default() }
-    }
-
-    /// The note is an infinite canvas (see `CANVAS_SIZE`).
+    /// The note's page is infinite (see `CANVAS_SIZE`).
     pub fn is_canvas(&self) -> bool {
         self.page_width >= CANVAS_SIZE && self.page_height >= CANVAS_SIZE
+    }
+
+    /// The paper can be made infinite: a note of one page, not on a PDF
+    /// (its pages have their size).
+    pub fn can_be_canvas(&self) -> bool {
+        self.page_count <= 1 && self.pdf.is_none()
     }
 
     /// What is on page `page`, as a rectangle in page space (strokes with
@@ -588,40 +593,24 @@ impl Document {
         strokes.chain(texts).chain(images).reduce(|a, b| a.union(b))
     }
 
-    /// The part of a canvas that makes a page of it (exporting, printing,
-    /// the library's preview): what is on it with some paper around, its
-    /// corner on the rules (they stay where they are on the canvas). An
-    /// empty canvas: a page of the default size at `CANVAS_START`.
+    /// The part of an infinite page that makes a page of it (exporting,
+    /// printing, the library's preview): from its corner to what is on it,
+    /// with some paper right and below, at least a page of the default size.
     pub fn canvas_area(&self) -> Rect {
-        let Some(content) = self.content_bounds(0) else {
-            return Rect::from_min_size(CANVAS_START, vec2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT));
-        };
-        let spacing = self.page.spacing.max(8.0);
-        let snap = |v: f32| (v / spacing).floor() * spacing;
-        let content = content.expand(CANVAS_MARGIN);
-        let min = pos2(snap(content.min.x).max(0.0), snap(content.min.y).max(0.0));
-        Rect::from_min_max(min, content.max.min(pos2(CANVAS_SIZE, CANVAS_SIZE)))
+        let written = self.content_bounds(0).map_or(pos2(0.0, 0.0), |c| c.max + vec2(CANVAS_MARGIN, CANVAS_MARGIN));
+        let max = written.max(pos2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT)).min(pos2(CANVAS_SIZE, CANVAS_SIZE));
+        Rect::from_min_max(pos2(0.0, 0.0), max)
     }
 
-    /// A canvas as one page (`canvas_area`), for what needs a page of a
-    /// sensible size; any other note as it is.
+    /// An infinite page as a page as large as what is on it (`canvas_area`),
+    /// for what needs a page of a sensible size; any other note as it is.
     pub fn as_pages(&self) -> std::borrow::Cow<'_, Document> {
         if !self.is_canvas() {
             return std::borrow::Cow::Borrowed(self);
         }
         let area = self.canvas_area();
-        let (dx, dy) = (-area.min.x, -area.min.y);
         let mut doc = self.clone();
         (doc.page_width, doc.page_height) = (area.width(), area.height());
-        for s in &mut doc.strokes {
-            s.translate(dx, dy);
-        }
-        for t in &mut doc.texts {
-            (t.x, t.y) = (t.x + dx, t.y + dy);
-        }
-        for i in &mut doc.images {
-            (i.x, i.y) = (i.x + dx, i.y + dy);
-        }
         std::borrow::Cow::Owned(doc)
     }
 
@@ -775,22 +764,22 @@ mod tests {
     }
 
     #[test]
-    fn a_canvas_is_made_a_page_around_what_is_on_it() {
-        let mut doc = Document::canvas(PageStyle::default());
+    fn an_infinite_page_is_made_a_page_as_large_as_what_is_on_it() {
+        let mut doc = Document { page_width: CANVAS_SIZE, page_height: CANVAS_SIZE, ..Document::default() };
         assert!(doc.is_canvas() && !Document::default().is_canvas());
-        // Empty: a page where it is written on from.
-        assert_eq!(doc.canvas_area().min, CANVAS_START);
+        // Empty: a page of the default size.
+        assert_eq!(doc.canvas_area().max, pos2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT));
         let mut s = line(2.0);
-        s.translate(50_010.0, 50_100.0);
+        s.translate(1000.0, 2000.0);
         doc.strokes.push(s);
+        // From the corner to the stroke (and its width), and some paper.
         let area = doc.canvas_area();
-        // All of the stroke (and its width), the corner on the rules.
-        assert!(area.contains_rect(Rect::from_min_max(pos2(50_009.0, 50_099.0), pos2(50_111.0, 50_101.0))));
-        assert_eq!((area.min.x % 36.0, area.min.y % 36.0), (0.0, 0.0));
+        assert_eq!(area.min, pos2(0.0, 0.0));
+        assert!(area.contains_rect(Rect::from_min_max(pos2(999.0, 1999.0), pos2(1101.0, 2001.0))));
         let page = doc.as_pages();
         assert!(!page.is_canvas());
         assert_eq!((page.page_width, page.page_height), (area.width(), area.height()));
-        assert_eq!(page.strokes[0].points[0].pos2(), pos2(50_010.0, 50_100.0) - area.min.to_vec2());
+        assert_eq!(page.strokes[0].points[0].pos2(), pos2(1000.0, 2000.0), "nothing moves");
         // A note with pages stays as it is.
         assert!(matches!(Document::default().as_pages(), std::borrow::Cow::Borrowed(_)));
     }

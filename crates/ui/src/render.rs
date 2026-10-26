@@ -844,8 +844,13 @@ pub fn paint_mesh(painter: &Painter, layer: Layer, mesh: Mesh) {
 
 // -------------------------------------------------------- background
 
-/// Fills the area around the pages and the paper of every visible page.
+/// Fills the area around the pages and the paper of every visible page; an
+/// infinite page is all the view shows, without edges.
 pub fn paint_paper(painter: &Painter, view: &View) {
+    if view.layout.canvas {
+        painter.rect_filled(view.rect, 0.0, color::page());
+        return;
+    }
     painter.rect_filled(view.rect, 0.0, color::desk());
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
@@ -908,7 +913,9 @@ pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
                 }
             }
         }
-        painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::page_edge()), UiStrokeKind::Middle);
+        if !l.canvas {
+            painter.rect_stroke(rect, 0.0, UiStroke::new(1.0, color::page_edge()), UiStrokeKind::Middle);
+        }
     }
 }
 

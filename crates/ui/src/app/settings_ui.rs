@@ -11,7 +11,7 @@
 use eframe::egui::{self, Align2, DragValue, RichText, Slider, Ui, vec2};
 use egui_phosphor::regular as icon;
 use tratto_core::history::Action;
-use tratto_core::model::{PAPERS, PageKind, paper_label};
+use tratto_core::model::{CANVAS_SIZE, PAPERS, PageKind, paper_label};
 
 use super::InkApp;
 use super::library_ui::{Dialog, location, when};
@@ -47,8 +47,17 @@ pub(super) fn section(ui: &mut Ui, title: &str) {
 }
 
 /// Paper size, size, paper style and line spacing rows (the open note, or the
-/// defaults for new notes).
-fn paper_rows(ui: &mut Ui, id: &str, width: &mut f32, height: &mut f32, kind: &mut PageKind, spacing: &mut f32) {
+/// defaults for new notes). The paper size can be infinite (`model::CANVAS_SIZE`)
+/// if `infinite` (else that entry is there, disabled); an infinite page has
+/// no size to set.
+fn paper_rows(
+    ui: &mut Ui,
+    id: &str,
+    (width, height): (&mut f32, &mut f32),
+    infinite: bool,
+    kind: &mut PageKind,
+    spacing: &mut f32,
+) {
     row(ui, "Paper size", |ui| {
         egui::ComboBox::from_id_salt((id, "paper_size"))
             .selected_text(paper_label(*width, *height))
@@ -60,8 +69,18 @@ fn paper_rows(ui: &mut Ui, id: &str, width: &mut f32, height: &mut f32, kind: &m
                         *height = h;
                     }
                 }
+                let entry = egui::Button::selectable(false, "Infinite  (grows as you write)");
+                let entry = ui
+                    .add_enabled(infinite, entry)
+                    .on_disabled_hover_text("Only a note of one page, not written on a PDF, can have an infinite page");
+                if entry.clicked() {
+                    (*width, *height) = (CANVAS_SIZE, CANVAS_SIZE);
+                }
             });
     });
+    if *width >= CANVAS_SIZE {
+        return paper_style_rows(ui, id, kind, spacing);
+    }
     row(ui, "Size", |ui| {
         ui.add(DragValue::new(width).range(200.0..=4000.0).speed(2.0).suffix(" px"));
         ui.label(theme::muted("×"));
@@ -73,8 +92,7 @@ fn paper_rows(ui: &mut Ui, id: &str, width: &mut f32, height: &mut f32, kind: &m
     paper_style_rows(ui, id, kind, spacing);
 }
 
-/// Paper style and line spacing rows (all an infinite canvas has). The
-/// paper is a list, like the paper size: its kinds side by side are wider
+/// Paper style and line spacing rows. The paper is a list, like the paper size: its kinds side by side are wider
 /// than the note settings.
 fn paper_style_rows(ui: &mut Ui, id: &str, kind: &mut PageKind, spacing: &mut f32) {
     row(ui, "Paper", |ui| {
@@ -108,26 +126,24 @@ impl InkApp {
     }
 
     fn note_settings(&mut self, ui: &mut Ui) {
-        // An infinite canvas has its paper, but no page size and no pages.
-        if self.doc.is_canvas() {
-            section(ui, "Canvas");
-            rows(ui, "note_page", |ui| {
-                paper_style_rows(ui, "note", &mut self.doc.page.kind, &mut self.doc.page.spacing)
-            });
-            hint(ui, "An infinite canvas has no pages: it goes on in every direction.");
-        } else {
-            self.page_settings(ui);
-        }
+        self.page_settings(ui);
         self.note_info(ui);
     }
 
-    /// The page size, the paper and the pages of the open note.
+    /// The page size, the paper and the pages of the open note (an infinite
+    /// page is the only one).
     fn page_settings(&mut self, ui: &mut Ui) {
         section(ui, "Page");
         rows(ui, "note_page", |ui| {
             let d = &mut self.doc;
-            paper_rows(ui, "note", &mut d.page_width, &mut d.page_height, &mut d.page.kind, &mut d.page.spacing);
+            let infinite = d.can_be_canvas();
+            let size = (&mut d.page_width, &mut d.page_height);
+            paper_rows(ui, "note", size, infinite, &mut d.page.kind, &mut d.page.spacing);
         });
+        if self.doc.is_canvas() {
+            hint(ui, "An infinite page grows right and down as you write on it.");
+            return;
+        }
         hint(ui, "Changing the size keeps existing ink where it is; it is not rescaled.");
 
         section(ui, "Pages");
@@ -431,14 +447,8 @@ impl InkApp {
 
         section(ui, "New notes");
         rows(ui, "global_new_notes", |ui| {
-            paper_rows(
-                ui,
-                "new",
-                &mut s.new_page_width,
-                &mut s.new_page_height,
-                &mut s.new_page_kind,
-                &mut s.new_page_spacing,
-            );
+            let size = (&mut s.new_page_width, &mut s.new_page_height);
+            paper_rows(ui, "new", size, true, &mut s.new_page_kind, &mut s.new_page_spacing);
         });
         hint(ui, "Used for notes created from now on. Each note keeps its own paper (Note settings).");
 

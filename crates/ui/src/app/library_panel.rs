@@ -230,7 +230,7 @@ impl InkApp {
                 Pick::NewNote(dir) => {
                     self.close_note(ctx);
                     if self.screen == super::Screen::Library {
-                        self.new_note(&dir, false);
+                        self.new_note(&dir);
                     }
                 }
                 Pick::LibraryScreen => self.close_note(ctx),

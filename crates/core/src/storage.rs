@@ -53,9 +53,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::journal::{self, Delta, DeltaV6};
-use emath::{Rect, pos2, vec2};
-
-use crate::model::{self, Document, DocumentV6, Stroke};
+use crate::model::{Document, DocumentV6, Stroke};
 use crate::pdf_pages::PdfFile;
 
 const MAGIC: &[u8; 4] = b"INK1";
@@ -105,7 +103,7 @@ pub struct NoteMeta {
     /// Seconds since the Unix epoch.
     pub created: u64,
     pub modified: u64,
-    /// The number of pages; 0 for an infinite canvas.
+    /// The number of pages; 0 for an infinite page.
     pub pages: u32,
     pub preview: Preview,
 }
@@ -126,17 +124,15 @@ fn shown_pages(doc: &Document) -> u32 {
     if doc.is_canvas() { 0 } else { doc.page_count }
 }
 
-/// Page 1; of an infinite canvas, what is on it (`Document::canvas_area`),
-/// at least about as large as a page, so a few words are not shown huge.
+/// Page 1; of an infinite page, as far as it is written on
+/// (`Document::canvas_area`).
 fn make_preview(doc: &Document) -> Preview {
-    let area = if doc.is_canvas() {
+    let (page_w, page_h) = if doc.is_canvas() {
         let a = doc.canvas_area();
-        let w = a.width().max(model::DEFAULT_PAGE_WIDTH);
-        Rect::from_min_size(a.min, vec2(w, a.height().max(w * 0.75)))
+        (a.width(), a.height())
     } else {
-        Rect::from_min_size(pos2(0.0, 0.0), vec2(doc.page_width, doc.page_height))
+        (doc.page_width, doc.page_height)
     };
-    let (dx, dy) = (area.min.x, area.min.y);
     let strokes: Vec<&Stroke> = doc.strokes.iter().filter(|s| s.page == 0).collect();
     let total: usize = strokes.iter().map(|s| s.points.len()).sum();
     let step = total / PREVIEW_MAX_POINTS + 1;
@@ -149,7 +145,7 @@ fn make_preview(doc: &Document) -> Preview {
             .iter()
             .enumerate()
             .filter(|(i, _)| i % step == 0 || *i + 1 == n)
-            .map(|(_, p)| [p.x - dx, p.y - dy])
+            .map(|(_, p)| [p.x, p.y])
             .collect();
         if !pts.is_empty() {
             out.push(PreviewStroke { color: s.color, width: s.width, pts });
@@ -162,15 +158,15 @@ fn make_preview(doc: &Document) -> Preview {
             let chars = line.chars().count();
             if chars > 0 {
                 bars.push([
-                    t.x - dx,
-                    t.y - dy + i as f32 * t.line_h + t.line_h * 0.3,
+                    t.x,
+                    t.y + i as f32 * t.line_h + t.line_h * 0.3,
                     (chars as f32 * t.size * 0.5).min(t.width),
                     t.size * 0.5,
                 ]);
             }
         }
     }
-    Preview { page_w: area.width(), page_h: area.height(), strokes: out, bars }
+    Preview { page_w, page_h, strokes: out, bars }
 }
 
 /// First non-empty line of the top-most text box on page 1.
@@ -670,17 +666,19 @@ mod tests {
     }
 
     #[test]
-    fn a_canvas_shows_what_is_on_it_in_the_library() {
-        let mut doc = Document::canvas(crate::model::PageStyle::default());
+    fn an_infinite_page_shows_what_is_on_it_in_the_library() {
+        let size = crate::model::CANVAS_SIZE;
+        let mut doc = Document::default();
+        (doc.page_width, doc.page_height) = (size, size);
         let id = doc.alloc_id();
-        let points = vec![Point::new(60_000.0, 60_000.0, 1.0), Point::new(60_100.0, 60_050.0, 1.0)];
+        let points = vec![Point::new(900.0, 1500.0, 1.0), Point::new(1000.0, 1550.0, 1.0)];
         doc.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 2.0, points));
-        let mut meta = NoteMeta::new("Canvas", false);
+        let mut meta = NoteMeta::new("Infinite", false);
         refresh_meta(&mut meta, &doc);
-        assert_eq!(meta.pages, 0, "a canvas, not a page count");
-        // About a page around the stroke, not the whole canvas.
+        assert_eq!(meta.pages, 0, "infinite, not a page count");
+        // As far as it is written on, not all of it.
         let pv = &meta.preview;
-        assert!(pv.page_w >= model::DEFAULT_PAGE_WIDTH && pv.page_w < 1000.0, "{}", pv.page_w);
+        assert!(pv.page_w > 1000.0 && pv.page_w < 1200.0, "{}", pv.page_w);
         for [x, y] in &pv.strokes[0].pts {
             assert!((0.0..pv.page_w).contains(x) && (0.0..pv.page_h).contains(y));
         }

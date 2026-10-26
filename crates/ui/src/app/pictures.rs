@@ -360,7 +360,7 @@ mod tests {
         Image { id: 1, page: 0, x: 100.0, y: 100.0, width: 200.0, height: 100.0, data }
     }
 
-    const LAYOUT: Layout = Layout { page_w: 800.0, page_h: 1000.0, count: 3, canvas: false };
+    const LAYOUT: Layout = Layout { page_w: 800.0, page_h: 1000.0, count: 3, canvas: false, extent: egui::Vec2::ZERO };
 
     #[test]
     fn moving_keeps_it_on_the_page() {

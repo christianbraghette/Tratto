@@ -17,9 +17,11 @@
 //! Because strokes are stored in page space, changing the paper size or the
 //! number of pages never moves existing ink relative to its page.
 //!
-//! An infinite canvas is laid out like any note: its one page is just very
-//! large (`model::CANVAS_SIZE`). The view has no scroll bars then, and its
-//! fit zooms show the paper at 100 %.
+//! An infinite page is laid out like any page, but it is very large
+//! (`model::CANVAS_SIZE`), without the margin around it: the view goes only
+//! as far as it is written on, with room to go on (`Layout::grown`), and so
+//! it grows as it is written on, like a page of OneNote. Its fit zooms show
+//! the paper at 100 %.
 
 use std::ops::RangeInclusive;
 
@@ -38,10 +40,12 @@ const BOTTOM_PAD_PX: f32 = 72.0;
 /// notch must not cover the page when scrolled to the top.
 pub const TOP_PAD_PX: f32 = 48.0;
 
-/// The zooms the view can have (percent); an infinite canvas can be seen
+/// The zooms the view can have (percent); an infinite page can be seen
 /// from further away.
 const ZOOM_RANGE: RangeInclusive<u32> = 25..=400;
 const CANVAS_ZOOM_RANGE: RangeInclusive<u32> = 10..=400;
+/// How far an infinite page goes past what is written on it, in views.
+const GROW_ROOM: f32 = 0.5;
 
 /// Geometry of the stacked pages.
 #[derive(Clone, Copy, Debug)]
@@ -49,14 +53,36 @@ pub struct Layout {
     pub page_w: f32,
     pub page_h: f32,
     pub count: u32,
-    /// The note is an infinite canvas (`Document::is_canvas`).
+    /// The page is infinite (`Document::is_canvas`).
     pub canvas: bool,
+    /// An infinite page: how far the view goes (page space, see `grown`).
+    pub extent: Vec2,
 }
 
 impl Layout {
     /// The pages of `doc`, stacked.
     pub fn of(doc: &Document) -> Self {
-        Self { page_w: doc.page_width, page_h: doc.page_height, count: doc.page_count.max(1), canvas: doc.is_canvas() }
+        let (page_w, page_h, canvas) = (doc.page_width, doc.page_height, doc.is_canvas());
+        Self { page_w, page_h, count: doc.page_count.max(1), canvas, extent: vec2(page_w, page_h) }
+    }
+
+    /// An infinite page as far as the view goes: what is written on it
+    /// (up to `written`, page space), and past it as much as half of what
+    /// the view shows (`shown`, page units), right and down; at least what
+    /// the view shows from where it is (`scroll`): it never shrinks under
+    /// the view. Other pages as they are.
+    pub fn grown(mut self, written: Option<Pos2>, shown: Vec2, scroll: Vec2) -> Self {
+        if self.canvas {
+            let room = written.map_or(Vec2::ZERO, |w| w.to_vec2() + shown * GROW_ROOM);
+            let extent = room.max(shown).max(scroll + shown);
+            self.extent = extent.min(vec2(self.page_w, self.page_h));
+        }
+        self
+    }
+
+    /// Space around the pages: none around an infinite page.
+    fn margin(&self) -> f32 {
+        if self.canvas { 0.0 } else { MARGIN }
     }
 
     /// The zooms (percent) the view of these pages can have.
@@ -65,15 +91,21 @@ impl Layout {
     }
 
     pub fn content_w(&self) -> f32 {
-        self.page_w + 2.0 * MARGIN
+        if self.canvas {
+            return self.extent.x;
+        }
+        self.page_w + 2.0 * self.margin()
     }
 
     pub fn content_h(&self, scale: f32) -> f32 {
+        if self.canvas {
+            return TOP_PAD_PX / scale + self.extent.y;
+        }
         TOP_PAD_PX / scale
-            + MARGIN
+            + self.margin()
             + self.count as f32 * self.page_h
             + self.count.saturating_sub(1) as f32 * PAGE_GAP
-            + (BOTTOM_PAD_PX / scale).max(MARGIN)
+            + (BOTTOM_PAD_PX / scale).max(self.margin())
     }
 
     fn stride(&self) -> f32 {
@@ -81,20 +113,20 @@ impl Layout {
     }
 
     pub fn page_top(&self, page: u32) -> f32 {
-        MARGIN + page as f32 * self.stride()
+        self.margin() + page as f32 * self.stride()
     }
 
     /// Top-left corner of a page in content space.
     pub fn page_origin(&self, page: u32) -> Pos2 {
-        pos2(MARGIN, self.page_top(page))
+        pos2(self.margin(), self.page_top(page))
     }
 
     /// The page containing the content-space point, if it is on paper.
     pub fn page_at(&self, c: Pos2) -> Option<u32> {
-        if c.x < MARGIN || c.x > MARGIN + self.page_w || c.y < MARGIN {
+        if c.x < self.margin() || c.x > self.margin() + self.page_w || c.y < self.margin() {
             return None;
         }
-        let i = ((c.y - MARGIN) / self.stride()).floor() as u32;
+        let i = ((c.y - self.margin()) / self.stride()).floor() as u32;
         if i >= self.count {
             return None;
         }
@@ -104,17 +136,17 @@ impl Layout {
     /// Pages that may overlap the content-space y range (a superset is fine).
     #[allow(clippy::reversed_empty_ranges)] // `1..=0`: the empty range
     pub fn pages_overlapping(&self, y0: f32, y1: f32) -> RangeInclusive<u32> {
-        if self.count == 0 || y1 < MARGIN {
+        if self.count == 0 || y1 < self.margin() {
             return 1..=0; // empty
         }
-        let first = ((y0 - MARGIN) / self.stride()).floor().max(0.0) as u32;
-        let last = (((y1 - MARGIN) / self.stride()).floor() as u32).min(self.count - 1);
+        let first = ((y0 - self.margin()) / self.stride()).floor().max(0.0) as u32;
+        let last = (((y1 - self.margin()) / self.stride()).floor() as u32).min(self.count - 1);
         first..=last
     }
 
     /// Index of the page nearest to a content-space y (for the page indicator).
     pub fn page_index_at_y(&self, y: f32) -> u32 {
-        (((y - MARGIN) / self.stride()).floor().max(0.0) as u32).min(self.count.saturating_sub(1))
+        (((y - self.margin()) / self.stride()).floor().max(0.0) as u32).min(self.count.saturating_sub(1))
     }
 
     /// The page nearest to the content-space height `y`: in the gap between
@@ -127,7 +159,7 @@ impl Layout {
 
     /// The scroll offset that shows `page` from its top, margin included.
     pub fn page_stop(&self, page: u32) -> f32 {
-        self.page_top(page) - MARGIN
+        self.page_top(page) - self.margin()
     }
 
     /// The page whose `page_stop` is at or above the scroll offset `y`.
@@ -141,7 +173,7 @@ impl Layout {
     /// from its top. A page that fits the view is one step.
     pub fn next_stop(&self, top: f32, visible: f32) -> f32 {
         let i = self.page_of_stop(top + STOP_SLACK);
-        let page_end = self.page_top(i) + self.page_h + MARGIN;
+        let page_end = self.page_top(i) + self.page_h + self.margin();
         if page_end > top + visible + STOP_SLACK {
             (top + visible * READ_STEP).min(page_end - visible)
         } else if i + 1 < self.count {
@@ -159,7 +191,7 @@ impl Layout {
         let i = self.page_of_stop(top - STOP_SLACK);
         if top >= self.page_top(i) + self.page_h - STOP_SLACK {
             // All of page `i` is above: its end, or all of it if it fits.
-            let page_end = self.page_top(i) + self.page_h + MARGIN;
+            let page_end = self.page_top(i) + self.page_h + self.margin();
             (page_end - visible).max(self.page_stop(i))
         } else {
             (top - visible * READ_STEP).max(self.page_stop(i))
@@ -257,7 +289,7 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout { page_w: 794.0, page_h: 1123.0, count: 3, canvas: false }
+        Layout { page_w: 794.0, page_h: 1123.0, count: 3, canvas: false, extent: Vec2::ZERO }
     }
 
     #[test]
@@ -274,11 +306,28 @@ mod tests {
 
     #[test]
     fn a_canvas_fits_at_100_percent_and_zooms_further_out() {
-        let canvas = Layout { page_w: 100_000.0, page_h: 100_000.0, count: 1, canvas: true };
+        let canvas = Layout { page_w: 100_000.0, page_h: 100_000.0, count: 1, canvas: true, extent: Vec2::ZERO };
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1200.0, 700.0));
         assert_eq!(View::scale_for(ZoomMode::FitWidth, rect, &canvas), 1.0);
         assert_eq!(View::scale_for(ZoomMode::FitPage, rect, &canvas), 1.0);
         assert!(canvas.zoom_range().start() < layout().zoom_range().start());
+    }
+
+    #[test]
+    fn an_infinite_page_grows_as_it_is_written_on() {
+        let page = Layout { page_w: 100_000.0, page_h: 100_000.0, count: 1, canvas: true, extent: Vec2::ZERO };
+        let shown = vec2(1000.0, 600.0);
+        // Nothing written: what the view shows, from the page's corner.
+        let empty = page.grown(None, shown, Vec2::ZERO);
+        assert_eq!(empty.extent, shown);
+        assert_eq!(empty.page_origin(0), pos2(0.0, 0.0), "no margin");
+        // Written down to 2000: half a view more.
+        let written = page.grown(Some(pos2(400.0, 2000.0)), shown, Vec2::ZERO);
+        assert_eq!(written.extent, vec2(1000.0, 2300.0));
+        // Never less than what is in view (something was just erased).
+        assert_eq!(page.grown(None, shown, vec2(0.0, 5000.0)).extent, vec2(1000.0, 5600.0));
+        // Other pages do not grow.
+        assert_eq!(layout().grown(Some(pos2(5000.0, 5000.0)), shown, Vec2::ZERO).content_w(), layout().content_w());
     }
 
     #[test]

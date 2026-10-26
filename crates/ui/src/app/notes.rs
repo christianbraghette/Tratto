@@ -307,9 +307,6 @@ impl InkApp {
             // The canvas clamps it to the note (e.g. pages deleted elsewhere).
             self.scroll = vec2(view.scroll[0], view.scroll[1]);
             self.settings.zoom = view.zoom;
-        } else if self.doc.is_canvas() {
-            // Not at the canvas' corner, far from anything: where it is written on.
-            self.scroll = self.doc.canvas_area().min.to_vec2();
         }
         self.settings.last_note = Some(key.into_owned());
         self.last_fp = self.current_fingerprint();

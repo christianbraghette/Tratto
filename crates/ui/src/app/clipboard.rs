@@ -411,7 +411,7 @@ impl InkApp {
     /// Inserts `pages` so that the first gets `index`; one undo step.
     fn paste_pages(&mut self, pages: &[PageContent], index: u32) {
         if self.doc.is_canvas() {
-            return self.toast("Pages cannot be pasted on a canvas: copy what is on them instead");
+            return self.toast("Pages cannot be pasted on an infinite page: copy what is on them instead");
         }
         self.before_page_change();
         let index = index.min(self.doc.page_count);

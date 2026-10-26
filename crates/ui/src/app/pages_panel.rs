@@ -55,7 +55,7 @@ impl InkApp {
     }
 
     /// Inserts an empty page so that it gets `index` (undoable). Not on an
-    /// infinite canvas, which is one page.
+    /// infinite page, the only one.
     pub(super) fn insert_page(&mut self, index: u32) {
         if self.doc.is_canvas() {
             return;
@@ -65,7 +65,7 @@ impl InkApp {
     }
 
     /// Deletes a page with its content (undoable). Not the page of an
-    /// infinite canvas.
+    /// infinite page.
     pub(super) fn delete_page(&mut self, index: u32) {
         if self.doc.is_canvas() {
             return;
@@ -154,7 +154,7 @@ impl InkApp {
             self.settings.sidebar_last = view;
         }
         let note_settings = !self.reading();
-        // An infinite canvas has no pages to show.
+        // An infinite page is the only one: no pages to show.
         let canvas = self.doc.is_canvas();
         let (top, bottom) = (toolbar::notch_margin(true), toolbar::notch_margin(false));
         // On the right the canvas scrollbar (same surface) sits next to the

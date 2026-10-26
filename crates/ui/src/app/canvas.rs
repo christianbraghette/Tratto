@@ -237,10 +237,9 @@ impl InkApp {
 
     /// Writing-area rectangle, zoom scale and whether a horizontal scrollbar
     /// is needed. The vertical scrollbar always occupies the right edge,
-    /// except while presenting and on an infinite canvas: then the page has
-    /// it all (no scroll bars).
+    /// except while presenting: then the page has it all (no scroll bars).
     fn canvas_geometry(&self, full: Rect, layout: &Layout) -> (Rect, f32, bool) {
-        if self.presenting.is_some() || layout.canvas {
+        if self.presenting.is_some() {
             return (full, View::scale_for(self.zoom(), full, layout), false);
         }
         let sb = scrollbar::THICKNESS;
@@ -316,7 +315,13 @@ impl InkApp {
 
     pub(super) fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         let full = ui.max_rect();
-        let layout = Layout::of(&self.doc);
+        let mut layout = Layout::of(&self.doc);
+        // An infinite page goes as far as it is written on, and grows as it
+        // is (see `Layout::grown`).
+        if layout.canvas {
+            let shown = full.size() / View::scale_for(self.zoom(), full, &layout);
+            layout = layout.grown(self.doc.content_bounds(0).map(|r| r.max), shown, self.scroll);
+        }
         ui.painter().rect_filled(full, 0.0, crate::theme::color::desk());
 
         // ---- geometry and zoom
@@ -436,14 +441,13 @@ impl InkApp {
                     self.ease_scroll(base - vec2(0.0, page_len));
                 }
             }
-            // A canvas: the start and the end of what is on it.
-            let area = layout.canvas.then(|| self.doc.canvas_area());
+            // An infinite page starts at its left too.
+            let left = if layout.canvas { 0.0 } else { base.x };
             if home {
-                self.ease_scroll(area.map_or(vec2(base.x, 0.0), |a| a.min.to_vec2()));
+                self.ease_scroll(vec2(left, 0.0));
             }
             if end {
-                let bottom = |a: Rect| vec2(a.min.x, (a.max.y + 2.0 * MARGIN - visible).max(a.min.y));
-                self.ease_scroll(area.map_or(vec2(base.x, max.y), bottom));
+                self.ease_scroll(vec2(left, max.y));
             }
         }
         if let Some(y) = self.scroll_to.take() {
@@ -544,23 +548,20 @@ impl InkApp {
         }
         // Hovering the grey area keeps the normal arrow.
 
-        // ---- scrollbars (interaction first, so the view below is final);
-        // none on a canvas, so large that they would only jump
+        // ---- scrollbars (interaction first, so the view below is final)
         let vbar_rect = Rect::from_min_max(pos2(canvas.right(), full.top()), pos2(full.right(), canvas.bottom()));
         let hbar_rect = Rect::from_min_max(pos2(full.left(), canvas.bottom()), pos2(canvas.right(), full.bottom()));
-        let vstate = (!layout.canvas).then(|| {
-            scrollbar::update(
-                ui,
-                Id::unique("vbar"),
-                vbar_rect,
-                true,
-                &mut self.scroll.y,
-                max.y,
-                canvas.height() / scale,
-                layout.content_h(scale),
-                &mut self.vbar_grab,
-            )
-        });
+        let vstate = scrollbar::update(
+            ui,
+            Id::unique("vbar"),
+            vbar_rect,
+            true,
+            &mut self.scroll.y,
+            max.y,
+            canvas.height() / scale,
+            layout.content_h(scale),
+            &mut self.vbar_grab,
+        );
         let hstate = hbar.then(|| {
             scrollbar::update(
                 ui,
@@ -695,7 +696,7 @@ impl InkApp {
             self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scales, &picture_moves);
         }
         // The pictures of the pages next to those shown, ready to scroll to;
-        // on a canvas (one page) those within a screen of the view.
+        // on an infinite page those within a screen of the view.
         let shown = view.visible_pages();
         let near = shown.start().saturating_sub(1)..=(shown.end() + 1).min(layout.count - 1);
         let around = self.shown_content.expand2(self.shown_content.size()).translate(-layout.page_origin(0).to_vec2());
@@ -919,9 +920,11 @@ impl InkApp {
         self.current_page = cur;
         let label = format!("Page {} / {}", cur + 1, layout.count);
         let full_painter = ui.painter();
-        // Presenting: no scroll bar (its track has no width then).
-        if let (Some(v), None) = (&vstate, &self.presenting) {
-            scrollbar::paint(full_painter, vbar_rect, true, v, Some(&label));
+        // Presenting: no scroll bar (its track has no width then). An
+        // infinite page has no page number to show.
+        if self.presenting.is_none() {
+            let label = (!layout.canvas).then_some(label.as_str());
+            scrollbar::paint(full_painter, vbar_rect, true, &vstate, label);
         }
         if let Some(h) = &hstate {
             scrollbar::paint(full_painter, hbar_rect, false, h, None);

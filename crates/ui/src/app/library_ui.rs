@@ -133,8 +133,6 @@ pub(super) enum Act {
     Show(LibView),
     Sort(LibrarySort),
     NewNote(PathBuf),
-    /// A new infinite canvas in the folder, opened at once.
-    NewCanvas(PathBuf),
     OpenNotebook(PathBuf),
     /// Stop showing an external notebook (its folder is left alone).
     CloseNotebook(PathBuf),
@@ -438,14 +436,6 @@ impl InkApp {
                             if ui.add(new_note).on_hover_text(tip).clicked() {
                                 acts.push(Act::NewNote(target_dir.to_path_buf()));
                             }
-                            let tip = format!(
-                                "A new infinite canvas in {}: no pages, room all around",
-                                place_name(notebook, self.lib_ui.section.as_deref())
-                            );
-                            let new_canvas = ui.button(format!("{}  New canvas", icon::INFINITY)).on_hover_text(tip);
-                            if new_canvas.clicked() {
-                                acts.push(Act::NewCanvas(target_dir.to_path_buf()));
-                            }
                         }
                         let menu = Id::unique("lib_import_menu");
                         let import = ui.button(format!("{}  Import  {}", icon::DOWNLOAD_SIMPLE, icon::CARET_DOWN));
@@ -712,10 +702,9 @@ impl InkApp {
         }
     }
 
-    /// Creates an untitled note in `dir`, or an infinite `canvas`, and opens it.
-    pub(super) fn new_note(&mut self, dir: &Path, canvas: bool) {
-        let title = if canvas { "Untitled canvas" } else { "Untitled note" };
-        match library::create_note(dir, title) {
+    /// Creates an untitled note in `dir` and opens it.
+    pub(super) fn new_note(&mut self, dir: &Path) {
+        match library::create_note(dir, "Untitled note") {
             Ok(p) => {
                 self.refresh_library();
                 self.open_note(&p);
@@ -726,10 +715,6 @@ impl InkApp {
                     self.doc.page_height = s.new_page_height;
                     self.doc.page.kind = s.new_page_kind;
                     self.doc.page.spacing = s.new_page_spacing;
-                    if canvas {
-                        self.doc = tratto_core::model::Document::canvas(self.doc.page);
-                        self.scroll = self.doc.canvas_area().min.to_vec2();
-                    }
                     self.save_note(false);
                 }
             }
@@ -743,8 +728,7 @@ impl InkApp {
         let root = self.library_root();
         match a {
             Act::Open(p) => self.open_note(&p),
-            Act::NewNote(dir) => self.new_note(&dir, false),
-            Act::NewCanvas(dir) => self.new_note(&dir, true),
+            Act::NewNote(dir) => self.new_note(&dir),
             Act::OpenNotebook(p) => {
                 self.lib_ui.notebook = Some(p);
                 self.lib_ui.section = None;
@@ -766,7 +750,7 @@ impl InkApp {
                 self.lib_ui.search.clear();
                 self.refresh_library();
             }
-            Act::QuickNote => self.new_note(&root, false),
+            Act::QuickNote => self.new_note(&root),
             Act::Sort(sort) => self.settings.library_sort = sort,
             Act::SelectSection(s) => self.lib_ui.section = s,
             Act::Dialog(d) => self.show_dialog(d),
@@ -1024,9 +1008,6 @@ fn home_view(
         ui.spacing_mut().item_spacing = vec2(space::L, space::L);
         if action_tile(ui, icon::LIGHTNING, "Quick note", "Start writing right away").clicked() {
             acts.push(Act::QuickNote);
-        }
-        if action_tile(ui, icon::INFINITY, "Infinite canvas", "No pages, room all around").clicked() {
-            acts.push(Act::NewCanvas(root.to_path_buf()));
         }
         if action_tile(ui, icon::NOTEBOOK, "New notebook", "Notes grouped in sections").clicked() {
             acts.push(Act::Dialog(Dialog::NewNotebook(String::new())));
@@ -1471,7 +1452,8 @@ fn note_card(ui: &mut Ui, note: &NoteInfo, root: &Path, show_location: bool, act
             )
             .truncate(),
         );
-        let pages = if note.meta.pages == 0 { "Canvas".to_owned() } else { count(note.meta.pages as usize, "page") };
+        let pages =
+            if note.meta.pages == 0 { "Infinite page".to_owned() } else { count(note.meta.pages as usize, "page") };
         ui.label(RichText::new(format!("{} · {}", when(note.meta.modified), pages)).small().color(color::text_muted()));
         if show_location {
             ui.add(

@@ -81,8 +81,8 @@ pub(super) struct ExportDialog {
     /// Notes ticked for `Scope::Selection`.
     selected: HashSet<PathBuf>,
     /// Other notes, loaded once for the preview and the export (`None` =
-    /// unreadable), an infinite canvas made a page (`Document::as_pages`).
-    /// The open note is taken from memory, unless it is a canvas: then it is
+    /// unreadable), an infinite page made a page (`Document::as_pages`).
+    /// The open note is taken from memory, unless its page is infinite: then it is
     /// here too, made a page when the dialog opened.
     loaded: HashMap<PathBuf, Option<Document>>,
     /// Index of the previewed page among the exported pages.
@@ -239,7 +239,7 @@ impl InkApp {
     }
 
     /// The document of a listed note (the open one from memory, but for a
-    /// canvas; see `ExportDialog::loaded`).
+    /// note with an infinite page; see `ExportDialog::loaded`).
     fn export_doc<'a>(&'a self, loaded: &'a HashMap<PathBuf, Option<Document>>, path: &Path) -> Option<&'a Document> {
         match loaded.get(path) {
             Some(doc) => doc.as_ref(),
@@ -776,10 +776,10 @@ impl InkApp {
 
     /// Asks where to save a picture of page `page` (as it looks: paper,
     /// rules, the PDF under it), then saves it.
-    /// A canvas: what is on it (`Document::as_pages`).
+    /// An infinite page: as far as it is written on (`Document::as_pages`).
     pub(super) fn save_page_png(&mut self, page: u32) {
         let snap = Snapshot::of_note_page(&self.doc.as_pages(), page);
-        let what = if self.doc.is_canvas() { "canvas".to_owned() } else { format!("page {}", page + 1) };
+        let what = if self.doc.is_canvas() { "page".to_owned() } else { format!("page {}", page + 1) };
         self.ask_png_path(snap, &what);
     }
 

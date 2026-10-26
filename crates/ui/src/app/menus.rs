@@ -46,8 +46,6 @@ const ZOOM_STEPS: [u32; 17] = [10, 15, 25, 33, 50, 67, 75, 90, 100, 110, 125, 15
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Command {
     NewNote,
-    /// A new infinite canvas, where a new note would go.
-    NewCanvas,
     QuickNote,
     NewNotebook,
     Import,
@@ -575,7 +573,6 @@ impl InkApp {
                 return;
             }
             push(entry(ui, icon::NOTE_PENCIL, "New note", &shortcut(&ctx, cmd, Key::N), true), ui, Command::NewNote);
-            push(entry(ui, icon::INFINITY, "New canvas", "", true), ui, Command::NewCanvas);
             push(
                 entry(ui, icon::LIGHTNING, "Quick note", &shortcut(&ctx, cmd | Modifiers::SHIFT, Key::N), true),
                 ui,
@@ -682,7 +679,7 @@ impl InkApp {
         if editor && !self.reading() {
             ui.menu_button("Page", |ui| {
                 open = true;
-                // An infinite canvas is one page: nothing to insert, move or delete.
+                // An infinite page is the only one: nothing to insert, move or delete.
                 if !self.doc.is_canvas() {
                     self.page_entries(ui, self.current_page, &mut |ui, c| push(true, ui, c));
                     ui.separator();
@@ -976,7 +973,7 @@ impl InkApp {
                         }
                         ui.separator();
                         if canvas {
-                            if entry(ui, icon::FILE_PNG, "Save canvas as PNG...", "", true) {
+                            if entry(ui, icon::FILE_PNG, "Save page as PNG...", "", true) {
                                 push(ui, Command::SavePagePng(page));
                             }
                             return;
@@ -1129,7 +1126,6 @@ impl InkApp {
             Command::OpenPdf if self.standalone.is_some() => self.show_dialog(Dialog::OpenPdf(String::new())),
             Command::CloseNote if self.standalone.is_some() => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Command::NewNote
-            | Command::NewCanvas
             | Command::QuickNote
             | Command::NewNotebook
             | Command::Import
@@ -1154,7 +1150,7 @@ impl InkApp {
             // A PDF in the reader has no notebook: it is searched by itself.
             Command::FindInNotebook if editor => self.find(Scope::Notebook),
             Command::FindNext(forward) if editor => self.find_next(forward),
-            Command::NewNote | Command::NewCanvas => {
+            Command::NewNote => {
                 let dir = match (&self.note_path, editor) {
                     (Some(p), true) => p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.library_root()),
                     _ => self.library_target_dir(),
@@ -1163,7 +1159,7 @@ impl InkApp {
                     self.close_note(ctx);
                 }
                 if self.screen == Screen::Library {
-                    self.new_note(&dir, cmd == Command::NewCanvas);
+                    self.new_note(&dir);
                 }
             }
             Command::QuickNote => {
@@ -1172,7 +1168,7 @@ impl InkApp {
                 }
                 if self.screen == Screen::Library {
                     let root = self.library_root();
-                    self.new_note(&root, false);
+                    self.new_note(&root);
                 }
             }
             Command::NewNotebook | Command::Import | Command::ImportPdf | Command::OpenPdf | Command::LibraryFolder => {
@@ -1256,7 +1252,7 @@ impl InkApp {
                     // From the top of the page being read, at once: easing there
                     // while the zoom changes swoops across the pages.
                     self.kinetic.stop();
-                    // A canvas is presented from where it is.
+                    // An infinite page is presented from where it is.
                     if !self.doc.is_canvas() {
                         self.scroll = egui::vec2(0.0, self.layout().page_stop(self.current_page));
                     }
