@@ -19,11 +19,9 @@ use crate::view::{Layout, MARGIN};
 use super::InkApp;
 use super::menus;
 
-/// Default width of the pages view (points); every view of the sidebar
-/// remembers its own width.
+/// Width of the pages view (points); every view of the sidebar has its own,
+/// fixed.
 const PAGES_WIDTH: f32 = 164.0;
-/// The narrowest width still fits the "Add page" tile's label.
-const PAGES_WIDTHS: std::ops::RangeInclusive<f32> = 150.0..=360.0;
 /// Page previews never get wider than this, however wide the panel.
 const THUMB_MAX_W: f32 = 200.0;
 /// Fullscreen: a swipe that shows the sidebar starts this close to its
@@ -77,7 +75,7 @@ impl InkApp {
 
     /// The sidebar: a strip of view buttons along the window edge, always
     /// shown, and the shown view, if any, next to it. Each view is its own
-    /// resizable panel, so each keeps its own width.
+    /// panel, of its own fixed width.
     ///
     /// In fullscreen it starts hidden behind a notch in the top corner
     /// ([`Self::fullscreen_sidebar_notch`]); clicking the highlighted view
@@ -90,6 +88,25 @@ impl InkApp {
             && self.settings.sidebar != Sidebar::Closed
         {
             self.chrome.fullscreen_sidebar = true;
+        }
+        let shown = !fullscreen || self.chrome.fullscreen_sidebar;
+        // Escape closes it (in full screen, back behind the notch), when
+        // nothing else wants it: a window, a menu, a dialog, a field being
+        // typed in, a selection (all take it before).
+        let free = self.context_menu.is_none()
+            && self.lib_ui.dialog.is_none()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && !egui::Popup::is_any_open(ui.ctx());
+        if shown
+            && (fullscreen || self.settings.sidebar != Sidebar::Closed)
+            && free
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            if fullscreen {
+                self.chrome.fullscreen_sidebar = false;
+            } else {
+                self.settings.sidebar = Sidebar::Closed;
+            }
         }
         let shown = !fullscreen || self.chrome.fullscreen_sidebar;
         // Into or out of full screen (or presenting) it is there or not at
@@ -410,9 +427,8 @@ impl InkApp {
         // The concave joins with the title bar and the bottom edge are drawn
         // by `toolbar::show_joins`.
         Self::side_panel(side, "sidebar_pages")
-            .resizable(true)
-            .default_size(PAGES_WIDTH)
-            .size_range(PAGES_WIDTHS)
+            .resizable(false)
+            .exact_size(PAGES_WIDTH)
             .show_separator_line(false)
             .frame(Self::view_frame(false))
             .show(ui, |ui| {

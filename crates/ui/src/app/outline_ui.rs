@@ -6,7 +6,6 @@
 //! under them open and close; the part being read is marked.
 
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 
 use eframe::egui::{self, Align2, Rect, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as icon;
@@ -17,7 +16,6 @@ use crate::pdf_nav::Read;
 use crate::theme::{self, color, radius, size, space};
 
 const OUTLINE_WIDTH: f32 = 260.0;
-const OUTLINE_WIDTHS: RangeInclusive<f32> = 180.0..=480.0;
 /// Indentation per level of the outline.
 const INDENT: f32 = 14.0;
 /// Width of the open / close arrow in front of an entry.
@@ -50,9 +48,8 @@ impl InkApp {
 
         let side = self.settings.sidebar_side;
         Self::side_panel(side, "sidebar_outline")
-            .resizable(true)
-            .default_size(OUTLINE_WIDTH)
-            .size_range(OUTLINE_WIDTHS)
+            .resizable(false)
+            .exact_size(OUTLINE_WIDTH)
             .show_separator_line(false)
             .frame(Self::view_frame(true))
             .show(ui, |ui| {

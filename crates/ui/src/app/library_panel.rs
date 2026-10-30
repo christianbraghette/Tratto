@@ -28,7 +28,6 @@ use crate::theme::{self, color, radius, size, space};
 use crate::toolbar;
 
 const PANEL_WIDTH: f32 = 260.0;
-const PANEL_WIDTHS: std::ops::RangeInclusive<f32> = 200.0..=480.0;
 
 /// What the panel asks for; applied after drawing.
 enum Pick {
@@ -72,9 +71,8 @@ impl InkApp {
         let root = self.library_root();
 
         Self::side_panel(side, "sidebar_notebook")
-            .resizable(true)
-            .default_size(PANEL_WIDTH)
-            .size_range(PANEL_WIDTHS)
+            .resizable(false)
+            .exact_size(PANEL_WIDTH)
             .show_separator_line(false)
             .frame(Self::view_frame(false))
             .show(ui, |ui| {

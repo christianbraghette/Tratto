@@ -21,7 +21,6 @@
 //! under way stops.
 
 use std::collections::HashSet;
-use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,7 +42,6 @@ use crate::settings::Sidebar;
 use crate::theme::{self, color, radius, size, space};
 
 const SEARCH_WIDTH: f32 = 280.0;
-const SEARCH_WIDTHS: RangeInclusive<f32> = 200.0..=480.0;
 /// Results kept at most, of all the notes.
 const MAX_HITS: usize = 5000;
 /// The pause in typing after which a section or notebook is searched.
@@ -292,9 +290,8 @@ impl InkApp {
         let side = self.settings.sidebar_side;
         let (search, panel, note_path) = (&mut self.search, &mut self.search_panel, &self.note_path);
         Self::side_panel(side, "sidebar_search")
-            .resizable(true)
-            .default_size(SEARCH_WIDTH)
-            .size_range(SEARCH_WIDTHS)
+            .resizable(false)
+            .exact_size(SEARCH_WIDTH)
             .show_separator_line(false)
             .frame(Self::view_frame(true))
             .show(ui, |ui| {
