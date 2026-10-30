@@ -12,13 +12,13 @@
 
 use std::f32::consts::{PI, TAU};
 
-use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, vec2};
+use eframe::egui::{self, Align2, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::model::{Image, TextBox};
 
 use crate::markdown;
-use crate::theme::color;
+use crate::theme::{self, color, size};
 use crate::view::View;
 
 use super::pictures::corners;
@@ -229,7 +229,7 @@ impl InkApp {
             painter.rect(
                 Rect::from_center_size(c, vec2(10.0, 10.0)),
                 2.0,
-                Color32::WHITE,
+                color::handle(),
                 handle_stroke,
                 StrokeKind::Middle,
             );
@@ -237,7 +237,7 @@ impl InkApp {
         if rotatable {
             let knob = rotate_handle(rect);
             painter.line_segment([rect.center_top(), knob], handle_stroke);
-            painter.circle(knob, 6.0, Color32::WHITE, handle_stroke);
+            painter.circle(knob, 6.0, color::handle(), handle_stroke);
         }
         let dragging = self.transform.as_ref().map(|d| d.handle);
         if let Some(d) = self.transform.as_ref().filter(|d| d.handle == Handle::Rotate) {
@@ -246,7 +246,7 @@ impl InkApp {
                 rotate_handle(rect) + vec2(0.0, -14.0),
                 Align2::CENTER_BOTTOM,
                 label,
-                FontId::proportional(13.0),
+                theme::font(size::BODY),
                 color::accent(),
             );
         }

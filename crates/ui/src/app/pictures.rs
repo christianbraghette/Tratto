@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-use eframe::egui::{self, Color32, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
+use eframe::egui::{self, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::images;
@@ -339,7 +339,7 @@ impl InkApp {
         painter.rect_stroke(rect, 0.0, Stroke::new(1.5, color::accent()), StrokeKind::Outside);
         for c in corners(rect) {
             let handle = Rect::from_center_size(c, vec2(10.0, 10.0));
-            painter.rect(handle, 2.0, Color32::WHITE, Stroke::new(1.5, color::accent()), StrokeKind::Middle);
+            painter.rect(handle, 2.0, color::handle(), Stroke::new(1.5, color::accent()), StrokeKind::Middle);
         }
         let dragging = self.picture_drag.as_ref().map(|d| d.corner);
         let grabbed = dragging.or_else(|| hover.and_then(|p| self.picture_grab(view, p)).map(|(_, corner)| corner));

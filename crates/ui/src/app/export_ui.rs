@@ -858,7 +858,7 @@ fn paint_page(
     let sheet = Rect::from_center_size(area.center(), vec2(out_w * k, out_h * k));
     let p = ui.painter_at(sheet.expand(8.0));
     p.add(theme::card_shadow().as_shape(sheet, 2.0));
-    p.rect_filled(sheet, 0.0, Color32::WHITE);
+    p.rect_filled(sheet, 0.0, color::page());
 
     let f = s * k;
     let origin = sheet.min + vec2(ox * k, oy * k);

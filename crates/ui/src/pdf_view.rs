@@ -387,7 +387,7 @@ impl PdfTextures {
             let rect = Rect::from_min_size(page_rect.min + placed.min.to_vec2() * k, placed.size() * k);
             if sheets && painter.clip_rect().intersects(rect.expand(4.0)) {
                 if sharp {
-                    painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, Color32::from_black_alpha(60));
+                    painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, color::page_shadow());
                 }
                 painter.rect_filled(rect, 0.0, color::page());
             }

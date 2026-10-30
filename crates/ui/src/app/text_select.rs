@@ -118,11 +118,7 @@ const SCROLL_EDGE: f32 = 40.0;
 
 /// Search matches and the current match: yellow and orange, like a highlighter.
 fn match_color(current: bool) -> Color32 {
-    if current {
-        Color32::from_rgba_unmultiplied(255, 140, 0, 130)
-    } else {
-        Color32::from_rgba_unmultiplied(255, 210, 0, 100)
-    }
+    if current { color::search_current() } else { color::search_match() }
 }
 
 impl InkApp {

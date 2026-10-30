@@ -317,11 +317,11 @@ impl PictureTextures {
                 }
                 // Its place, faintly, until it is there.
                 Picture::Decoding => {
-                    painter.rect_filled(rect, 0.0, Color32::from_gray(242));
+                    painter.rect_filled(rect, 0.0, color::picture_pending());
                 }
                 // A file that cannot be read: its place, greyed.
                 Picture::Unreadable => {
-                    painter.rect_filled(rect, 0.0, Color32::from_gray(225));
+                    painter.rect_filled(rect, 0.0, color::picture_unreadable());
                 }
             }
         }
@@ -878,7 +878,7 @@ pub fn paint_paper(painter: &Painter, view: &View) {
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
         // Soft drop shadow, then the paper.
-        painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, Color32::from_black_alpha(60));
+        painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, color::page_shadow());
         painter.rect_filled(rect, 0.0, color::page());
     }
 }
@@ -953,12 +953,12 @@ pub fn paint_pen_cursor(painter: &Painter, center: Pos2, kind: StrokeKind, rgba:
     let [r, g, b, _] = paint_rgba(kind, rgba);
     let radius = (width_px * 0.5).clamp(2.0, 40.0);
     // A faint ring keeps light colours visible on the paper.
-    painter.circle(center, radius, Color32::from_rgb(r, g, b), UiStroke::new(1.0, Color32::from_black_alpha(70)));
+    painter.circle(center, radius, Color32::from_rgb(r, g, b), UiStroke::new(1.0, color::cursor_ring()));
 }
 
 pub fn paint_eraser_cursor(painter: &Painter, center: Pos2, radius_px: f32) {
-    painter.circle_filled(center, radius_px, Color32::from_rgba_unmultiplied(120, 120, 120, 40));
-    painter.circle_stroke(center, radius_px, UiStroke::new(1.5, Color32::from_gray(80)));
+    painter.circle_filled(center, radius_px, color::eraser_fill());
+    painter.circle_stroke(center, radius_px, UiStroke::new(1.5, color::eraser_ring()));
 }
 
 #[cfg(test)]

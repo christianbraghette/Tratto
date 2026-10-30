@@ -924,18 +924,18 @@ impl InkApp {
             e.color = self.settings.text.color;
         }
         if let (Some(frame), Some(e)) = (self.edit_frame(&view), self.edit.as_mut()) {
-            painter.rect_filled(frame, 3.0, Color32::from_rgba_unmultiplied(255, 255, 255, 215));
+            painter.rect_filled(frame, 3.0, color::edit_backdrop());
             painter.rect_stroke(frame, 3.0, egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
             // The resize handles, one on either side.
             for x in [frame.left(), frame.right()] {
                 let size = vec2(6.0, (frame.height() - 8.0).clamp(8.0, 22.0));
                 let handle = Rect::from_center_size(pos2(x, frame.center().y), size);
-                painter.rect(handle, 3.0, Color32::WHITE, egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
+                painter.rect(handle, 3.0, color::handle(), egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
             }
             // The move knob above it, like the selection's rotate knob.
             let knob = super::text::move_knob(frame);
             painter.line_segment([frame.center_top(), knob], egui::Stroke::new(1.5, blue));
-            painter.circle(knob, 6.0, Color32::WHITE, egui::Stroke::new(1.5, blue));
+            painter.circle(knob, 6.0, color::handle(), egui::Stroke::new(1.5, blue));
 
             // The editor: the frame without its room for the outline, nor its
             // margin on the sides, where the side handles take the presses

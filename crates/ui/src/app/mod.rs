@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Vec2, vec2};
+use eframe::egui::{self, Id, Pos2, Rect, Sense, Vec2, vec2};
 use eframe::egui_wgpu::wgpu;
 
 use tratto_core::history::{Action, History};
@@ -1100,7 +1100,7 @@ fn loading_screen(ctx: &egui::Context, label: &str) {
     let screen = ctx.viewport_rect();
     egui::Area::new(Id::unique("loading_screen")).order(egui::Order::Tooltip).fixed_pos(screen.min).show(ctx, |ui| {
         ui.allocate_response(screen.size(), Sense::click_and_drag());
-        ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
+        ui.painter().rect_filled(screen, 0.0, color::scrim());
         let card = Rect::from_center_size(screen.center(), vec2(320.0, 128.0));
         ui.painter().add(theme::card_shadow().as_shape(card, radius::LARGE));
         ui.painter().rect(

@@ -5,7 +5,7 @@
 //! strip of view buttons and the pages view (previews to jump to, reorder and
 //! delete pages).
 
-use eframe::egui::{self, Align2, Color32, Id, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Id, Rect, Sense, pos2, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::model::Document;
@@ -540,7 +540,7 @@ impl InkApp {
                             if resp.hovered() && drag.is_none() {
                                 p.rect_filled(card, radius::MEDIUM, color::hover().gamma_multiply(0.6));
                             }
-                            p.rect_filled(rect.translate(vec2(0.0, 2.0)), 2.0, Color32::from_black_alpha(90));
+                            p.rect_filled(rect.translate(vec2(0.0, 2.0)), 2.0, color::page_shadow());
                             p.rect_filled(rect, 0.0, crate::theme::color::page());
                             let clipped = ui.painter_at(rect);
                             // The note page shown, and where its corner is: on an

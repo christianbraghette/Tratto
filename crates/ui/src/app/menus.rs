@@ -22,7 +22,7 @@ use super::search_panel::Scope;
 use super::{InkApp, Screen};
 use crate::chrome::{self, WindowState};
 use crate::settings::{Sidebar, SidebarSide, ToolbarPosition, ZoomMode};
-use crate::theme::{self, color};
+use crate::theme::{self, color, space};
 use crate::toolbar::Tool;
 
 /// Ids of the windows Escape closes (see `escape_closes_window`).
@@ -1352,11 +1352,11 @@ impl InkApp {
                     ui.label(RichText::new(icon::PEN_NIB).size(40.0).color(color::accent()));
                     ui.label(theme::title("Tratto"));
                     ui.label(theme::muted(format!("Version {}", crate::update::CURRENT)));
-                    ui.add_space(10.0);
+                    ui.add_space(space::M);
                     ui.label(env!("CARGO_PKG_DESCRIPTION"));
-                    ui.add_space(20.0);
+                    ui.add_space(space::XL);
                     ui.label("Copyright © 2026 Christian Braghette");
-                    ui.add_space(10.0);
+                    ui.add_space(space::M);
                     ui.label(
                         RichText::new("Free software under the GNU AGPL v3 or later.")
                             .small()
@@ -1365,9 +1365,9 @@ impl InkApp {
                     ui.label(
                         RichText::new("Commercial licenses are also available.").small().color(color::text_muted()),
                     );
-                    ui.add_space(5.0);
+                    ui.add_space(space::XS);
                     ui.hyperlink_to("Source code and license", env!("CARGO_PKG_REPOSITORY"));
-                    ui.add_space(15.0);
+                    ui.add_space(space::L);
                     ui.label(
                         RichText::new("Font: Inter (OFL) · Icons: Phosphor (MIT)").small().color(color::text_faint()),
                     );

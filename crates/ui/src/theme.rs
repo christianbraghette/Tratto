@@ -164,6 +164,63 @@ pub mod color {
         let k = |c: u8| (c as u32 * a as u32 / 255) as u8;
         Color32::from_rgba_premultiplied(k(r), k(g), k(b), a)
     }
+
+    // The colours below are drawn on the paper or over the whole window, so
+    // they are the same in both themes.
+
+    /// Dims the window behind a modal state (loading, a file dragged in).
+    pub fn scrim() -> Color32 {
+        Color32::from_black_alpha(140)
+    }
+
+    /// The soft drop shadow under a page on the desk.
+    pub fn page_shadow() -> Color32 {
+        Color32::from_black_alpha(60)
+    }
+
+    /// Fill of the resize / rotate handles on the paper (outlined in `accent`).
+    pub fn handle() -> Color32 {
+        Color32::WHITE
+    }
+
+    /// Behind the text box being edited: the paper, a little see-through.
+    pub fn edit_backdrop() -> Color32 {
+        Color32::from_white_alpha(215)
+    }
+
+    /// Search matches, like a yellow highlighter.
+    pub fn search_match() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 210, 0, 100)
+    }
+
+    /// The current search match, in orange.
+    pub fn search_current() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 140, 0, 130)
+    }
+
+    /// A picture's place while it decodes.
+    pub fn picture_pending() -> Color32 {
+        Color32::from_gray(242)
+    }
+
+    /// The place of a picture that cannot be read.
+    pub fn picture_unreadable() -> Color32 {
+        Color32::from_gray(225)
+    }
+
+    /// The faint ring around the pen cursor, which keeps light inks visible.
+    pub fn cursor_ring() -> Color32 {
+        Color32::from_black_alpha(70)
+    }
+
+    /// The eraser cursor's fill and outline.
+    pub fn eraser_fill() -> Color32 {
+        Color32::from_rgba_unmultiplied(120, 120, 120, 40)
+    }
+
+    pub fn eraser_ring() -> Color32 {
+        Color32::from_gray(80)
+    }
 }
 
 /// Which theme the interface takes.

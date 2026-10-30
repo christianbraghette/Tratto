@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Instant;
 
-use eframe::egui::{self, Color32, Id, Vec2, vec2};
+use eframe::egui::{self, Id, Vec2, vec2};
 
 use tratto_core::library::{self, Library};
 use tratto_core::model::Document;
@@ -17,7 +17,7 @@ use tratto_core::pdf_pages::{self, PdfFile};
 use tratto_core::storage::{self, NoteMeta, NoteWriter};
 
 use crate::settings::{NoteView, Sidebar};
-use crate::theme;
+use crate::theme::{self, color};
 use crate::toolbar::Tool;
 
 use crate::saver::Saved;
@@ -492,7 +492,7 @@ impl InkApp {
         if hovering {
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("pdf_drop_hint")));
             let screen = ctx.viewport_rect();
-            painter.rect_filled(screen, 0.0, Color32::from_black_alpha(120));
+            painter.rect_filled(screen, 0.0, color::scrim());
             theme::paint_toast(&painter, screen.center(), "Drop the PDF to read it");
         }
         if let Some(src) = dropped {
