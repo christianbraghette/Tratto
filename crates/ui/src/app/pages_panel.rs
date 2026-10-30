@@ -5,7 +5,7 @@
 //! strip of view buttons and the pages view (previews to jump to, reorder and
 //! delete pages).
 
-use eframe::egui::{self, Align2, Id, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Id, Pos2, Rect, Sense, pos2, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::model::Document;
@@ -604,15 +604,7 @@ impl InkApp {
                         let pointed = ui.rect_contains_pointer(card) && drag.is_none();
                         let can_delete = pointed && changeable;
                         if can_delete {
-                            let p = ui.painter();
-                            let fill = if del.hovered() { color::danger() } else { color::chrome() };
-                            p.circle(del_rect.center(), 10.0, fill, egui::Stroke::new(1.0, color::border()));
-                            let a = 3.5;
-                            let x =
-                                egui::Stroke::new(1.6, if del.hovered() { color::on_accent() } else { color::text() });
-                            let c = del_rect.center();
-                            p.line_segment([c + vec2(-a, -a), c + vec2(a, a)], x);
-                            p.line_segment([c + vec2(-a, a), c + vec2(a, -a)], x);
+                            paint_delete_button(ui.painter(), del_rect.center(), del.hovered());
                         }
                         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                         resp.context_menu(|ui| {
@@ -655,36 +647,7 @@ impl InkApp {
                     if let Some(from) = *drag {
                         match pointer {
                             Some(p) if !rects.is_empty() => {
-                                let slot = rects.iter().filter(|r| r.center().y < p.y).count();
-                                let y = if slot < rects.len() {
-                                    rects[slot].top() - 3.0
-                                } else {
-                                    rects[rects.len() - 1].bottom() + 3.0
-                                };
-                                let r0 = rects[0];
-                                ui.painter().line_segment(
-                                    [pos2(r0.left(), y), pos2(r0.right(), y)],
-                                    egui::Stroke::new(3.0, blue),
-                                );
-
-                                // Auto-scroll near the edges of the list.
-                                let clip = ui.clip_rect();
-                                if p.y < clip.top() + 30.0 {
-                                    ui.scroll_with_delta(vec2(0.0, 14.0));
-                                } else if p.y > clip.bottom() - 30.0 {
-                                    ui.scroll_with_delta(vec2(0.0, -14.0));
-                                }
-
-                                // Floating label under the pen.
-                                let ghost = ui.ctx().layer_painter(egui::LayerId::new(
-                                    egui::Order::Tooltip,
-                                    Id::unique("page_drag_ghost"),
-                                ));
-                                theme::paint_toast(&ghost, p + vec2(56.0, 20.0), &format!("Page {}", from + 1));
-
-                                if ui.input(|i| !i.pointer.any_down()) {
-                                    let slot = slot as u32;
-                                    let to = if slot > from { slot - 1 } else { slot };
+                                if let Some(to) = page_drag(ui, &rects, from, p) {
                                     if to != from {
                                         reorder = Some((from, to));
                                     }
@@ -713,4 +676,42 @@ impl InkApp {
         }
         self.pending.extend(command);
     }
+}
+
+/// A page card's delete button, centred at `c`: a cross in a circle, red
+/// while `hovered`.
+fn paint_delete_button(p: &egui::Painter, c: Pos2, hovered: bool) {
+    let fill = if hovered { color::danger() } else { color::chrome() };
+    p.circle(c, 10.0, fill, egui::Stroke::new(1.0, color::border()));
+    let a = 3.5;
+    let x = egui::Stroke::new(1.6, if hovered { color::on_accent() } else { color::text() });
+    p.line_segment([c + vec2(-a, -a), c + vec2(a, a)], x);
+    p.line_segment([c + vec2(-a, a), c + vec2(a, -a)], x);
+}
+
+/// Page `from` dragged in the list of page cards (`rects`) to `p`: shows
+/// where it would go, scrolls near the list's edges and labels the drag.
+/// Returns where it goes once let go.
+fn page_drag(ui: &egui::Ui, rects: &[Rect], from: u32, p: Pos2) -> Option<u32> {
+    let slot = rects.iter().filter(|r| r.center().y < p.y).count();
+    let y = if slot < rects.len() { rects[slot].top() - 3.0 } else { rects[rects.len() - 1].bottom() + 3.0 };
+    let r0 = rects[0];
+    ui.painter().line_segment([pos2(r0.left(), y), pos2(r0.right(), y)], egui::Stroke::new(3.0, color::accent()));
+
+    // Auto-scroll near the edges of the list.
+    let clip = ui.clip_rect();
+    if p.y < clip.top() + 30.0 {
+        ui.scroll_with_delta(vec2(0.0, 14.0));
+    } else if p.y > clip.bottom() - 30.0 {
+        ui.scroll_with_delta(vec2(0.0, -14.0));
+    }
+
+    // Floating label under the pen.
+    let ghost = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("page_drag_ghost")));
+    theme::paint_toast(&ghost, p + vec2(56.0, 20.0), &format!("Page {}", from + 1));
+
+    ui.input(|i| !i.pointer.any_down()).then(|| {
+        let slot = slot as u32;
+        if slot > from { slot - 1 } else { slot }
+    })
 }

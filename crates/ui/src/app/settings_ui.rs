@@ -17,7 +17,7 @@ use super::InkApp;
 use super::library_ui::{Dialog, location, when};
 use super::menus::SETTINGS_WINDOW;
 use crate::file_assoc;
-use crate::settings::{BatterySaver, EraserMode, SidebarSide, ToolbarPosition};
+use crate::settings::{BatterySaver, EraserMode, Settings, SidebarSide, ToolbarPosition};
 use crate::theme::{self, ThemeMode, color, space};
 
 /// Note settings in the sidebar: default width and resize range.
@@ -339,149 +339,10 @@ impl InkApp {
             hint(ui, "A PDF opened from the system gets a window of its own, for reading.");
         }
 
-        section(ui, "Appearance");
-        rows(ui, "global_appearance", |ui| {
-            row(ui, "Theme", |ui| {
-                egui::ComboBox::from_id_salt("theme_mode").selected_text(s.theme.label()).show_ui(ui, |ui| {
-                    for mode in ThemeMode::ALL {
-                        ui.selectable_value(&mut s.theme, mode, mode.label());
-                    }
-                });
-            });
-            row(ui, "Interface size", |ui| {
-                ui.add(
-                    Slider::new(&mut s.ui_scale, 0.75..=1.5)
-                        .step_by(0.05)
-                        .custom_formatter(|v, _| format!("{:.0} %", v * 100.0)),
-                )
-                .on_hover_text("Applied when you release the slider");
-            });
-            row(ui, "Title bar", |ui| {
-                ui.checkbox(&mut s.custom_title_bar, "Custom, with the menus")
-                    .on_hover_text("Off: the system title bar, with the menus below it");
-            });
-            row(ui, "Toolbar", |ui| {
-                for (pos, label) in [(ToolbarPosition::Top, "Top"), (ToolbarPosition::Bottom, "Bottom")] {
-                    ui.selectable_value(&mut s.toolbar_position, pos, label);
-                }
-            });
-            row(ui, "Sidebar", |ui| {
-                for (side, label) in [(SidebarSide::Left, "Left"), (SidebarSide::Right, "Right")] {
-                    ui.selectable_value(&mut s.sidebar_side, side, label);
-                }
-                ui.label(theme::muted("Right: out from under a left hand"));
-            });
-        });
-
-        section(ui, "Canvas");
-        rows(ui, "global_canvas", |ui| {
-            row(ui, "Smooth scrolling", |ui| {
-                ui.checkbox(&mut s.smooth_scroll, "Gliding wheel, flick to pan, animated page jumps");
-            });
-            row(ui, "Scroll speed", |ui| {
-                ui.add(Slider::new(&mut s.scroll_speed, 0.5..=3.0).step_by(0.1).suffix("×"));
-            });
-            let smooth = s.smooth_scroll;
-            let off = "Needs smooth scrolling";
-            row(ui, "Mouse wheel", |ui| {
-                ui.add_enabled(smooth, strength_slider(&mut s.mouse_accel))
-                    .on_hover_text("Acceleration: quick notches scroll further")
-                    .on_disabled_hover_text(off);
-            });
-            row(ui, "Touchpad", |ui| {
-                ui.add_enabled(smooth, strength_slider(&mut s.touchpad_accel))
-                    .on_hover_text("Acceleration and momentum: a quick swipe scrolls further and glides on")
-                    .on_disabled_hover_text(off);
-            });
-            row(ui, "Touch", |ui| {
-                ui.add_enabled(smooth, strength_slider(&mut s.touch_fling))
-                    .on_hover_text("Momentum: how far the view glides after a flick (finger, or a pen or mouse drag)")
-                    .on_disabled_hover_text(off);
-            });
-            row(ui, "Minimap", |ui| {
-                ui.checkbox(&mut s.minimap, "Dragging the scroll bar shows the note in small");
-            });
-            row(ui, "At startup", |ui| {
-                ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it").on_hover_text(
-                    "Every note opens where it was left; this also reopens the last one when Tratto starts",
-                );
-            });
-        });
-
-        section(ui, "Pen and input");
-        rows(ui, "global_pen", |ui| {
-            row(ui, "Prediction", |ui| {
-                ui.checkbox(&mut s.predict_pen, "Predict the pen tip").on_hover_text("Lower perceived latency");
-            });
-            row(ui, "Pressure", |ui| {
-                ui.checkbox(&mut s.pressure, "Line width follows the pen pressure");
-            });
-            row(ui, "Pressure strength", |ui| {
-                let slider = Slider::new(&mut s.pressure_strength, 0.1..=1.0)
-                    .step_by(0.05)
-                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0));
-                ui.add_enabled(s.pressure, slider)
-                    .on_hover_text("How much the pressure thins the line; lower it if the lines come out too thin")
-                    .on_disabled_hover_text("Needs pressure sensitivity");
-            });
-            row(ui, "Side button", |ui| {
-                ui.checkbox(&mut s.side_button_eraser, "Erases while held")
-                    .on_hover_text("The eraser end of the pen always erases");
-            });
-            row(ui, "Eraser size", |ui| {
-                ui.add(Slider::new(&mut s.eraser_radius, 4.0..=60.0));
-            });
-            row(ui, "Eraser erases", |ui| {
-                egui::ComboBox::from_id_salt("eraser_mode").selected_text(s.eraser_mode.label()).show_ui(ui, |ui| {
-                    for mode in EraserMode::ALL {
-                        ui.selectable_value(&mut s.eraser_mode, mode, mode.label());
-                    }
-                });
-            });
-        });
-
-        section(ui, "Display");
-        rows(ui, "global_display", |ui| {
-            row(ui, "Vsync", |ui| {
-                ui.add_enabled(!vsync_forced, egui::Checkbox::new(&mut s.vsync, "Wait for the display"))
-                    .on_hover_text("Saves power, but the ink trails the pen a little more")
-                    .on_disabled_hover_text("Set by the TRATTO_VSYNC environment variable");
-            });
-            row(ui, "Battery saver", |ui| {
-                egui::ComboBox::from_id_salt("battery_saver")
-                    .selected_text(s.battery_saver.label())
-                    .show_ui(ui, |ui| {
-                        for mode in BatterySaver::ALL {
-                            ui.selectable_value(&mut s.battery_saver, mode, mode.label());
-                        }
-                    })
-                    .response
-                    .on_hover_text(format!(
-                        "Waits for the display to save power. Low: on battery at {}% or less",
-                        crate::power::LOW_PERCENT
-                    ));
-            });
-            row(ui, "Frame rate limit", |ui| {
-                ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
-                    egui::ComboBox::from_id_salt("fps_limit").selected_text(fps_label(s.fps_limit)).show_ui(ui, |ui| {
-                        for fps in FPS_LIMITS {
-                            ui.selectable_value(&mut s.fps_limit, fps, fps_label(fps));
-                        }
-                    });
-                })
-                .response
-                .on_disabled_hover_text(if vsync_now {
-                    "With vsync the display sets the frame rate"
-                } else {
-                    "Set by the TRATTO_FPS environment variable"
-                });
-            });
-        });
-        if saving_power && !s.vsync {
-            hint(ui, "The battery saver is on: Tratto waits for the display.");
-        } else {
-            hint(ui, "A lower limit uses less GPU while you write or scroll.");
-        }
+        appearance_section(ui, s);
+        canvas_section(ui, s);
+        pen_section(ui, s);
+        display_section(ui, s, FrameRate { vsync_now, vsync_forced, saving_power, fps_overridden });
 
         section(ui, "New notes");
         rows(ui, "global_new_notes", |ui| {
@@ -544,6 +405,173 @@ impl InkApp {
             self.settings.sidebar = old.sidebar;
             self.settings.sidebar_last = old.sidebar_last;
         }
+    }
+}
+
+/// Theme, interface size, title bar, toolbar and sidebar places.
+fn appearance_section(ui: &mut Ui, s: &mut Settings) {
+    section(ui, "Appearance");
+    rows(ui, "global_appearance", |ui| {
+        row(ui, "Theme", |ui| {
+            egui::ComboBox::from_id_salt("theme_mode").selected_text(s.theme.label()).show_ui(ui, |ui| {
+                for mode in ThemeMode::ALL {
+                    ui.selectable_value(&mut s.theme, mode, mode.label());
+                }
+            });
+        });
+        row(ui, "Interface size", |ui| {
+            ui.add(
+                Slider::new(&mut s.ui_scale, 0.75..=1.5)
+                    .step_by(0.05)
+                    .custom_formatter(|v, _| format!("{:.0} %", v * 100.0)),
+            )
+            .on_hover_text("Applied when you release the slider");
+        });
+        row(ui, "Title bar", |ui| {
+            ui.checkbox(&mut s.custom_title_bar, "Custom, with the menus")
+                .on_hover_text("Off: the system title bar, with the menus below it");
+        });
+        row(ui, "Toolbar", |ui| {
+            for (pos, label) in [(ToolbarPosition::Top, "Top"), (ToolbarPosition::Bottom, "Bottom")] {
+                ui.selectable_value(&mut s.toolbar_position, pos, label);
+            }
+        });
+        row(ui, "Sidebar", |ui| {
+            for (side, label) in [(SidebarSide::Left, "Left"), (SidebarSide::Right, "Right")] {
+                ui.selectable_value(&mut s.sidebar_side, side, label);
+            }
+            ui.label(theme::muted("Right: out from under a left hand"));
+        });
+    });
+}
+
+/// Scrolling, the minimap and what opens at startup.
+fn canvas_section(ui: &mut Ui, s: &mut Settings) {
+    section(ui, "Canvas");
+    rows(ui, "global_canvas", |ui| {
+        row(ui, "Smooth scrolling", |ui| {
+            ui.checkbox(&mut s.smooth_scroll, "Gliding wheel, flick to pan, animated page jumps");
+        });
+        row(ui, "Scroll speed", |ui| {
+            ui.add(Slider::new(&mut s.scroll_speed, 0.5..=3.0).step_by(0.1).suffix("×"));
+        });
+        let smooth = s.smooth_scroll;
+        let off = "Needs smooth scrolling";
+        row(ui, "Mouse wheel", |ui| {
+            ui.add_enabled(smooth, strength_slider(&mut s.mouse_accel))
+                .on_hover_text("Acceleration: quick notches scroll further")
+                .on_disabled_hover_text(off);
+        });
+        row(ui, "Touchpad", |ui| {
+            ui.add_enabled(smooth, strength_slider(&mut s.touchpad_accel))
+                .on_hover_text("Acceleration and momentum: a quick swipe scrolls further and glides on")
+                .on_disabled_hover_text(off);
+        });
+        row(ui, "Touch", |ui| {
+            ui.add_enabled(smooth, strength_slider(&mut s.touch_fling))
+                .on_hover_text("Momentum: how far the view glides after a flick (finger, or a pen or mouse drag)")
+                .on_disabled_hover_text(off);
+        });
+        row(ui, "Minimap", |ui| {
+            ui.checkbox(&mut s.minimap, "Dragging the scroll bar shows the note in small");
+        });
+        row(ui, "At startup", |ui| {
+            ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it")
+                .on_hover_text("Every note opens where it was left; this also reopens the last one when Tratto starts");
+        });
+    });
+}
+
+/// Pen prediction and pressure, the side button and the eraser.
+fn pen_section(ui: &mut Ui, s: &mut Settings) {
+    section(ui, "Pen and input");
+    rows(ui, "global_pen", |ui| {
+        row(ui, "Prediction", |ui| {
+            ui.checkbox(&mut s.predict_pen, "Predict the pen tip").on_hover_text("Lower perceived latency");
+        });
+        row(ui, "Pressure", |ui| {
+            ui.checkbox(&mut s.pressure, "Line width follows the pen pressure");
+        });
+        row(ui, "Pressure strength", |ui| {
+            let slider = Slider::new(&mut s.pressure_strength, 0.1..=1.0)
+                .step_by(0.05)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0));
+            ui.add_enabled(s.pressure, slider)
+                .on_hover_text("How much the pressure thins the line; lower it if the lines come out too thin")
+                .on_disabled_hover_text("Needs pressure sensitivity");
+        });
+        row(ui, "Side button", |ui| {
+            ui.checkbox(&mut s.side_button_eraser, "Erases while held")
+                .on_hover_text("The eraser end of the pen always erases");
+        });
+        row(ui, "Eraser size", |ui| {
+            ui.add(Slider::new(&mut s.eraser_radius, 4.0..=60.0));
+        });
+        row(ui, "Eraser erases", |ui| {
+            egui::ComboBox::from_id_salt("eraser_mode").selected_text(s.eraser_mode.label()).show_ui(ui, |ui| {
+                for mode in EraserMode::ALL {
+                    ui.selectable_value(&mut s.eraser_mode, mode, mode.label());
+                }
+            });
+        });
+    });
+}
+
+/// How the frame rate is decided now, for the Display section.
+struct FrameRate {
+    /// The window presents with vsync now.
+    vsync_now: bool,
+    /// `TRATTO_VSYNC` sets vsync.
+    vsync_forced: bool,
+    saving_power: bool,
+    /// `TRATTO_FPS` sets the limit.
+    fps_overridden: bool,
+}
+
+/// Vsync, the battery saver and the frame rate limit.
+fn display_section(ui: &mut Ui, s: &mut Settings, rate: FrameRate) {
+    let FrameRate { vsync_now, vsync_forced, saving_power, fps_overridden } = rate;
+    section(ui, "Display");
+    rows(ui, "global_display", |ui| {
+        row(ui, "Vsync", |ui| {
+            ui.add_enabled(!vsync_forced, egui::Checkbox::new(&mut s.vsync, "Wait for the display"))
+                .on_hover_text("Saves power, but the ink trails the pen a little more")
+                .on_disabled_hover_text("Set by the TRATTO_VSYNC environment variable");
+        });
+        row(ui, "Battery saver", |ui| {
+            egui::ComboBox::from_id_salt("battery_saver")
+                .selected_text(s.battery_saver.label())
+                .show_ui(ui, |ui| {
+                    for mode in BatterySaver::ALL {
+                        ui.selectable_value(&mut s.battery_saver, mode, mode.label());
+                    }
+                })
+                .response
+                .on_hover_text(format!(
+                    "Waits for the display to save power. Low: on battery at {}% or less",
+                    crate::power::LOW_PERCENT
+                ));
+        });
+        row(ui, "Frame rate limit", |ui| {
+            ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
+                egui::ComboBox::from_id_salt("fps_limit").selected_text(fps_label(s.fps_limit)).show_ui(ui, |ui| {
+                    for fps in FPS_LIMITS {
+                        ui.selectable_value(&mut s.fps_limit, fps, fps_label(fps));
+                    }
+                });
+            })
+            .response
+            .on_disabled_hover_text(if vsync_now {
+                "With vsync the display sets the frame rate"
+            } else {
+                "Set by the TRATTO_FPS environment variable"
+            });
+        });
+    });
+    if saving_power && !s.vsync {
+        hint(ui, "The battery saver is on: Tratto waits for the display.");
+    } else {
+        hint(ui, "A lower limit uses less GPU while you write or scroll.");
     }
 }
 
