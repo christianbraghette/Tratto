@@ -18,7 +18,7 @@ use tratto_core::pdf_pages::{LinkAction, Target};
 use crate::input::touchpad::{self, is_wheel_notch};
 use crate::markdown;
 use crate::render::{self, Layer, Moved};
-use crate::scrollbar;
+use crate::scrollbar::{self, BarState};
 use crate::settings::ZoomMode;
 use crate::theme::{self, color};
 use crate::toolbar::Tool;
@@ -367,36 +367,13 @@ impl InkApp {
         let full = ui.max_rect();
         let mut layout = self.grow_canvas(full);
         let grown_at = self.scroll;
-        ui.painter().rect_filled(full, 0.0, crate::theme::color::desk());
+        ui.painter().rect_filled(full, 0.0, color::desk());
 
         // ---- geometry and zoom
-        let (mut canvas, mut scale, mut hbar) = self.canvas_geometry(full, &layout);
         let idle = !self.busy();
-
-        // Ctrl + wheel / pinch zoom, anchored under the pointer; zoom from the
-        // menu, anchored at the centre.
-        let request = self.zoom_request.take();
-        // Not with three or four fingers down (see `system_gestures`).
-        if idle && (request.is_some() || ui.rect_contains_pointer(canvas) && !self.edge_touch) {
-            let zd = request.unwrap_or_else(|| ui.input(|i| i.zoom_delta()));
-            if (zd - 1.0).abs() > 1e-4 {
-                let anchor = ui
-                    .input(|i| i.pointer.hover_pos())
-                    .filter(|p| request.is_none() && canvas.contains(*p))
-                    .unwrap_or_else(|| canvas.center());
-                let before = View::new(canvas, self.scroll, scale, layout);
-                let c = before.screen_to_content(anchor);
-                let range = layout.zoom_range();
-                let pct = ((scale * zd * 100.0).round() as u32).clamp(*range.start(), *range.end());
-                *self.zoom_mut() = ZoomMode::Percent(pct);
-                (canvas, scale, hbar) = self.canvas_geometry(full, &layout);
-                let pad = View::pad_x_for(canvas.width(), &layout, scale);
-                self.scroll.x = c.x - (anchor.x - canvas.left() - pad) / scale;
-                self.scroll.y = c.y - (anchor.y - canvas.top() - TOP_PAD_PX) / scale;
-                self.kinetic.stop();
-            }
-        }
-        self.hbar_visible = hbar;
+        let f = self.zoom_input(ui, full, &layout, idle);
+        let (canvas, scale, now) = (f.canvas, f.scale, f.now);
+        self.hbar_visible = f.hbar;
         self.view_scale = scale;
 
         // A finger pressed on a note moves around it, unless the pen, the
@@ -428,7 +405,6 @@ impl InkApp {
         }
 
         // ---- scrolling: wheel / touchpad / keys, with momentum
-        let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(1.0 / 30.0)));
         let mut max = View::max_scroll(canvas, scale, &layout);
         // Where the scroll may go: past the edges of an infinite page too.
         let bounds = View::scroll_bounds(canvas, scale, &layout);
@@ -439,74 +415,13 @@ impl InkApp {
             // Never move the page under a stroke being drawn.
             self.kinetic.stop();
         }
-        let vbar_rect = Rect::from_min_max(pos2(canvas.right(), full.top()), pos2(full.right(), canvas.bottom()));
-        let hbar_rect = Rect::from_min_max(pos2(full.left(), canvas.bottom()), pos2(canvas.right(), full.bottom()));
         // While dragging, wherever the pointer is (often out of the window).
         if idle && ui.rect_contains_pointer(full) || dragging {
-            let sideways = hbar && ui.rect_contains_pointer(hbar_rect);
+            let sideways = f.hbar && ui.rect_contains_pointer(f.hbar_rect);
             self.wheel_input(ui, canvas, scale, now, sideways);
         }
-        // Content height shown below the top pad.
-        let visible = (canvas.height() - TOP_PAD_PX).max(1.0) / scale;
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (pgdn, pgup, home, end) = ui.input(|i| {
-                (
-                    i.key_pressed(Key::PageDown),
-                    i.key_pressed(Key::PageUp),
-                    i.key_pressed(Key::Home),
-                    i.key_pressed(Key::End),
-                )
-            });
-            // Repeated presses continue from where the running ease ends.
-            let base = self.kinetic.target().unwrap_or(self.scroll);
-            let page_len = canvas.height() / scale * 0.9;
-            if self.navigating() {
-                let (next, prev, down, up, back) = ui.input(|i| {
-                    let space = i.key_pressed(Key::Space);
-                    let (left, alt) = (i.key_pressed(Key::ArrowLeft), i.modifiers.alt);
-                    (
-                        i.key_pressed(Key::ArrowRight) || space && !i.modifiers.shift,
-                        left && !alt || space && i.modifiers.shift,
-                        i.key_pressed(Key::ArrowDown),
-                        i.key_pressed(Key::ArrowUp),
-                        left && alt || i.key_pressed(Key::Backspace),
-                    )
-                });
-                if back {
-                    self.go_back();
-                }
-                self.page_turn += i32::from(pgdn || next) - i32::from(pgup || prev);
-                let line = visible * 0.1;
-                if down {
-                    self.ease_scroll(base + vec2(0.0, line));
-                }
-                if up {
-                    self.ease_scroll(base - vec2(0.0, line));
-                }
-            } else {
-                if pgdn {
-                    self.ease_scroll(base + vec2(0.0, page_len));
-                }
-                if pgup {
-                    self.ease_scroll(base - vec2(0.0, page_len));
-                }
-            }
-            // An infinite page: the top of what is written on it (across
-            // the middle of the view if it fits, else from its left), and
-            // its bottom (it reaches further only while the view is there).
-            let (first, last) = if layout.canvas {
-                let w = self.doc.canvas_used().unwrap_or(Rect::ZERO).translate(-layout.origin);
-                let left = centred_left(w, canvas.width() / scale).unwrap_or(w.left());
-                (vec2(left, w.top()), vec2(left, (w.bottom() - visible).max(w.top())))
-            } else {
-                (vec2(base.x, 0.0), vec2(base.x, max.y))
-            };
-            if home {
-                self.ease_scroll(first);
-            }
-            if end {
-                self.ease_scroll(last);
-            }
+            self.scroll_keys(ui, &f, &layout, max);
         }
         if let Some(y) = self.scroll_to.take() {
             let x = self.scroll_to_x.take().unwrap_or(self.scroll.x);
@@ -520,55 +435,15 @@ impl InkApp {
             let v = View::new(canvas, self.scroll, scale, layout);
             click_used = self.text_input(ui.ctx(), &canvas_resp, &v, now);
         }
-        // The reader: links, under the pointer, show where they lead
-        // and are followed by a tap.
-        let mut link_under_pointer = None;
-        if self.navigating() && !self.lasering() {
+        let link_under_pointer = if self.navigating() && !self.lasering() {
             let v = View::new(canvas, self.scroll, scale, layout);
-            let pointer = canvas_resp.interact_pointer_pos().or(canvas_resp.hover_pos());
-            let link = pointer.and_then(|p| self.link_at(&v, p));
-            if let Some((rect, action)) = &link {
-                // Painted over the page, further down.
-                link_under_pointer = Some(*rect);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                if let LinkAction::Uri(uri) = action {
-                    egui::Tooltip::always_open(
-                        ui.ctx().clone(),
-                        ui.layer_id(),
-                        Id::unique("pdf_link"),
-                        egui::PopupAnchor::Pointer,
-                    )
-                    .show(|ui| ui.label(uri));
-                }
-            }
-            if canvas_resp.clicked()
-                && !click_used
-                && let Some((_, action)) = link
-            {
-                self.follow_link(ui.ctx(), action);
-            }
-        }
-        let turn = std::mem::take(&mut self.page_turn);
-        if turn != 0 {
-            let base = self.kinetic.target().unwrap_or(self.scroll);
-            let mut y = base.y;
-            for _ in 0..turn.unsigned_abs() {
-                y = if turn > 0 { layout.next_stop(y, visible) } else { layout.prev_stop(y, visible) };
-                y = y.clamp(bounds.min.y, bounds.max.y);
-            }
-            self.ease_scroll(vec2(base.x, y));
-        }
-        self.kinetic.step(&mut self.scroll, dt, bounds, scale);
-        // Dragged near (or past) an edge of the canvas: the view scrolls that
-        // way. Out of the window egui loses the pointer: where it was last.
-        self.drag_pointer = if dragging { ui.input(|i| i.pointer.latest_pos()).or(self.drag_pointer) } else { None };
-        if let Some(p) = self.drag_pointer {
-            let v = autoscroll_velocity(canvas, p);
-            if v != Vec2::ZERO {
-                self.scroll += v * dt / scale;
-                ui.ctx().request_repaint();
-            }
-        }
+            self.link_input(ui, &canvas_resp, &v, click_used)
+        } else {
+            None
+        };
+        self.turn_pages(&layout, f.visible, bounds);
+        self.kinetic.step(&mut self.scroll, f.dt, bounds, scale);
+        self.autoscroll(ui, &f, dragging);
         self.scroll = self.scroll.clamp(bounds.min.to_vec2(), bounds.max.to_vec2());
 
         // A finger held still opens the context menu (further down).
@@ -577,33 +452,7 @@ impl InkApp {
 
         // ---- drag on the grey area around the pages = pan (touch / pen friendly)
         let press = ui.input(|i| i.pointer.press_origin());
-        if idle && !swallowed && canvas_resp.drag_started_by(PointerButton::Primary) {
-            let start = press.or(canvas_resp.interact_pointer_pos());
-            let v = View::new(canvas, self.scroll, scale, layout);
-            // The reader: everywhere (but not while selecting text); a note:
-            // only off the paper, as with the laser.
-            self.panning = !self.selecting_text()
-                && (self.navigating() && !self.lasering()
-                    || start.is_some_and(|p| v.layout.page_at(v.screen_to_content(p)).is_none()));
-        }
-        if self.panning {
-            if canvas_resp.dragged() {
-                let before = self.scroll;
-                self.scroll -= canvas_resp.drag_delta() / scale;
-                self.scroll = self.scroll.clamp(bounds.min.to_vec2(), bounds.max.to_vec2());
-                self.kinetic.drag(self.scroll - before, now);
-                // On Windows "grabbing" has no hand cursor and shows the
-                // four-arrow move cross instead: keep the arrow there.
-                #[cfg(not(windows))]
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-            } else {
-                // Let go: the view keeps gliding with the release velocity.
-                self.panning = false;
-                if self.settings.smooth_scroll {
-                    self.kinetic.release(now, scale, self.settings.touch_fling);
-                }
-            }
-        }
+        self.pan_input(&canvas_resp, &f, &layout, bounds, press, idle && !swallowed);
         // Hovering the grey area keeps the normal arrow.
 
         // Scrolled past an edge of an infinite page: it grows there now, so
@@ -614,43 +463,11 @@ impl InkApp {
         }
 
         // ---- scrollbars (interaction first, so the view below is final)
-        let vstate = scrollbar::update(
-            ui,
-            Id::unique("vbar"),
-            vbar_rect,
-            true,
-            &mut self.scroll.y,
-            max.y,
-            canvas.height() / scale,
-            layout.content_h(scale),
-            &mut self.vbar_grab,
-        );
-        let hstate = hbar.then(|| {
-            scrollbar::update(
-                ui,
-                Id::unique("hbar"),
-                hbar_rect,
-                false,
-                &mut self.scroll.x,
-                max.x,
-                canvas.width() / scale,
-                layout.content_w(),
-                &mut self.hbar_grab,
-            )
-        });
-        // A thumb held against an end of an infinite page's bar: the view
-        // goes on that way, and the page grows to follow it.
-        let push = vec2(bar_push_speed(hstate.as_ref().and_then(|s| s.pushed)), bar_push_speed(vstate.pushed));
-        if layout.canvas && push != Vec2::ZERO {
-            self.scroll += push * dt / scale;
-            layout = self.grow_canvas(full);
-            max = View::max_scroll(canvas, scale, &layout);
-            ui.ctx().request_repaint();
-        }
+        let (vstate, hstate) = self.scrollbars_input(ui, &f, &mut layout, &mut max);
 
         // The minimap beside the vertical bar, which may scroll too.
         let before_map = self.scroll;
-        self.minimap(ui.ctx(), canvas, vbar_rect, &vstate, &layout, scale, max);
+        self.minimap(ui.ctx(), canvas, f.vbar_rect, &vstate, &layout, scale, max);
         // Its box pushed past an edge of an infinite page: it grows there.
         if layout.canvas && self.scroll != before_map {
             layout = self.grow_canvas(full);
@@ -667,15 +484,317 @@ impl InkApp {
         // While zooming, the page is drawn as made at another zoom (see `zoom`).
         let pinching = ui.input(|i| i.multi_touch().is_some());
         view.made = self.zoom_render.update(ui.ctx(), scale, pinching);
-        let made = view.made;
         let (left, right) = (view.screen_to_content(canvas.left_top()).x, view.screen_to_content(canvas.right_top()).x);
-        self.shown_content = Rect::from_min_max(pos2(left, self.scroll.y), pos2(right, self.scroll.y + visible));
+        self.shown_content = Rect::from_min_max(pos2(left, self.scroll.y), pos2(right, self.scroll.y + f.visible));
         let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| canvas.contains(*p));
         self.picture_input(ui.ctx(), &view, pointer);
 
         // ---- pen / mouse input
-        // Each sample with the pressure it was taken at: a pen sends several
-        // per frame, each touch (its force) just before the move it makes.
+        let (moves, pressures) = self.pointer_samples(ui, &canvas_resp);
+        self.context_menu_input(ui, &view, held_at);
+        if !self.panning && !swallowed && !self.navigating() {
+            match self.tool {
+                // Moving around is handled above.
+                Tool::Pointer => {}
+                Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
+                Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
+                Tool::Text => self.handle_text(&canvas_resp, &view, press, &moves),
+                Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves, &pressures),
+            }
+        }
+        self.laser_input(ui.ctx(), &canvas_resp, &view, &moves, now);
+
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.finger_nav = false;
+        }
+
+        // ---- painting
+        let painter = ui.painter_at(canvas);
+        self.paint_pages(ui.ctx(), &painter, &view, now);
+        if let Some(rect) = link_under_pointer {
+            painter.rect_filled(rect.expand(2.0), 2.0, color::accent_alpha(36));
+        }
+        self.paint_selection_marks(&painter, &view, canvas_resp.hover_pos());
+        self.paint_cursors(ui, &painter, &view, &canvas_resp, now);
+        self.text_box_ui(ui, &painter, &view);
+        self.add_page_tile(ui, &view);
+
+        // Transient status message (saved / exported / errors).
+        if let Some(left) = self.status_at.and_then(|t| super::TOAST_FOR.checked_sub(t.elapsed()))
+            && !self.status.is_empty()
+        {
+            theme::paint_toast(&painter, pos2(canvas.center().x, canvas.bottom() - 90.0), &self.status);
+            // Once more when it is gone (it does not fade).
+            ui.ctx().request_repaint_after(left);
+        }
+
+        // Scrollbars on top; the vertical one shows a page indicator while dragged.
+        let center_y = view.screen_to_content(canvas.center()).y;
+        let cur = layout.page_index_at_y(center_y);
+        self.current_page = cur;
+        let label = format!("Page {} / {}", cur + 1, layout.count);
+        let full_painter = ui.painter();
+        // Presenting: no scroll bar (its track has no width then). An
+        // infinite page has no page number to show.
+        if self.presenting.is_none() {
+            // The minimap, out, shows it itself.
+            let label = (!layout.canvas && !self.minimap.out()).then_some(label.as_str());
+            scrollbar::paint(full_painter, f.vbar_rect, true, &vstate, label);
+        }
+        if let Some(h) = &hstate {
+            scrollbar::paint(full_painter, f.hbar_rect, false, h, None);
+        }
+    }
+
+    /// Ctrl + wheel / pinch zoom, anchored under the pointer; zoom from the
+    /// menu, anchored at the centre. Returns the frame's geometry at the new
+    /// zoom.
+    fn zoom_input(&mut self, ui: &egui::Ui, full: Rect, layout: &Layout, idle: bool) -> CanvasFrame {
+        let (mut canvas, mut scale, mut hbar) = self.canvas_geometry(full, layout);
+        let request = self.zoom_request.take();
+        // Not with three or four fingers down (see `system_gestures`).
+        if idle && (request.is_some() || ui.rect_contains_pointer(canvas) && !self.edge_touch) {
+            let zd = request.unwrap_or_else(|| ui.input(|i| i.zoom_delta()));
+            if (zd - 1.0).abs() > 1e-4 {
+                let anchor = ui
+                    .input(|i| i.pointer.hover_pos())
+                    .filter(|p| request.is_none() && canvas.contains(*p))
+                    .unwrap_or_else(|| canvas.center());
+                let before = View::new(canvas, self.scroll, scale, *layout);
+                let c = before.screen_to_content(anchor);
+                let range = layout.zoom_range();
+                let pct = ((scale * zd * 100.0).round() as u32).clamp(*range.start(), *range.end());
+                *self.zoom_mut() = ZoomMode::Percent(pct);
+                (canvas, scale, hbar) = self.canvas_geometry(full, layout);
+                let pad = View::pad_x_for(canvas.width(), layout, scale);
+                self.scroll.x = c.x - (anchor.x - canvas.left() - pad) / scale;
+                self.scroll.y = c.y - (anchor.y - canvas.top() - TOP_PAD_PX) / scale;
+                self.kinetic.stop();
+            }
+        }
+        let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(1.0 / 30.0)));
+        CanvasFrame {
+            full,
+            canvas,
+            scale,
+            hbar,
+            vbar_rect: Rect::from_min_max(pos2(canvas.right(), full.top()), pos2(full.right(), canvas.bottom())),
+            hbar_rect: Rect::from_min_max(pos2(full.left(), canvas.bottom()), pos2(canvas.right(), full.bottom())),
+            visible: (canvas.height() - TOP_PAD_PX).max(1.0) / scale,
+            now,
+            dt,
+        }
+    }
+
+    /// Page Up / Down, Home / End, and in the reader the arrows, Space and
+    /// Back. `max` is the furthest scroll of a paged note.
+    fn scroll_keys(&mut self, ui: &egui::Ui, f: &CanvasFrame, layout: &Layout, max: Vec2) {
+        let (pgdn, pgup, home, end) = ui.input(|i| {
+            (
+                i.key_pressed(Key::PageDown),
+                i.key_pressed(Key::PageUp),
+                i.key_pressed(Key::Home),
+                i.key_pressed(Key::End),
+            )
+        });
+        // Repeated presses continue from where the running ease ends.
+        let base = self.kinetic.target().unwrap_or(self.scroll);
+        let page_len = f.canvas.height() / f.scale * 0.9;
+        if self.navigating() {
+            let (next, prev, down, up, back) = ui.input(|i| {
+                let space = i.key_pressed(Key::Space);
+                let (left, alt) = (i.key_pressed(Key::ArrowLeft), i.modifiers.alt);
+                (
+                    i.key_pressed(Key::ArrowRight) || space && !i.modifiers.shift,
+                    left && !alt || space && i.modifiers.shift,
+                    i.key_pressed(Key::ArrowDown),
+                    i.key_pressed(Key::ArrowUp),
+                    left && alt || i.key_pressed(Key::Backspace),
+                )
+            });
+            if back {
+                self.go_back();
+            }
+            self.page_turn += i32::from(pgdn || next) - i32::from(pgup || prev);
+            let line = f.visible * 0.1;
+            if down {
+                self.ease_scroll(base + vec2(0.0, line));
+            }
+            if up {
+                self.ease_scroll(base - vec2(0.0, line));
+            }
+        } else {
+            if pgdn {
+                self.ease_scroll(base + vec2(0.0, page_len));
+            }
+            if pgup {
+                self.ease_scroll(base - vec2(0.0, page_len));
+            }
+        }
+        // An infinite page: the top of what is written on it (across
+        // the middle of the view if it fits, else from its left), and
+        // its bottom (it reaches further only while the view is there).
+        let (first, last) = if layout.canvas {
+            let w = self.doc.canvas_used().unwrap_or(Rect::ZERO).translate(-layout.origin);
+            let left = centred_left(w, f.canvas.width() / f.scale).unwrap_or(w.left());
+            (vec2(left, w.top()), vec2(left, (w.bottom() - f.visible).max(w.top())))
+        } else {
+            (vec2(base.x, 0.0), vec2(base.x, max.y))
+        };
+        if home {
+            self.ease_scroll(first);
+        }
+        if end {
+            self.ease_scroll(last);
+        }
+    }
+
+    /// The reader: links, under the pointer, show where they lead and are
+    /// followed by a tap (unless the click was `used` already). Returns the
+    /// link under the pointer, to paint over the page.
+    fn link_input(&mut self, ui: &egui::Ui, resp: &egui::Response, view: &View, used: bool) -> Option<Rect> {
+        let pointer = resp.interact_pointer_pos().or(resp.hover_pos());
+        let link = pointer.and_then(|p| self.link_at(view, p));
+        let mut under_pointer = None;
+        if let Some((rect, action)) = &link {
+            under_pointer = Some(*rect);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            if let LinkAction::Uri(uri) = action {
+                egui::Tooltip::always_open(
+                    ui.ctx().clone(),
+                    ui.layer_id(),
+                    Id::unique("pdf_link"),
+                    egui::PopupAnchor::Pointer,
+                )
+                .show(|ui| ui.label(uri));
+            }
+        }
+        if resp.clicked()
+            && !used
+            && let Some((_, action)) = link
+        {
+            self.follow_link(ui.ctx(), action);
+        }
+        under_pointer
+    }
+
+    /// Eases to the page (or screen) the pending page turns lead to.
+    fn turn_pages(&mut self, layout: &Layout, visible: f32, bounds: Rect) {
+        let turn = std::mem::take(&mut self.page_turn);
+        if turn != 0 {
+            let base = self.kinetic.target().unwrap_or(self.scroll);
+            let mut y = base.y;
+            for _ in 0..turn.unsigned_abs() {
+                y = if turn > 0 { layout.next_stop(y, visible) } else { layout.prev_stop(y, visible) };
+                y = y.clamp(bounds.min.y, bounds.max.y);
+            }
+            self.ease_scroll(vec2(base.x, y));
+        }
+    }
+
+    /// Dragged near (or past) an edge of the canvas: the view scrolls that
+    /// way. Out of the window egui loses the pointer: where it was last.
+    fn autoscroll(&mut self, ui: &egui::Ui, f: &CanvasFrame, dragging: bool) {
+        self.drag_pointer = if dragging { ui.input(|i| i.pointer.latest_pos()).or(self.drag_pointer) } else { None };
+        if let Some(p) = self.drag_pointer {
+            let v = autoscroll_velocity(f.canvas, p);
+            if v != Vec2::ZERO {
+                self.scroll += v * f.dt / f.scale;
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
+    /// A drag on the grey area around the pages (anywhere in the reader)
+    /// moves the view, and glides on once let go. A pan begins only when
+    /// `may_start`.
+    fn pan_input(
+        &mut self,
+        resp: &egui::Response,
+        f: &CanvasFrame,
+        layout: &Layout,
+        bounds: Rect,
+        press: Option<Pos2>,
+        may_start: bool,
+    ) {
+        if may_start && resp.drag_started_by(PointerButton::Primary) {
+            let start = press.or(resp.interact_pointer_pos());
+            let v = View::new(f.canvas, self.scroll, f.scale, *layout);
+            // The reader: everywhere (but not while selecting text); a note:
+            // only off the paper, as with the laser.
+            self.panning = !self.selecting_text()
+                && (self.navigating() && !self.lasering()
+                    || start.is_some_and(|p| v.layout.page_at(v.screen_to_content(p)).is_none()));
+        }
+        if self.panning {
+            if resp.dragged() {
+                let before = self.scroll;
+                self.scroll -= resp.drag_delta() / f.scale;
+                self.scroll = self.scroll.clamp(bounds.min.to_vec2(), bounds.max.to_vec2());
+                self.kinetic.drag(self.scroll - before, f.now);
+                // On Windows "grabbing" has no hand cursor and shows the
+                // four-arrow move cross instead: keep the arrow there.
+                #[cfg(not(windows))]
+                resp.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else {
+                // Let go: the view keeps gliding with the release velocity.
+                self.panning = false;
+                if self.settings.smooth_scroll {
+                    self.kinetic.release(f.now, f.scale, self.settings.touch_fling);
+                }
+            }
+        }
+    }
+
+    /// The scroll bars' interaction. An infinite page grows to follow a
+    /// thumb held against an end, updating `layout` and `max`.
+    fn scrollbars_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        f: &CanvasFrame,
+        layout: &mut Layout,
+        max: &mut Vec2,
+    ) -> (BarState, Option<BarState>) {
+        let vstate = scrollbar::update(
+            ui,
+            Id::unique("vbar"),
+            f.vbar_rect,
+            true,
+            &mut self.scroll.y,
+            max.y,
+            f.canvas.height() / f.scale,
+            layout.content_h(f.scale),
+            &mut self.vbar_grab,
+        );
+        let hstate = f.hbar.then(|| {
+            scrollbar::update(
+                ui,
+                Id::unique("hbar"),
+                f.hbar_rect,
+                false,
+                &mut self.scroll.x,
+                max.x,
+                f.canvas.width() / f.scale,
+                layout.content_w(),
+                &mut self.hbar_grab,
+            )
+        });
+        // A thumb held against an end of an infinite page's bar: the view
+        // goes on that way, and the page grows to follow it.
+        let push = vec2(bar_push_speed(hstate.as_ref().and_then(|s| s.pushed)), bar_push_speed(vstate.pushed));
+        if layout.canvas && push != Vec2::ZERO {
+            self.scroll += push * f.dt / f.scale;
+            *layout = self.grow_canvas(f.full);
+            *max = View::max_scroll(f.canvas, f.scale, layout);
+            ui.ctx().request_repaint();
+        }
+        (vstate, hstate)
+    }
+
+    /// The pointer's moves this frame, each with the pressure it was taken
+    /// at: a pen sends several per frame, each touch (its force) just before
+    /// the move it makes.
+    fn pointer_samples(&mut self, ui: &egui::Ui, resp: &egui::Response) -> (Vec<Pos2>, Vec<f32>) {
         let mut force = self.pen_input.pressure;
         let (mut moves, pressures): (Vec<Pos2>, Vec<f32>) = ui.input(|i| {
             i.events
@@ -693,13 +812,18 @@ impl InkApp {
         self.update_pressure(ui.ctx());
         if moves.is_empty() {
             // Out of the window (an item dragged there), where the pointer last was.
-            moves.extend(canvas_resp.interact_pointer_pos().or(self.drag_pointer));
+            moves.extend(resp.interact_pointer_pos().or(self.drag_pointer));
         }
-        // ---- right click (or a finger's long press): context menu for what
-        // is under the pointer
+        (moves, pressures)
+    }
+
+    /// A right click (or a finger's long press, `held_at`) opens the context
+    /// menu for what is under the pointer.
+    fn context_menu_input(&mut self, ui: &egui::Ui, view: &View, held_at: Option<Pos2>) {
         let right_click = ui.input(|i| i.pointer.secondary_clicked());
-        let click_at =
-            (right_click && ui.rect_contains_pointer(canvas)).then(|| ui.input(|i| i.pointer.interact_pos())).flatten();
+        let click_at = (right_click && ui.rect_contains_pointer(view.rect))
+            .then(|| ui.input(|i| i.pointer.interact_pos()))
+            .flatten();
         if let Some(pos) = click_at.or(held_at)
             && !self.busy()
             && self.saved_tool.is_none()
@@ -719,37 +843,24 @@ impl InkApp {
             self.context_menu = Some(ContextMenu { pos, page, text, on_selection, picture, at });
             ui.ctx().request_repaint();
         }
+    }
 
-        if !self.panning && !swallowed && !self.navigating() {
-            match self.tool {
-                // Moving around is handled above.
-                Tool::Pointer => {}
-                Tool::Eraser => self.handle_erase(&canvas_resp, &view, press, &moves),
-                Tool::Select => self.handle_select(&canvas_resp, &view, press, &moves),
-                Tool::Text => self.handle_text(&canvas_resp, &view, press, &moves),
-                Tool::Pen | Tool::Highlighter => self.handle_ink(&canvas_resp, &view, press, &moves, &pressures),
-            }
-        }
-        self.laser_input(ui.ctx(), &canvas_resp, &view, &moves, now);
-
-        if !ui.input(|i| i.pointer.primary_down()) {
-            self.finger_nav = false;
-        }
-
-        // ---- painting
-        self.picture_textures.begin_frame(ui.ctx(), now, self.scroll, scale);
-        // Bottom to top: paper, highlighters, rules, text, pen (see `render`).
-        let painter = ui.painter_at(canvas);
-        render::paint_paper(&painter, &view);
+    /// The pages and what is on them. Bottom to top: paper, highlighters,
+    /// rules, text, pen (see `render`), then selected text and search
+    /// matches.
+    fn paint_pages(&mut self, ctx: &egui::Context, painter: &egui::Painter, view: &View, now: f64) {
+        let (layout, scale, made) = (view.layout, view.scale, view.made);
+        self.picture_textures.begin_frame(ctx, now, self.scroll, scale);
+        render::paint_paper(painter, view);
         // An infinite page with a PDF: its rules under the PDF's pages, which
         // cover them.
-        let rules_under = view.layout.canvas && self.doc.pdf.is_some();
+        let rules_under = layout.canvas && self.doc.pdf.is_some();
         if rules_under {
-            render::paint_rules(&painter, &view, &self.doc);
+            render::paint_rules(painter, view, &self.doc);
         }
         // A note written on a PDF: its pages, right on the paper.
         for page in view.visible_pages() {
-            self.pdf_textures.paint(&painter, &self.doc, page, view.page_screen_rect(page), true, made / scale);
+            self.pdf_textures.paint(painter, &self.doc, page, view.page_screen_rect(page), true, made / scale);
             // The reader: the links of the PDF pages shown, ready before they are pointed at.
             if self.navigating()
                 && let Some(file) = self.doc.pdf.as_ref().and_then(|pdf| pdf.file.clone())
@@ -764,7 +875,7 @@ impl InkApp {
                 }
             }
         }
-        let ppp = ui.ctx().pixels_per_point();
+        let ppp = ctx.pixels_per_point();
         let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
         let moved = self.selection.as_ref().map(|s| Moved { ids: &s.ids, page: s.page, offset: move_off });
         // The text boxes and pictures of a selection being dragged.
@@ -776,11 +887,11 @@ impl InkApp {
             if let Some(a) = live.as_deref_mut().filter(|a| a.kind == kind) {
                 let tip = a.builder.tip(predict);
                 let points = (a.builder.points(), &tip[..]);
-                a.live.paint(&painter, &view, a.page, a.kind, a.color, a.width, points, ppp);
+                a.live.paint(painter, view, a.page, a.kind, a.color, a.width, points, ppp);
             }
         };
         if !rules_under {
-            render::paint_rules(&painter, &view, &self.doc);
+            render::paint_rules(painter, view, &self.doc);
         }
         // Pictures, on the paper and under the ink; the ones dragged (alone or
         // selected) where they are now.
@@ -788,7 +899,7 @@ impl InkApp {
         for page in view.visible_pages() {
             let origin = view.page_origin_screen(page);
             let scales = (scale, made);
-            self.picture_textures.paint_page(&painter, &self.doc.images, page, origin, scales, &picture_moves);
+            self.picture_textures.paint_page(painter, &self.doc.images, page, origin, scales, &picture_moves);
         }
         // The pictures of the pages next to those shown, ready to scroll to;
         // on an infinite page those within a screen of the view.
@@ -800,15 +911,15 @@ impl InkApp {
             .images
             .iter()
             .filter(|i| near.contains(&i.page) && (!layout.canvas || i.rect().intersects(around)));
-        self.picture_textures.prefetch(ui.ctx(), images, made);
+        self.picture_textures.prefetch(ctx, images, made);
         // Those of a selection carried far (the view scrolled while dragging),
         // their page out of view: drawn where they are now all the same.
         for img in picture_moves.iter().filter(|i| !view.visible_pages().contains(&i.page)) {
             let origin = view.page_origin_screen(img.page);
-            self.picture_textures.paint_page(&painter, std::slice::from_ref(img), img.page, origin, (scale, made), &[]);
+            self.picture_textures.paint_page(painter, std::slice::from_ref(img), img.page, origin, (scale, made), &[]);
         }
         let strokes = &self.doc.strokes;
-        render::paint_strokes(&painter, &view, Layer::Highlight, strokes, &mut self.cache, ppp, moved.as_ref());
+        render::paint_strokes(painter, view, Layer::Highlight, strokes, &mut self.cache, ppp, moved.as_ref());
         paint_live(StrokeKind::Highlighter);
         // A text box dragged with the text tool.
         text_moves.extend(
@@ -817,38 +928,38 @@ impl InkApp {
                 .and_then(|tp| if tp.moved { tp.hit.map(|id| (id, tp.now - tp.start)) } else { None }),
         );
         render::paint_texts(
-            &painter,
-            &view,
+            painter,
+            view,
             &self.doc.texts,
             self.edit.as_ref().map(|e| e.id),
             &text_moves,
             self.tool == Tool::Text,
         );
 
-        render::paint_strokes(&painter, &view, Layer::Ink, strokes, &mut self.cache, ppp, moved.as_ref());
+        render::paint_strokes(painter, view, Layer::Ink, strokes, &mut self.cache, ppp, moved.as_ref());
         paint_live(StrokeKind::Pen);
         // Selected text and search matches, over the pages.
-        self.paint_text_marks(&painter, &view);
+        self.paint_text_marks(painter, view);
+    }
 
-        if let Some(rect) = link_under_pointer {
-            painter.rect_filled(rect.expand(2.0), 2.0, color::accent_alpha(36));
-        }
-
-        // Selection box and lasso outline.
+    /// The selection box (and, with the select tool, its handles) and the
+    /// lasso outline. `hover` is the pointer over the canvas.
+    fn paint_selection_marks(&self, painter: &egui::Painter, view: &View, hover: Option<Pos2>) {
         let blue = color::accent();
         if let Some(sel) = &self.selection {
-            let r = sel.bounds.translate(layout.page_origin(sel.page).to_vec2() + move_off);
+            let move_off = self.moving.as_ref().map_or(Vec2::ZERO, |m| m.delta);
+            let r = sel.bounds.translate(view.layout.page_origin(sel.page).to_vec2() + move_off);
             let rect = Rect::from_min_max(view.content_to_screen(r.min), view.content_to_screen(r.max));
             painter.rect_filled(rect, 2.0, color::accent_alpha(28));
             let path = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
             painter.extend(egui::Shape::dashed_line(&path, egui::Stroke::new(1.5, blue), 6.0, 4.0));
         }
         if self.tool == Tool::Select {
-            self.paint_picked_picture(&painter, &view, canvas_resp.hover_pos());
-            self.paint_selection_handles(&painter, &view, canvas_resp.hover_pos());
+            self.paint_picked_picture(painter, view, hover);
+            self.paint_selection_handles(painter, view, hover);
         }
         if let Some(l) = &self.lasso {
-            let o = layout.page_origin(l.page).to_vec2();
+            let o = view.layout.page_origin(l.page).to_vec2();
             let mut pts: Vec<Pos2> = l.outline().iter().map(|p| view.content_to_screen(*p + o)).collect();
             if l.rect && pts.len() == 4 {
                 // The box, closed and faintly filled, like the selection's.
@@ -859,14 +970,19 @@ impl InkApp {
                 painter.extend(egui::Shape::dashed_line(&pts, egui::Stroke::new(1.5, blue), 5.0, 4.0));
             }
         }
-        // The tool cursor, the same for pen and mouse: over a page, pen,
-        // highlighter and eraser replace the system pointer with their tip
-        // (a dot like the stroke they would draw, OneNote style, or the
-        // eraser's circle). Pointer, select and text keep the system pointer.
+    }
+
+    /// The tool cursor, the same for pen and mouse: over a page, pen,
+    /// highlighter and eraser replace the system pointer with their tip
+    /// (a dot like the stroke they would draw, OneNote style, or the
+    /// eraser's circle). Pointer, select and text keep the system pointer.
+    /// Then the laser's dot and trail.
+    fn paint_cursors(&self, ui: &egui::Ui, painter: &egui::Painter, view: &View, resp: &egui::Response, now: f64) {
+        let ctx = ui.ctx();
+        let ppp = ctx.pixels_per_point();
         // A hovering pen is not reported by winit as a pointer, so it is read
         // from the native source. Not where something else (a toolbar, a
         // panel) is on top of the canvas.
-        let ctx = ui.ctx().clone();
         let pen_hover = self
             .pen_input
             .windows
@@ -874,36 +990,41 @@ impl InkApp {
             .and_then(|p| p.hover())
             .map(|(x, y)| pos2(x / ppp, y / ppp))
             .or(self.pen_input.hover)
-            .filter(|p| canvas.contains(*p) && ctx.layer_id_at(*p) == Some(ui.layer_id()));
+            .filter(|p| view.rect.contains(*p) && ctx.layer_id_at(*p) == Some(ui.layer_id()));
         let tip_pos = pen_hover
-            .or(canvas_resp.hover_pos())
-            .or(canvas_resp.interact_pointer_pos())
+            .or(resp.hover_pos())
+            .or(resp.interact_pointer_pos())
             .filter(|p| view.layout.page_at(view.screen_to_content(*p)).is_some());
         let grabbing = self.panning || self.vbar_grab.is_some() || self.hbar_grab.is_some();
         if let (Some(pos), false, false) = (tip_pos, self.navigating(), grabbing) {
             if self.tool == Tool::Eraser {
-                hide_pointer(&ctx);
-                render::paint_eraser_cursor(&painter, pos, self.settings.eraser_radius * scale);
+                hide_pointer(ctx);
+                render::paint_eraser_cursor(painter, pos, self.settings.eraser_radius * view.scale);
             } else if let Some((kind, rgba, width)) = self.stroke_params() {
-                hide_pointer(&ctx);
+                hide_pointer(ctx);
                 // While drawing, the stroke's own end is the tip.
                 if self.active.is_none() {
-                    render::paint_pen_cursor(&painter, pos, kind, rgba, width * scale);
+                    render::paint_pen_cursor(painter, pos, kind, rgba, width * view.scale);
                 }
             }
         }
         // The laser: over a page its dot in place of the system pointer
         // (off the paper the usual arrow), and its trail.
         let laser_dot = pen_hover
-            .or(canvas_resp.hover_pos())
-            .or(canvas_resp.interact_pointer_pos())
+            .or(resp.hover_pos())
+            .or(resp.interact_pointer_pos())
             .filter(|p| self.lasering() && !grabbing && view.layout.page_at(view.screen_to_content(*p)).is_some());
         if laser_dot.is_some() {
-            hide_pointer(&ctx);
+            hide_pointer(ctx);
         }
-        self.paint_laser(&painter, &view, laser_dot, now);
+        self.paint_laser(painter, view, laser_dot, now);
+    }
 
-        // Rubber band while dragging out a new text box.
+    /// The rubber band of a text box being dragged out, and the in-place
+    /// editor of the text box being typed into (a real egui TextEdit:
+    /// cursor, selection, clipboard, IME, its own Ctrl+Z).
+    fn text_box_ui(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, view: &View) {
+        let blue = color::accent();
         if let Some(tp) = &self.text_press
             && tp.hit.is_none()
             && tp.handle.is_none()
@@ -915,15 +1036,13 @@ impl InkApp {
             painter.extend(egui::Shape::dashed_line(&path, egui::Stroke::new(1.5, blue), 6.0, 4.0));
         }
 
-        // In-place editor of the text box being typed into (a real egui
-        // TextEdit: cursor, selection, clipboard, IME, its own Ctrl+Z).
         let mut commit_now = false;
         if let Some(e) = self.edit.as_mut() {
             // Toolbar size / colour changes apply live.
             e.size = self.settings.text.width;
             e.color = self.settings.text.color;
         }
-        if let (Some(frame), Some(e)) = (self.edit_frame(&view), self.edit.as_mut()) {
+        if let (Some(frame), Some(e)) = (self.edit_frame(view), self.edit.as_mut()) {
             painter.rect_filled(frame, 3.0, color::edit_backdrop());
             painter.rect_stroke(frame, 3.0, egui::Stroke::new(1.5, blue), egui::StrokeKind::Middle);
             // The resize handles, one on either side.
@@ -946,7 +1065,7 @@ impl InkApp {
 
             let id = Id::unique(("text_edit", e.id));
             let color = Color32::from_rgb(e.color[0], e.color[1], e.color[2]);
-            let size = (e.size * scale).max(6.0);
+            let size = (e.size * view.scale).max(6.0);
             // The Markdown in the styles it makes, its marks dimmed.
             super::text::markdown_keys(ui.ctx(), id, &mut e.buf);
             let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
@@ -987,9 +1106,12 @@ impl InkApp {
         if commit_now {
             self.commit_edit(ui.ctx());
         }
+    }
 
-        // "Add page" below the last page, the same dashed tile as in the
-        // pages panel, as wide as the page.
+    /// "Add page" below the last page, the same dashed tile as in the
+    /// pages panel, as wide as the page.
+    fn add_page_tile(&mut self, ui: &mut egui::Ui, view: &View) {
+        let (canvas, layout) = (view.rect, view.layout);
         let last = view.page_screen_rect(layout.count - 1);
         let btn = Rect::from_min_size(pos2(last.left(), last.bottom() + 18.0), vec2(last.width(), 40.0));
         if btn.intersects(canvas) && !self.reading() && !layout.canvas {
@@ -999,33 +1121,26 @@ impl InkApp {
                 self.insert_page(self.doc.page_count);
             }
         }
-
-        // Transient status message (saved / exported / errors).
-        if let Some(left) = self.status_at.and_then(|t| super::TOAST_FOR.checked_sub(t.elapsed()))
-            && !self.status.is_empty()
-        {
-            theme::paint_toast(&painter, pos2(canvas.center().x, canvas.bottom() - 90.0), &self.status);
-            // Once more when it is gone (it does not fade).
-            ui.ctx().request_repaint_after(left);
-        }
-
-        // Scrollbars on top; the vertical one shows a page indicator while dragged.
-        let center_y = view.screen_to_content(canvas.center()).y;
-        let cur = layout.page_index_at_y(center_y);
-        self.current_page = cur;
-        let label = format!("Page {} / {}", cur + 1, layout.count);
-        let full_painter = ui.painter();
-        // Presenting: no scroll bar (its track has no width then). An
-        // infinite page has no page number to show.
-        if self.presenting.is_none() {
-            // The minimap, out, shows it itself.
-            let label = (!layout.canvas && !self.minimap.out()).then_some(label.as_str());
-            scrollbar::paint(full_painter, vbar_rect, true, &vstate, label);
-        }
-        if let Some(h) = &hstate {
-            scrollbar::paint(full_painter, hbar_rect, false, h, None);
-        }
     }
+}
+
+/// The canvas's geometry and clock for one frame, at the zoom it settled on:
+/// what the phases of [`InkApp::canvas_ui`] share.
+struct CanvasFrame {
+    /// The whole area: the canvas and its scroll bars.
+    full: Rect,
+    /// Where the pages show (the area without its scroll bars).
+    canvas: Rect,
+    scale: f32,
+    /// Whether the horizontal scroll bar shows.
+    hbar: bool,
+    vbar_rect: Rect,
+    hbar_rect: Rect,
+    /// Content height shown below the top pad.
+    visible: f32,
+    now: f64,
+    /// Seconds since the last frame (at most a 30 fps frame).
+    dt: f32,
 }
 
 /// Hides the system pointer this frame (the tool paints its own cursor).
