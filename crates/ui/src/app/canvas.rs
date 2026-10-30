@@ -311,11 +311,25 @@ impl InkApp {
     pub(super) fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         let full = ui.max_rect();
         let mut layout = Layout::of(&self.doc);
-        // An infinite page goes as far as it is written on, and grows as it
-        // is (see `Layout::grown`).
+        // An infinite page goes as far as it is written on, every way, and
+        // grows and shrinks as it is (see `Layout::grown`).
         if layout.canvas {
             let shown = full.size() / View::scale_for(self.zoom(), full, &layout);
-            layout = layout.grown(self.doc.canvas_used().map(|r| r.max), shown, self.scroll);
+            let before = self.canvas_area;
+            let corner = before.map_or(Vec2::ZERO, |a| a.min.to_vec2());
+            let seen = Rect::from_min_size((corner + self.scroll).to_pos2(), shown);
+            layout = layout.grown(self.doc.canvas_used(), seen);
+            // Not under a pen, eraser or drag: only larger, from where it starts.
+            if let Some(before) = before.filter(|_| self.busy()) {
+                layout = layout.with_area(Rect::from_min_max(before.min, before.max.max(layout.area().max)));
+            }
+            let moved = corner - layout.origin;
+            if moved != Vec2::ZERO {
+                self.shift_view(moved);
+            }
+            self.canvas_area = Some(layout.area());
+        } else {
+            self.canvas_area = None;
         }
         ui.painter().rect_filled(full, 0.0, crate::theme::color::desk());
 

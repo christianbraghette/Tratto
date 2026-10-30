@@ -234,18 +234,19 @@ impl InkApp {
             if let (Some((handle, at, w0)), Some(e)) = (tp.handle, self.edit.as_mut()) {
                 let d = tp.now - tp.start;
                 let x0 = at.x;
-                let room = (view.layout.page_w - x0).max(MIN_WIDTH);
+                let page = view.layout.page_box();
+                let room = (page.right() - x0).max(MIN_WIDTH);
                 match handle {
                     EditHandle::Right => e.width = (w0 + d.x).clamp(MIN_WIDTH, room),
                     EditHandle::Left => {
                         let right = x0 + w0;
-                        e.x = (x0 + d.x).clamp(0.0, (right - MIN_WIDTH).max(0.0));
+                        e.x = (x0 + d.x).clamp(page.left(), (right - MIN_WIDTH).max(page.left()));
                         e.width = right - e.x;
                     }
                     EditHandle::Move => {
                         let h = e.last_h / view.scale;
-                        e.x = (at.x + d.x).clamp(0.0, (view.layout.page_w - e.width).max(0.0));
-                        e.y = (at.y + d.y).clamp(0.0, (view.layout.page_h - h).max(0.0));
+                        e.x = (at.x + d.x).clamp(page.left(), (page.right() - e.width).max(page.left()));
+                        e.y = (at.y + d.y).clamp(page.top(), (page.bottom() - h).max(page.top()));
                     }
                 }
             }
@@ -292,17 +293,18 @@ impl InkApp {
                 // Tap = default width; drag = box as wide as the drag.
                 let Some(page) = tp.page else { return };
                 let o = layout.page_origin(page);
+                let b = layout.page_box();
                 let dragged_w = (tp.now.x - tp.start.x).abs();
                 let (left, width) = if tp.moved && dragged_w > 40.0 {
                     (tp.start.x.min(tp.now.x), dragged_w)
                 } else {
-                    let room = layout.page_w - (tp.start.x - o.x) - 20.0;
+                    let room = b.right() - (tp.start.x - o.x) - 20.0;
                     (tp.start.x, room.clamp(120.0, 360.0))
                 };
                 let top = if tp.moved { tp.start.y.min(tp.now.y) } else { tp.start.y };
-                let x = (left - o.x).clamp(0.0, (layout.page_w - 40.0).max(0.0));
-                let y = (top - o.y).clamp(0.0, (layout.page_h - 20.0).max(0.0));
-                let width = width.min(layout.page_w - x).max(MIN_WIDTH);
+                let x = (left - o.x).clamp(b.left(), (b.right() - 40.0).max(b.left()));
+                let y = (top - o.y).clamp(b.top(), (b.bottom() - 20.0).max(b.top()));
+                let width = width.min(b.right() - x).max(MIN_WIDTH);
                 self.begin_new_edit(page, x, y, width);
             }
         }
@@ -323,8 +325,9 @@ impl InkApp {
         let local = d + src_o - layout.page_origin(dst).to_vec2();
         let mut new = old.clone();
         new.page = dst;
-        new.x = (old.x + local.x).clamp(0.0, (layout.page_w - old.width).max(0.0));
-        new.y = (old.y + local.y).clamp(0.0, (layout.page_h - old.height()).max(0.0));
+        let b = layout.page_box();
+        new.x = (old.x + local.x).clamp(b.left(), (b.right() - old.width).max(b.left()));
+        new.y = (old.y + local.y).clamp(b.top(), (b.bottom() - old.height()).max(b.top()));
         self.history.exec(&mut self.doc, Action::ReplaceText { text: new });
     }
 }

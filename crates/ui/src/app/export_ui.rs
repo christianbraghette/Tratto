@@ -288,7 +288,7 @@ impl InkApp {
     /// The page in view, as it is exported: on an infinite page, the sheet
     /// the middle of the view is on (see `Document::as_sheets`).
     fn current_sheet(&self) -> u32 {
-        if self.doc.is_canvas() { self.doc.sheet_at(self.shown_content.center().y) } else { self.current_page }
+        if self.doc.is_canvas() { self.doc.sheet_at(self.view_center().y) } else { self.current_page }
     }
 
     /// Default title of the PDF for a scope.

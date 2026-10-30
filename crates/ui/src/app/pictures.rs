@@ -112,10 +112,10 @@ pub(super) fn corners(rect: Rect) -> [Pos2; 4] {
     [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()]
 }
 
-/// Where `v` goes for something `size` long to stay within `0..extent`
+/// Where `v` goes for something `size` long to stay within `from..to`
 /// (or, larger, to cover it).
-fn within(v: f32, size: f32, extent: f32) -> f32 {
-    if size <= extent { v.clamp(0.0, extent - size) } else { v.clamp(extent - size, 0.0) }
+fn within(v: f32, size: f32, (from, to): (f32, f32)) -> f32 {
+    if size <= to - from { v.clamp(from, to - size) } else { v.clamp(to - size, from) }
 }
 
 /// `from` moved by `delta` (content space): onto the page its middle is
@@ -125,7 +125,8 @@ fn moved(from: &Image, delta: Vec2, layout: &Layout) -> Image {
     let center = pos2(from.x + from.width * 0.5, from.y + from.height * 0.5) + src + delta;
     let page = layout.page_nearest_y(center.y);
     let local = pos2(from.x, from.y) + src + delta - layout.page_origin(page).to_vec2();
-    let (x, y) = (within(local.x, from.width, layout.page_w), within(local.y, from.height, layout.page_h));
+    let b = layout.page_box();
+    let (x, y) = (within(local.x, from.width, (b.left(), b.right())), within(local.y, from.height, (b.top(), b.bottom())));
     Image { page, x, y, ..from.clone() }
 }
 
@@ -360,7 +361,7 @@ mod tests {
         Image { id: 1, page: 0, x: 100.0, y: 100.0, width: 200.0, height: 100.0, data }
     }
 
-    const LAYOUT: Layout = Layout { page_w: 800.0, page_h: 1000.0, count: 3, canvas: false, extent: egui::Vec2::ZERO };
+    const LAYOUT: Layout = Layout { page_w: 800.0, page_h: 1000.0, count: 3, canvas: false, extent: egui::Vec2::ZERO, origin: egui::Vec2::ZERO };
 
     #[test]
     fn moving_keeps_it_on_the_page() {

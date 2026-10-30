@@ -125,22 +125,22 @@ impl Clipboard {
     }
 }
 
-/// How far to move `bounds` (page space) by `delta` for it to stay on a
-/// `page_w` x `page_h` page (unless it is larger).
-pub(super) fn keep_on_page(bounds: Rect, mut delta: Vec2, page_w: f32, page_h: f32) -> Vec2 {
+/// How far to move `bounds` (page space) by `delta` for it to stay within
+/// `page` (`Layout::page_box`), unless it is larger.
+pub(super) fn keep_on_page(bounds: Rect, mut delta: Vec2, page: Rect) -> Vec2 {
     let nb = bounds.translate(delta);
-    if nb.width() <= page_w {
-        if nb.min.x < 0.0 {
-            delta.x -= nb.min.x;
-        } else if nb.max.x > page_w {
-            delta.x -= nb.max.x - page_w;
+    if nb.width() <= page.width() {
+        if nb.min.x < page.min.x {
+            delta.x -= nb.min.x - page.min.x;
+        } else if nb.max.x > page.max.x {
+            delta.x -= nb.max.x - page.max.x;
         }
     }
-    if nb.height() <= page_h {
-        if nb.min.y < 0.0 {
-            delta.y -= nb.min.y;
-        } else if nb.max.y > page_h {
-            delta.y -= nb.max.y - page_h;
+    if nb.height() <= page.height() {
+        if nb.min.y < page.min.y {
+            delta.y -= nb.min.y - page.min.y;
+        } else if nb.max.y > page.max.y {
+            delta.y -= nb.max.y - page.max.y;
         }
     }
     delta
@@ -256,13 +256,14 @@ impl InkApp {
     pub(super) fn paste_place(&self) -> (u32, Pos2) {
         let layout = self.layout();
         let page = self.current_page.min(layout.count - 1);
-        let origin = layout.page_origin(page);
+        let origin = layout.page_origin(page).to_vec2();
+        // The page (on an infinite page, as far as it goes) in content space.
+        let paper = layout.page_box().translate(origin);
         let shown = self.shown_content;
-        let middle = |from: f32, to: f32, start: f32, len: f32| {
-            ((from.max(start) + to.min(start + len)) * 0.5 - start).clamp(0.0, len)
-        };
-        let x = middle(shown.left(), shown.right(), origin.x, layout.page_w);
-        (page, pos2(x, middle(shown.top(), shown.bottom(), origin.y, layout.page_h)))
+        let middle = |from: f32, to: f32, start: f32, end: f32| (from.max(start) + to.min(end)) * 0.5;
+        let x = middle(shown.left(), shown.right(), paper.left(), paper.right());
+        let y = middle(shown.top(), shown.bottom(), paper.top(), paper.bottom());
+        (page, (pos2(x, y) - origin).clamp(layout.page_box().min, layout.page_box().max))
     }
 
     /// Puts a copy of `content` on the note: centred at `at`, else where it
@@ -286,7 +287,7 @@ impl InkApp {
                 (page, vec2(step, step))
             }
         };
-        let delta = keep_on_page(content.bounds, delta, layout.page_w, layout.page_h);
+        let delta = keep_on_page(content.bounds, delta, layout.page_box());
         let (actions, strokes, texts, images) =
             self.added(page, delta, &content.strokes, &content.texts, &content.images);
         self.history.exec(&mut self.doc, Action::Batch(actions));
@@ -358,7 +359,7 @@ impl InkApp {
             layout: None,
         };
         markdown::lay_out_box(&self.egui_ctx, &mut tb);
-        let delta = keep_on_page(tb.rect(), Vec2::ZERO, layout.page_w, layout.page_h);
+        let delta = keep_on_page(tb.rect(), Vec2::ZERO, layout.page_box());
         (tb.x, tb.y) = (tb.x + delta.x, tb.y + delta.y);
         let id = tb.id;
         let index = self.doc.texts.len();
@@ -541,12 +542,13 @@ mod tests {
 
     #[test]
     fn pasted_content_stays_on_the_page() {
+        let page = |w: f32, h: f32| Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h));
         let bounds = Rect::from_min_max(pos2(100.0, 100.0), pos2(300.0, 200.0));
         // Fits where it lands: unchanged.
-        assert_eq!(keep_on_page(bounds, vec2(16.0, 16.0), 800.0, 1000.0), vec2(16.0, 16.0));
+        assert_eq!(keep_on_page(bounds, vec2(16.0, 16.0), page(800.0, 1000.0)), vec2(16.0, 16.0));
         // Past the right and the top: pushed back in.
-        assert_eq!(keep_on_page(bounds, vec2(600.0, -150.0), 800.0, 1000.0), vec2(500.0, -100.0));
+        assert_eq!(keep_on_page(bounds, vec2(600.0, -150.0), page(800.0, 1000.0)), vec2(500.0, -100.0));
         // Wider than the page: left where it is across.
-        assert_eq!(keep_on_page(bounds, vec2(10.0, 0.0), 150.0, 1000.0).x, 10.0);
+        assert_eq!(keep_on_page(bounds, vec2(10.0, 0.0), page(150.0, 1000.0)).x, 10.0);
     }
 }

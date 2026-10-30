@@ -362,6 +362,9 @@ pub struct InkApp {
     /// infinite page) started to change: one undo step once it is let go
     /// (see `settings_ui::pdf_gap_rows`).
     gap_drag: Option<Document>,
+    /// An infinite page: how far it was shown last frame (page space; see
+    /// `Layout::grown`). Content space, and the scroll, start at its corner.
+    canvas_area: Option<Rect>,
     /// Outline entries shown open (their children visible), by index.
     outline_open: HashSet<usize>,
     /// A note read (or a PDF imported) in the background; a loading screen
@@ -581,6 +584,7 @@ impl InkApp {
             pdf_nav: PdfNav::default(),
             nav_back: Vec::new(),
             gap_drag: None,
+            canvas_area: None,
             outline_open: HashSet::new(),
             loading: None,
             egui_ctx: cc.egui_ctx.clone(),
@@ -842,9 +846,40 @@ impl InkApp {
         }
     }
 
-    /// The pages of the open note, stacked.
+    /// The pages of the open note, stacked; an infinite page as far as it
+    /// was shown last frame.
     fn layout(&self) -> Layout {
-        Layout::of(&self.doc)
+        let layout = Layout::of(&self.doc);
+        match self.canvas_area.filter(|_| layout.canvas) {
+            Some(area) => layout.with_area(area),
+            None => layout,
+        }
+    }
+
+    /// Content space moved by `by` (an infinite page grew or shrank left or
+    /// up): the view, and the places it goes to or comes back to, stay where
+    /// they are on the page.
+    fn shift_view(&mut self, by: Vec2) {
+        self.scroll += by;
+        self.kinetic.shift(by);
+        self.nav_back.iter_mut().for_each(|b| *b += by);
+        self.scroll_to = self.scroll_to.map(|y| y + by.y);
+        self.scroll_to_x = self.scroll_to_x.map(|x| x + by.x);
+        self.last_erase_pos = self.last_erase_pos.map(|p| p + by);
+    }
+
+    /// The middle of the view on note page `current_page` (page space; an
+    /// infinite page's, from its corner).
+    pub(super) fn view_center(&self) -> Pos2 {
+        let layout = self.layout();
+        self.shown_content.center() - layout.page_origin(self.current_page.min(layout.count - 1)).to_vec2()
+    }
+
+    /// Where the view is (scroll offsets), to be remembered: on an infinite
+    /// page, from its corner (content space moves as it grows).
+    pub(super) fn view_place(&self) -> Vec2 {
+        let scroll = self.kinetic.target().unwrap_or(self.scroll);
+        scroll + self.canvas_area.filter(|_| self.doc.is_canvas()).map_or(Vec2::ZERO, |a| a.min.to_vec2())
     }
 
     /// One frame of the note editor.
@@ -1076,7 +1111,8 @@ fn loading_screen(ctx: &egui::Context, label: &str) {
 fn to_page_point(view: &View, page: u32, pos: Pos2, pressure: f32) -> Point {
     let c = view.screen_to_content(pos);
     let o = view.layout.page_origin(page);
-    Point::new((c.x - o.x).clamp(0.0, view.layout.page_w), (c.y - o.y).clamp(0.0, view.layout.page_h), pressure)
+    let b = view.layout.page_box();
+    Point::new((c.x - o.x).clamp(b.left(), b.right()), (c.y - o.y).clamp(b.top(), b.bottom()), pressure)
 }
 
 impl eframe::App for InkApp {

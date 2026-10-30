@@ -386,7 +386,7 @@ impl InkApp {
         let open = self.note_path.as_ref().or(self.reader.as_ref());
         let Some(path) = open.map(|p| p.to_string_lossy().into_owned()) else { return };
         // The place the view is gliding to, if it is.
-        let scroll = self.kinetic.target().unwrap_or(self.scroll);
+        let scroll = self.view_place();
         let view = NoteView { scroll: [scroll.x, scroll.y], zoom: self.settings.zoom };
         self.settings.set_note_view(&path, view);
         self.settings.last_note = Some(path);
@@ -523,6 +523,8 @@ impl InkApp {
         self.search.reset();
         self.history.clear();
         self.gap_drag = None;
+        // An infinite page's view is remembered from its corner (`view_place`).
+        self.canvas_area = None;
         self.active = None;
         self.erase_session.clear();
         self.last_erase_pos = None;

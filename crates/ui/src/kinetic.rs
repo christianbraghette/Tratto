@@ -196,6 +196,14 @@ impl Kinetic {
         self.target = Some(target);
     }
 
+    /// The view's coordinates moved by `by` (an infinite page grew left or
+    /// up): a target is where it was.
+    pub fn shift(&mut self, by: Vec2) {
+        if let Some(t) = self.target.as_mut() {
+            *t += by;
+        }
+    }
+
     /// The pending target, if an ease is running.
     pub fn target(&self) -> Option<Vec2> {
         self.target

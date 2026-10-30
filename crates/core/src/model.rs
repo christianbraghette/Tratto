@@ -511,6 +511,9 @@ pub const CANVAS_SIZE: f32 = 100_000.0;
 /// Paper right of and below what is on an infinite page when it is made a
 /// page of its own (`canvas_area`).
 const CANVAS_MARGIN: f32 = 48.0;
+/// How far a stroke drawn along the corner of an infinite page sticks out
+/// left of or above it (half its width) without being written there.
+const EDGE_OVERHANG: f32 = 10.0;
 /// The room left of and above the pages of a PDF on an infinite page.
 const CANVAS_PDF_INSET: f32 = 48.0;
 /// The room between them (`PdfBackground::gap`) to start with, and the
@@ -545,10 +548,11 @@ pub struct Document {
 }
 
 /// How an infinite page was cut into pages: where the first one starts on
-/// it, and how tall each is (document units). They are as wide as it is
-/// shown, from its left edge.
+/// it (its left edge and its top, left of and above the page's corner if
+/// it is written on there), and how tall each is (document units).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Cut {
+    left: f32,
     top: f32,
     height: f32,
 }
@@ -712,16 +716,16 @@ impl Document {
         };
         if self.stacked() {
             // The part of the infinite page this page is.
-            let top = match self.cut {
-                Some(cut) => cut.top + page as f32 * cut.height,
-                None if page == 0 => 0.0,
+            let corner = match self.cut {
+                Some(cut) => vec2(cut.left, cut.top + page as f32 * cut.height),
+                None if page == 0 => Vec2::ZERO,
                 None => return Vec::new(),
             };
-            let shown = Rect::from_min_size(pos2(0.0, top), vec2(self.page_width, self.page_height));
+            let shown = Rect::from_min_size(corner.to_pos2(), vec2(self.page_width, self.page_height));
             return (pdf.pages.iter().enumerate())
                 .filter_map(|(i, p)| fit((*p)?, pdf.canvas_slot(i)))
                 .filter(|(_, r)| r.intersects(shown))
-                .map(|(p, r)| (p, r.translate(vec2(0.0, -top))))
+                .map(|(p, r)| (p, r.translate(-corner)))
                 .collect();
         }
         let whole = Rect::from_min_size(Pos2::ZERO, vec2(self.page_width, self.page_height));
@@ -979,13 +983,19 @@ impl Document {
     }
 
     /// The part of an infinite page that makes a page of it (exporting,
-    /// printing, the library's preview): from its corner to what is on it
-    /// (its PDF's pages too), with some paper right and below, at least a
-    /// page of the default size.
+    /// printing, the library's preview): from its corner (or from what is
+    /// left of or above it) to what is on it (its PDF's pages too), with
+    /// some paper around, at least a page of the default size.
     pub fn canvas_area(&self) -> Rect {
-        let written = self.canvas_used().map_or(pos2(0.0, 0.0), |c| c.max + vec2(CANVAS_MARGIN, CANVAS_MARGIN));
-        let max = written.max(pos2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT)).min(pos2(CANVAS_SIZE, CANVAS_SIZE));
-        Rect::from_min_max(pos2(0.0, 0.0), max)
+        let margin = vec2(CANVAS_MARGIN, CANVAS_MARGIN);
+        let used = self.canvas_used();
+        // Paper left of or above the corner only if something is there (not
+        // just half the width of a stroke drawn along the edge).
+        let before = |v: f32| if v < -EDGE_OVERHANG { v - CANVAS_MARGIN } else { 0.0 };
+        let min = used.map_or(Pos2::ZERO, |c| pos2(before(c.min.x), before(c.min.y))).max(pos2(-CANVAS_SIZE, -CANVAS_SIZE));
+        let max = used.map_or(Pos2::ZERO, |c| c.max + margin);
+        let max = max.max(pos2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT)).min(pos2(CANVAS_SIZE, CANVAS_SIZE));
+        Rect::from_min_max(min, max)
     }
 
     /// An infinite page as a page as large as what is on it (`canvas_area`),
@@ -995,7 +1005,8 @@ impl Document {
             return std::borrow::Cow::Borrowed(self);
         }
         let area = self.canvas_area();
-        std::borrow::Cow::Owned(self.cut_into(area.width(), Cut { top: 0.0, height: area.height() }, 1))
+        let cut = Cut { left: area.left(), top: area.top(), height: area.height() };
+        std::borrow::Cow::Owned(self.cut_into(area.width(), cut, 1))
     }
 
     /// An infinite page cut into sheets to export or print, as OneNote
@@ -1034,12 +1045,13 @@ impl Document {
                 let used = self.canvas_used().unwrap_or(area);
                 // Halfway up the room above the first one; higher if
                 // something is written there.
-                let top = (CANVAS_PDF_INSET - pdf.gap * 0.5).max(0.0).min(used.top().max(0.0));
-                (width, Cut { top, height }, count(top, height, used.bottom()))
+                let top = (CANVAS_PDF_INSET - pdf.gap * 0.5).max(0.0).min(used.top());
+                (width, Cut { left: area.left(), top, height }, count(top, height, used.bottom()))
             }
             None => {
                 let height = width * DEFAULT_PAGE_HEIGHT / DEFAULT_PAGE_WIDTH;
-                (width, Cut { top: 0.0, height }, count(0.0, height, area.bottom()))
+                let top = area.top();
+                (width, Cut { left: area.left(), top, height }, count(top, height, area.bottom()))
             }
         }
     }
@@ -1051,24 +1063,25 @@ impl Document {
         let last = count.max(1) - 1;
         let row = |y: f32| (((y - cut.top) / cut.height).floor().max(0.0) as u32).min(last);
         let rows = |r: Rect| row(r.top())..=row(r.bottom());
-        let up = |page: u32| -(cut.top + page as f32 * cut.height);
+        // From the infinite page to page `page` of the cut.
+        let by = |page: u32| -vec2(cut.left, cut.top + page as f32 * cut.height);
         let mut doc = Document { strokes: Vec::new(), texts: Vec::new(), images: Vec::new(), ..self.clone() };
         for s in &self.strokes {
             for page in rows(s.rect().expand(s.width * 0.5)) {
                 let mut s = s.clone();
-                s.translate(0.0, up(page));
+                s.translate(by(page).x, by(page).y);
                 s.page = page;
                 doc.strokes.push(s);
             }
         }
         for t in &self.texts {
             for page in rows(t.rect()) {
-                doc.texts.push(TextBox { page, y: t.y + up(page), ..t.clone() });
+                doc.texts.push(TextBox { page, x: t.x + by(page).x, y: t.y + by(page).y, ..t.clone() });
             }
         }
         for i in &self.images {
             for page in rows(i.rect()) {
-                doc.images.push(Image { page, y: i.y + up(page), ..i.clone() });
+                doc.images.push(Image { page, x: i.x + by(page).x, y: i.y + by(page).y, ..i.clone() });
             }
         }
         (doc.page_width, doc.page_height, doc.page_count) = (width, cut.height, last + 1);
@@ -1518,5 +1531,26 @@ mod tests {
         assert!(!ids.contains(&pasted.id) && pasted.page == 0);
         let (_, place) = doc.pdf_places(0)[3];
         assert_eq!(pasted.points[0].pos2(), place.min + vec2(100.0, 200.0));
+    }
+
+    #[test]
+    fn what_is_left_of_and_above_an_infinite_page_s_corner_is_exported_too() {
+        let mut doc = Document { page_width: CANVAS_SIZE, page_height: CANVAS_SIZE, ..Document::default() };
+        let mut s = line(2.0);
+        s.translate(-500.0, -300.0);
+        s.id = doc.alloc_id();
+        doc.strokes.push(s);
+        let area = doc.canvas_area();
+        // From before it (and some paper), to at least a default page.
+        assert_eq!(area.min, pos2(-500.0 - 1.0 - CANVAS_MARGIN, -300.0 - 1.0 - CANVAS_MARGIN));
+        assert_eq!(area.max, pos2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT));
+        // Cut from there: on the first sheet, as far in as it is from that corner.
+        let sheets = doc.as_sheets();
+        assert_eq!(sheets.page_width, area.width());
+        let p = sheets.strokes[0].points[0].pos2();
+        assert_eq!(p, pos2(-500.0, -300.0) - area.min.to_vec2());
+        assert_eq!(doc.sheet_at(-300.0), 0);
+        let page = doc.as_pages();
+        assert_eq!(page.strokes[0].points[0].pos2(), p);
     }
 }

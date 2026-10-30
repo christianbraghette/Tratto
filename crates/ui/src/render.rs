@@ -887,10 +887,12 @@ pub fn paint_paper(painter: &Painter, view: &View) {
 /// they would only grey the page, and cost a shape each.
 const MIN_DOT_GAP: f32 = 10.0;
 
-/// The page-local positions `k * spacing` (`k >= 1`) from `from` to `to`
-/// and before `end`, the end of the page.
-fn rule_steps(spacing: f32, from: f32, to: f32, end: f32) -> impl Iterator<Item = f32> {
-    let first = (from / spacing).ceil().max(1.0) as i64;
+/// The page-local positions `k * spacing` (`k >= 1`; any `k` on an
+/// infinite page, written on before its corner too) from `from` to `to` and
+/// before `end`, the end of the page.
+fn rule_steps(spacing: f32, from: f32, to: f32, end: f32, canvas: bool) -> impl Iterator<Item = f32> {
+    let first = (from / spacing).ceil();
+    let first = if canvas { first } else { first.max(1.0) } as i64;
     (first..).map(move |k| k as f32 * spacing).take_while(move |v| *v <= to && *v < end)
 }
 
@@ -906,12 +908,15 @@ pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
 
     for page in view.visible_pages() {
         let rect = view.page_screen_rect(page);
-        let shown = rect.intersect(view.rect);
+        // An infinite page goes left of and above its corner too.
+        let b = l.page_box();
+        let paper = Rect::from_min_max(rect.min + b.min.to_vec2() * s, rect.min + b.max.to_vec2() * s);
+        let shown = paper.intersect(view.rect);
         if doc.ruled(page) && shown.is_positive() {
             // The part of the page in view, page-local.
             let (lo, hi) = ((shown.min - rect.min) / s, (shown.max - rect.min) / s);
-            let ys = || rule_steps(spacing, lo.y, hi.y, l.page_h);
-            let xs = || rule_steps(spacing, lo.x, hi.x, l.page_w);
+            let ys = || rule_steps(spacing, lo.y, hi.y, l.page_h, l.canvas);
+            let xs = || rule_steps(spacing, lo.x, hi.x, l.page_w, l.canvas);
             match style.kind {
                 PageKind::Dotted if spacing * s >= MIN_DOT_GAP => {
                     let (r, dot) = ((model::DOT_RADIUS * s).clamp(0.9, 2.2), color::page_dot());

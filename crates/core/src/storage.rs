@@ -128,13 +128,13 @@ fn shown_pages(doc: &Document) -> u32 {
 }
 
 /// Page 1; of an infinite page, as far as it is written on
-/// (`Document::canvas_area`).
+/// (`Document::canvas_area`), from that area's corner.
 fn make_preview(doc: &Document) -> Preview {
-    let (page_w, page_h) = if doc.is_canvas() {
+    let (page_w, page_h, [dx, dy]) = if doc.is_canvas() {
         let a = doc.canvas_area();
-        (a.width(), a.height())
+        (a.width(), a.height(), [-a.left(), -a.top()])
     } else {
-        (doc.page_width, doc.page_height)
+        (doc.page_width, doc.page_height, [0.0, 0.0])
     };
     let strokes: Vec<&Stroke> = doc.strokes.iter().filter(|s| s.page == 0).collect();
     let total: usize = strokes.iter().map(|s| s.points.len()).sum();
@@ -148,7 +148,7 @@ fn make_preview(doc: &Document) -> Preview {
             .iter()
             .enumerate()
             .filter(|(i, _)| i % step == 0 || *i + 1 == n)
-            .map(|(_, p)| [p.x, p.y])
+            .map(|(_, p)| [p.x + dx, p.y + dy])
             .collect();
         if !pts.is_empty() {
             out.push(PreviewStroke { color: s.color, width: s.width, pts });
@@ -161,8 +161,8 @@ fn make_preview(doc: &Document) -> Preview {
             let chars = line.chars().count();
             if chars > 0 {
                 bars.push([
-                    t.x,
-                    t.y + i as f32 * t.line_h + t.line_h * 0.3,
+                    t.x + dx,
+                    t.y + dy + i as f32 * t.line_h + t.line_h * 0.3,
                     (chars as f32 * t.size * 0.5).min(t.width),
                     t.size * 0.5,
                 ]);

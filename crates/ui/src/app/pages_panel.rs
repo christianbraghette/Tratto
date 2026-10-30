@@ -94,8 +94,10 @@ impl InkApp {
     pub(super) fn show_page(&mut self, index: u32) {
         match self.pdf_slots().and_then(|s| s.get(index as usize).copied()) {
             Some(slot) => {
-                self.scroll_to = Some((slot.top() - MARGIN).max(0.0));
-                self.scroll_to_x = Some((slot.left() - MARGIN).max(0.0));
+                // The place is on the page; the scroll from where it is shown.
+                let at = slot.min + self.layout().page_origin(0).to_vec2();
+                self.scroll_to = Some((at.y - MARGIN).max(0.0));
+                self.scroll_to_x = Some((at.x - MARGIN).max(0.0));
             }
             None => self.scroll_to = Some(self.layout().page_top(index) - MARGIN),
         }
@@ -453,7 +455,7 @@ impl InkApp {
         };
         // There, the one whose rows the middle of the view is in.
         let current = match self.doc.pdf.as_ref().filter(|_| slots.is_some()) {
-            Some(pdf) => pdf.canvas_row(self.shown_content.center().y + pdf.gap * 0.5).unwrap_or(0) as u32,
+            Some(pdf) => pdf.canvas_row(self.view_center().y + pdf.gap * 0.5).unwrap_or(0) as u32,
             None => self.current_page,
         };
         let blue = color::accent();

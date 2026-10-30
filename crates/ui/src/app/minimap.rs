@@ -234,9 +234,13 @@ impl InkApp {
         self.minimap.cache.begin_frame(ppp);
         let (from, to) = (map.top, map.top + map.inner.height() / map.m);
         for page in layout.pages_overlapping(from, to) {
-            let size = if layout.canvas { layout.extent } else { vec2(layout.page_w, layout.page_h) };
             let origin = map.to_mini(layout.page_origin(page));
-            let rect = Rect::from_min_size(origin, size * map.m);
+            // An infinite page: as far as it is shown, from the corner of content space.
+            let rect = if layout.canvas {
+                Rect::from_min_size(map.to_mini(pos2(0.0, 0.0)), layout.extent * map.m)
+            } else {
+                Rect::from_min_size(origin, vec2(layout.page_w, layout.page_h) * map.m)
+            };
             if !rect.intersects(painter.clip_rect()) {
                 continue;
             }

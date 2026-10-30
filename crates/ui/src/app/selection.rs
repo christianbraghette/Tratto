@@ -124,7 +124,7 @@ impl InkApp {
         let dst_o = layout.page_origin(dst).to_vec2();
 
         // Delta expressed in the destination page's space, kept on it.
-        let local = super::clipboard::keep_on_page(sel.bounds, d + src_o - dst_o, layout.page_w, layout.page_h);
+        let local = super::clipboard::keep_on_page(sel.bounds, d + src_o - dst_o, layout.page_box());
 
         sel.bounds = sel.bounds.translate(local);
         sel.page = dst;
