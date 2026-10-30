@@ -51,7 +51,8 @@ jobs:
           - os: ubuntu-22.04
             platform: linux
             target: x86_64-unknown-linux-gnu
-          - os: macos-14
+          # macos-14 is retired on 2026-11-02 (actions/runner-images#13518).
+          - os: macos-15
             platform: macos
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
@@ -62,7 +63,7 @@ jobs:
       WINDOWS_SIGNING: ${{ matrix.platform == 'windows' && vars.ARTIFACT_SIGNING_ACCOUNT != '' }}
       MACOS_SIGNING: ${{ matrix.platform == 'macos' && secrets.APPLE_SIGNING_IDENTITY != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A pre-release tag (v1.2.3-alpha0, v1.2.3-beta1) builds the version
       # 1.2.3 of Cargo.toml; the app is told the full one, for its updater.
@@ -147,7 +148,7 @@ jobs:
           files: ${{ github.workspace }}\dist\Tratto-x64.msi
           description: Tratto
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tratto-${{ matrix.target }}
           path: dist/*
@@ -157,7 +158,7 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
