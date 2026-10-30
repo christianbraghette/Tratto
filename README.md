@@ -285,6 +285,7 @@ note and goes back to the library screen.
 | `Ctrl+Plus` / `Ctrl+Minus` | Zoom in / out |
 | `Ctrl+0` | Actual size (100 %) |
 | `Ctrl` + mouse wheel, or pinch | Zoom around the pointer |
+| `Alt` or `Shift` + mouse wheel, or the wheel over the horizontal scroll bar | Scroll sideways |
 | `Page Up` / `Page Down` | Scroll by one screen (animated) |
 | `Home` / `End` | Go to the first / last page |
 | `F11` | Toggle fullscreen |

@@ -36,6 +36,9 @@ const NAV_BACK_MAX: usize = 50;
 const AUTOSCROLL_EDGE: f32 = 48.0;
 /// ...up to this fast, at the edge and past it (points per second).
 const AUTOSCROLL_SPEED: f32 = 1400.0;
+/// A scroll bar's thumb held against an end of an infinite page's bar
+/// scrolls on at this share of `AUTOSCROLL_SPEED`, faster past the end.
+const BAR_PUSH_MIN: f32 = 0.15;
 /// One mouse wheel notch (points on screen): Windows' three lines.
 const WHEEL_NOTCH_PT: f32 = 100.0;
 
@@ -189,13 +192,14 @@ impl InkApp {
             y = layout.page_top(page) + placed.top() + share * placed.height() - MARGIN;
         }
         if layout.canvas {
-            self.scroll_to_x = Some((layout.page_origin(page).x + placed.left() - MARGIN).max(0.0));
+            self.scroll_to_x = Some(layout.page_origin(page).x + placed.left() - MARGIN);
         }
         if self.nav_back.len() >= NAV_BACK_MAX {
             self.nav_back.remove(0);
         }
         self.nav_back.push(self.kinetic.target().unwrap_or(self.scroll));
-        self.scroll_to = Some(y.max(0.0));
+        // Clamped where it is eased to (an infinite page grows to it).
+        self.scroll_to = Some(y);
     }
 
     /// Back to where the view was before the last link followed.
@@ -262,8 +266,10 @@ impl InkApp {
     /// Mouse wheel and touchpad scrolling over the canvas. Wheel notches
     /// glide and accelerate; touchpad swipes come already followed,
     /// accelerated and gliding on, as points (see `input::touchpad`).
-    /// Ctrl / Cmd + wheel is zoom and is handled elsewhere.
-    fn wheel_input(&mut self, ui: &egui::Ui, canvas: Rect, scale: f32, now: f64) {
+    /// Ctrl / Cmd + wheel is zoom and is handled elsewhere. With Shift or
+    /// Alt, or over the horizontal scroll bar (`sideways`), the wheel
+    /// scrolls across.
+    fn wheel_input(&mut self, ui: &egui::Ui, canvas: Rect, scale: f32, now: f64, sideways: bool) {
         let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
         let wheel: Vec<_> = ui.input(|i| {
             i.events
@@ -287,7 +293,7 @@ impl InkApp {
                 MouseWheelUnit::Line => delta * line,
                 MouseWheelUnit::Page => delta * canvas.height(),
             };
-            if m.shift {
+            if m.shift || m.alt || sideways {
                 d = vec2(d.x + d.y, 0.0);
             }
             // Positive deltas move the content down/right, i.e. scroll up/left.
@@ -308,29 +314,43 @@ impl InkApp {
         }
     }
 
+    /// The pages of the open note; an infinite page as far as it is written
+    /// on and the view goes, every way, growing and shrinking with both (see
+    /// `Layout::grown`). Content space starts at its corner: the view moves
+    /// with it.
+    fn grow_canvas(&mut self, full: Rect) -> Layout {
+        let mut layout = Layout::of(&self.doc);
+        if !layout.canvas {
+            self.canvas_area = None;
+            return layout;
+        }
+        let shown = full.size() / View::scale_for(self.zoom(), full, &layout);
+        let before = self.canvas_area;
+        let corner = before.map_or(Vec2::ZERO, |a| a.min.to_vec2());
+        let seen = Rect::from_min_size((corner + self.scroll).to_pos2(), shown);
+        layout = layout.grown(self.doc.canvas_used(), seen);
+        if let Some(before) = before {
+            if self.busy() {
+                // Not under a pen, eraser or drag: only larger, from where it starts.
+                layout = layout.with_area(Rect::from_min_max(before.min, before.max.max(layout.area().max)));
+            } else if self.vbar_grab.is_some() || self.hbar_grab.is_some() {
+                // A scroll bar held: only larger, so its thumb stays under
+                // the pointer; it shrinks back once let go.
+                layout = layout.with_area(before.union(layout.area()));
+            }
+        }
+        let moved = corner - layout.origin;
+        if moved != Vec2::ZERO {
+            self.shift_view(moved);
+        }
+        self.canvas_area = Some(layout.area());
+        layout
+    }
+
     pub(super) fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         let full = ui.max_rect();
-        let mut layout = Layout::of(&self.doc);
-        // An infinite page goes as far as it is written on, every way, and
-        // grows and shrinks as it is (see `Layout::grown`).
-        if layout.canvas {
-            let shown = full.size() / View::scale_for(self.zoom(), full, &layout);
-            let before = self.canvas_area;
-            let corner = before.map_or(Vec2::ZERO, |a| a.min.to_vec2());
-            let seen = Rect::from_min_size((corner + self.scroll).to_pos2(), shown);
-            layout = layout.grown(self.doc.canvas_used(), seen);
-            // Not under a pen, eraser or drag: only larger, from where it starts.
-            if let Some(before) = before.filter(|_| self.busy()) {
-                layout = layout.with_area(Rect::from_min_max(before.min, before.max.max(layout.area().max)));
-            }
-            let moved = corner - layout.origin;
-            if moved != Vec2::ZERO {
-                self.shift_view(moved);
-            }
-            self.canvas_area = Some(layout.area());
-        } else {
-            self.canvas_area = None;
-        }
+        let mut layout = self.grow_canvas(full);
+        let grown_at = self.scroll;
         ui.painter().rect_filled(full, 0.0, crate::theme::color::desk());
 
         // ---- geometry and zoom
@@ -393,7 +413,9 @@ impl InkApp {
 
         // ---- scrolling: wheel / touchpad / keys, with momentum
         let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(1.0 / 30.0)));
-        let max = View::max_scroll(canvas, scale, &layout);
+        let mut max = View::max_scroll(canvas, scale, &layout);
+        // Where the scroll may go: past the edges of an infinite page too.
+        let bounds = View::scroll_bounds(canvas, scale, &layout);
         // An item being dragged may scroll the view (the wheel, the edges):
         // it stays under the pointer.
         let dragging = self.dragging_item();
@@ -401,9 +423,12 @@ impl InkApp {
             // Never move the page under a stroke being drawn.
             self.kinetic.stop();
         }
+        let vbar_rect = Rect::from_min_max(pos2(canvas.right(), full.top()), pos2(full.right(), canvas.bottom()));
+        let hbar_rect = Rect::from_min_max(pos2(full.left(), canvas.bottom()), pos2(canvas.right(), full.bottom()));
         // While dragging, wherever the pointer is (often out of the window).
         if idle && ui.rect_contains_pointer(full) || dragging {
-            self.wheel_input(ui, canvas, scale, now);
+            let sideways = hbar && ui.rect_contains_pointer(hbar_rect);
+            self.wheel_input(ui, canvas, scale, now, sideways);
         }
         // Content height shown below the top pad.
         let visible = (canvas.height() - TOP_PAD_PX).max(1.0) / scale;
@@ -450,13 +475,19 @@ impl InkApp {
                     self.ease_scroll(base - vec2(0.0, page_len));
                 }
             }
-            // An infinite page starts at its left too.
-            let left = if layout.canvas { 0.0 } else { base.x };
+            // An infinite page: the top left of what is written on it, and
+            // its bottom (it reaches further only while the view is there).
+            let (first, last) = if layout.canvas {
+                let w = self.doc.canvas_used().unwrap_or(Rect::ZERO).translate(-layout.origin);
+                (w.min.to_vec2(), vec2(w.left(), (w.bottom() - visible).max(w.top())))
+            } else {
+                (vec2(base.x, 0.0), vec2(base.x, max.y))
+            };
             if home {
-                self.ease_scroll(vec2(left, 0.0));
+                self.ease_scroll(first);
             }
             if end {
-                self.ease_scroll(vec2(left, max.y));
+                self.ease_scroll(last);
             }
         }
         if let Some(y) = self.scroll_to.take() {
@@ -505,11 +536,11 @@ impl InkApp {
             let mut y = base.y;
             for _ in 0..turn.unsigned_abs() {
                 y = if turn > 0 { layout.next_stop(y, visible) } else { layout.prev_stop(y, visible) };
-                y = y.clamp(0.0, max.y);
+                y = y.clamp(bounds.min.y, bounds.max.y);
             }
             self.ease_scroll(vec2(base.x, y));
         }
-        self.kinetic.step(&mut self.scroll, dt, max, scale);
+        self.kinetic.step(&mut self.scroll, dt, bounds, scale);
         // Dragged near (or past) an edge of the canvas: the view scrolls that
         // way. Out of the window egui loses the pointer: where it was last.
         self.drag_pointer = if dragging { ui.input(|i| i.pointer.latest_pos()).or(self.drag_pointer) } else { None };
@@ -520,7 +551,7 @@ impl InkApp {
                 ui.ctx().request_repaint();
             }
         }
-        self.scroll = vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
+        self.scroll = self.scroll.clamp(bounds.min.to_vec2(), bounds.max.to_vec2());
 
         // A finger held still opens the context menu (further down).
         let held_at = self.touch_hold_input(ui.ctx(), &canvas_resp, now);
@@ -541,7 +572,7 @@ impl InkApp {
             if canvas_resp.dragged() {
                 let before = self.scroll;
                 self.scroll -= canvas_resp.drag_delta() / scale;
-                self.scroll = vec2(self.scroll.x.clamp(0.0, max.x), self.scroll.y.clamp(0.0, max.y));
+                self.scroll = self.scroll.clamp(bounds.min.to_vec2(), bounds.max.to_vec2());
                 self.kinetic.drag(self.scroll - before, now);
                 // On Windows "grabbing" has no hand cursor and shows the
                 // four-arrow move cross instead: keep the arrow there.
@@ -557,9 +588,14 @@ impl InkApp {
         }
         // Hovering the grey area keeps the normal arrow.
 
+        // Scrolled past an edge of an infinite page: it grows there now, so
+        // the scroll bars and everything below see it.
+        if layout.canvas && self.scroll != grown_at {
+            layout = self.grow_canvas(full);
+            max = View::max_scroll(canvas, scale, &layout);
+        }
+
         // ---- scrollbars (interaction first, so the view below is final)
-        let vbar_rect = Rect::from_min_max(pos2(canvas.right(), full.top()), pos2(full.right(), canvas.bottom()));
-        let hbar_rect = Rect::from_min_max(pos2(full.left(), canvas.bottom()), pos2(canvas.right(), full.bottom()));
         let vstate = scrollbar::update(
             ui,
             Id::unique("vbar"),
@@ -584,6 +620,15 @@ impl InkApp {
                 &mut self.hbar_grab,
             )
         });
+        // A thumb held against an end of an infinite page's bar: the view
+        // goes on that way, and the page grows to follow it.
+        let push = vec2(bar_push_speed(hstate.as_ref().and_then(|s| s.pushed)), bar_push_speed(vstate.pushed));
+        if layout.canvas && push != Vec2::ZERO {
+            self.scroll += push * dt / scale;
+            layout = self.grow_canvas(full);
+            max = View::max_scroll(canvas, scale, &layout);
+            ui.ctx().request_repaint();
+        }
 
         // The minimap beside the vertical bar, which may scroll too.
         self.minimap(ui.ctx(), canvas, vbar_rect, &vstate, &layout, scale, max);
@@ -989,9 +1034,28 @@ fn autoscroll_velocity(canvas: Rect, pointer: Pos2) -> Vec2 {
     vec2(axis(pointer.x, canvas.left(), canvas.right()), axis(pointer.y, canvas.top(), canvas.bottom()))
 }
 
+/// The view's speed (points per second, along the bar) while a scroll bar's
+/// thumb is held against an end of its track (`BarState::pushed`): slow at
+/// the end, faster as the pointer goes on past it (see `AUTOSCROLL_EDGE`).
+fn bar_push_speed(pushed: Option<(bool, f32)>) -> f32 {
+    let Some((forward, past)) = pushed else { return 0.0 };
+    let depth = (past / AUTOSCROLL_EDGE).clamp(0.0, 1.0).powi(2);
+    let speed = AUTOSCROLL_SPEED * (BAR_PUSH_MIN + (1.0 - BAR_PUSH_MIN) * depth);
+    if forward { speed } else { -speed }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_thumb_pushed_against_an_end_scrolls_that_way() {
+        assert_eq!(bar_push_speed(None), 0.0);
+        let at_end = bar_push_speed(Some((true, 0.0)));
+        assert!(at_end > 0.0, "held at the end: it goes on");
+        assert!(bar_push_speed(Some((true, AUTOSCROLL_EDGE))) > at_end, "faster further past");
+        assert_eq!(bar_push_speed(Some((false, 10.0))), -bar_push_speed(Some((true, 10.0))));
+    }
 
     #[test]
     fn dragging_near_an_edge_scrolls_that_way() {

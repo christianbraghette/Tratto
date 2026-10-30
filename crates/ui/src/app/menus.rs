@@ -1429,6 +1429,7 @@ impl InkApp {
                             (or(key(c, Key::Plus), key(c, Key::Minus)), "Zoom in / out"),
                             (key(c, Key::Num0), "Actual size"),
                             ("Ctrl+Wheel / Pinch".to_owned(), "Zoom at the pointer"),
+                            ("Alt+Wheel / Shift+Wheel".to_owned(), "Scroll sideways"),
                             ("PgUp / PgDn".to_owned(), "Scroll by a screen"),
                             ("Home / End".to_owned(), "First / last page"),
                             (key(none, Key::F11), "Full screen"),

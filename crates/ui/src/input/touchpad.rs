@@ -17,7 +17,7 @@
 //! Mouse wheel notches, zoom (Ctrl / Cmd + wheel) and everything without
 //! smooth scrolling pass through untouched.
 
-use eframe::egui::{Event, Modifiers, MouseWheelSource, MouseWheelUnit, RawInput, TouchPhase, Vec2};
+use eframe::egui::{Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, Rect, TouchPhase, Vec2};
 
 use crate::kinetic::Kinetic;
 
@@ -27,7 +27,7 @@ pub const GAIN: f32 = 0.6;
 /// Where the swipe is followed (points): any place far enough from the
 /// edges `Kinetic` stops at, close enough to 0 to keep `f32` precise.
 const ORIGIN: Vec2 = Vec2::splat(10_000.0);
-const SPACE: Vec2 = Vec2::splat(20_000.0);
+const SPACE: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(20_000.0, 20_000.0));
 
 #[derive(Default)]
 pub struct Touchpad {

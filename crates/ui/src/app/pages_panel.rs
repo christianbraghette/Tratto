@@ -96,8 +96,9 @@ impl InkApp {
             Some(slot) => {
                 // The place is on the page; the scroll from where it is shown.
                 let at = slot.min + self.layout().page_origin(0).to_vec2();
-                self.scroll_to = Some((at.y - MARGIN).max(0.0));
-                self.scroll_to_x = Some((at.x - MARGIN).max(0.0));
+                // On an infinite page: it grows to the room above and left.
+                self.scroll_to = Some(at.y - MARGIN);
+                self.scroll_to_x = Some(at.x - MARGIN);
             }
             None => self.scroll_to = Some(self.layout().page_top(index) - MARGIN),
         }

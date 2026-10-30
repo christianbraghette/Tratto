@@ -28,7 +28,7 @@
 
 use std::collections::VecDeque;
 
-use eframe::egui::{Vec2, vec2};
+use eframe::egui::{Rect, Vec2};
 
 /// Friction of wheel glides (1/s): ~90 % of the distance in 0.25 s.
 const WHEEL_FRICTION: f32 = 9.0;
@@ -209,9 +209,10 @@ impl Kinetic {
         self.target
     }
 
-    /// Advances by `dt` seconds. Moves `scroll` and keeps it within `0..=max`.
-    pub fn step(&mut self, scroll: &mut Vec2, dt: f32, max: Vec2, scale: f32) {
-        let clamp = |v: Vec2| vec2(v.x.clamp(0.0, max.x), v.y.clamp(0.0, max.y));
+    /// Advances by `dt` seconds. Moves `scroll` and keeps it within `bounds`
+    /// (see `View::scroll_bounds`).
+    pub fn step(&mut self, scroll: &mut Vec2, dt: f32, bounds: Rect, scale: f32) {
+        let clamp = |v: Vec2| v.clamp(bounds.min.to_vec2(), bounds.max.to_vec2());
         if self.pending != Vec2::ZERO {
             let k = 1.0 - (-SWIPE_RATE * dt).exp();
             let moved = if self.pending.length() * scale < 0.5 { self.pending } else { self.pending * k };
@@ -274,7 +275,9 @@ fn sample_velocity(samples: &VecDeque<(f64, Vec2)>, end: f64) -> Option<Vec2> {
 mod tests {
     use super::*;
 
-    const MAX: Vec2 = Vec2::new(1e6, 1e6);
+    use eframe::egui::{Pos2, vec2};
+
+    const MAX: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(1e6, 1e6));
 
     fn run(k: &mut Kinetic, scroll: &mut Vec2) {
         for _ in 0..600 {
@@ -342,7 +345,7 @@ mod tests {
         }
         k.release(5.0 / 60.0 + 0.005, 1.0, 1.0);
         assert!(k.is_active());
-        let max = vec2(0.0, 300.0);
+        let max = Rect::from_min_max(Pos2::ZERO, Pos2::new(0.0, 300.0));
         for _ in 0..600 {
             k.step(&mut s, 1.0 / 120.0, max, 1.0);
         }

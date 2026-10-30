@@ -22,6 +22,9 @@ pub struct BarState {
     pub active: bool,
     pub hovered: bool,
     pub enabled: bool,
+    /// The thumb dragged against an end of the track: towards the end
+    /// (`true`) or the start, and how far past it the pointer is (points).
+    pub pushed: Option<(bool, f32)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -48,7 +51,7 @@ pub fn update(
         track_start + INSET + frac * travel
     };
 
-    let mut active = false;
+    let (mut active, mut pushed) = (false, None);
     if enabled
         && resp.dragged()
         && let Some(ptr) = resp.interact_pointer_pos()
@@ -63,8 +66,13 @@ pub fn update(
             });
         }
         let g = grab.unwrap_or(thumb_len * 0.5);
-        let start = (along - g - track_start - INSET).clamp(0.0, travel);
-        *scroll = start / travel * max_scroll;
+        let wanted = along - g - track_start - INSET;
+        if wanted <= 0.0 {
+            pushed = Some((false, -wanted));
+        } else if wanted >= travel {
+            pushed = Some((true, wanted - travel));
+        }
+        *scroll = wanted.clamp(0.0, travel) / travel * max_scroll;
         active = true;
     }
     if !resp.dragged() {
@@ -77,7 +85,7 @@ pub fn update(
     } else {
         Rect::from_min_size(pos2(ts, track.top() + INSET), vec2(thumb_len, track.height() - 2.0 * INSET))
     };
-    BarState { thumb, active, hovered: resp.hovered(), enabled }
+    BarState { thumb, active, hovered: resp.hovered(), enabled, pushed }
 }
 
 pub fn paint(painter: &Painter, track: Rect, vertical: bool, s: &BarState, label: Option<&str>) {

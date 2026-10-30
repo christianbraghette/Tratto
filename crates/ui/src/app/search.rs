@@ -188,9 +188,9 @@ impl InkApp {
         if always || aside || rect.top() < shown.top() || rect.bottom() > shown.bottom() {
             // A third of the way down the view (and across, on an infinite page).
             let y = rect.top() - shown.height() / 3.0;
-            self.scroll_to = Some(y.max(0.0));
+            self.scroll_to = Some(y);
             if layout.canvas {
-                self.scroll_to_x = Some((rect.left() - shown.width() / 3.0).max(0.0));
+                self.scroll_to_x = Some(rect.left() - shown.width() / 3.0);
             }
         }
     }

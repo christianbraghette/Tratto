@@ -19,9 +19,11 @@
 //!
 //! An infinite page is laid out like any page, but it is very large
 //! (`model::CANVAS_SIZE`), without the margin around it, and written on
-//! left of and above its corner too (`Layout::page_box`): the view goes only
-//! as far as it is written on, with room around it (`Layout::grown`), so it
-//! grows every way as it is written on and shrinks as it is erased. Content
+//! left of and above its corner too (`Layout::page_box`): the view goes as
+//! far as it is written on, and at least as far as the window shows
+//! (`Layout::grown`). It scrolls on past any edge (`View::scroll_bounds`),
+//! growing to wherever the view goes, and shrinks back to what is written
+//! as the view comes back or as it is erased. Content
 //! space starts at the corner of that area (`Layout::origin`), wherever it
 //! is on the page. Its fit zooms show the paper at 100 %.
 
@@ -46,9 +48,6 @@ pub const TOP_PAD_PX: f32 = 48.0;
 /// from further away.
 const ZOOM_RANGE: RangeInclusive<u32> = 25..=400;
 const CANVAS_ZOOM_RANGE: RangeInclusive<u32> = 10..=400;
-/// How far an infinite page goes past what is written on it, every way, in
-/// views.
-const GROW_ROOM: f32 = 0.5;
 
 /// Geometry of the stacked pages.
 #[derive(Clone, Copy, Debug)]
@@ -74,14 +73,14 @@ impl Layout {
     }
 
     /// An infinite page as far as the view goes: what is written on it
-    /// (`written`, page space) with half of what the view shows around it,
-    /// every way; at least what the view shows (`seen`, page space), so it
-    /// never shrinks under the view. Other pages as they are.
+    /// (`written`, page space) and what the view shows (`seen`, page space),
+    /// so it never shrinks under the view and grows wherever it scrolls.
+    /// Other pages as they are.
     pub fn grown(self, written: Option<Rect>, seen: Rect) -> Self {
         if !self.canvas {
             return self;
         }
-        let area = written.map_or(seen, |w| w.expand2(seen.size() * GROW_ROOM).union(seen));
+        let area = written.map_or(seen, |w| w.union(seen));
         self.with_area(area)
     }
 
@@ -280,6 +279,17 @@ impl View {
         )
     }
 
+    /// The scroll offsets the view may have (content units): `0..=max_scroll`;
+    /// on an infinite page, as far as its `page_box` every way. Past the
+    /// area shown the page grows to follow the view (see `Layout::grown`).
+    pub fn scroll_bounds(rect: Rect, scale: f32, layout: &Layout) -> Rect {
+        if layout.canvas {
+            let b = layout.page_box().translate(-layout.origin);
+            return Rect::from_min_max(b.min, (b.max - rect.size() / scale).max(b.min));
+        }
+        Rect::from_min_max(Pos2::ZERO, Self::max_scroll(rect, scale, layout).to_pos2())
+    }
+
     pub fn new(rect: Rect, scroll: Vec2, scale: f32, layout: Layout) -> Self {
         let pad_x = Self::pad_x_for(rect.width(), layout.content_w(), scale);
         Self { rect, scroll, scale, made: scale, pad_x, layout }
@@ -357,16 +367,25 @@ mod tests {
         let empty = page.grown(None, seen);
         assert_eq!((empty.extent, empty.origin), (seen.size(), Vec2::ZERO));
         assert_eq!(empty.page_origin(0), pos2(0.0, 0.0), "no margin");
-        // Written down to 2000: half a view more below; left of and above
-        // the corner too, from what is written there.
+        // Written down to 2000: that far, no further (no room around it).
         let written = page.grown(Some(Rect::from_min_max(pos2(100.0, 100.0), pos2(400.0, 2000.0))), seen);
-        assert_eq!(written.area(), Rect::from_min_max(pos2(-400.0, -200.0), pos2(1000.0, 2300.0)));
-        // Content space starts there: the page's corner is further in.
-        assert_eq!(written.page_origin(0), pos2(400.0, 200.0));
-        assert_eq!(written.page_at(pos2(0.0, 0.0)), Some(0), "all of it is paper");
-        // Written far left and up: it goes there.
+        assert_eq!(written.area(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 2000.0)));
+        // Written far left and up: it goes there, and content space starts
+        // there: the page's corner is further in.
         let left = page.grown(Some(Rect::from_min_max(pos2(-3000.0, -900.0), pos2(10.0, 10.0))), seen);
-        assert_eq!(left.area().min, pos2(-3500.0, -1200.0));
+        assert_eq!(left.area(), Rect::from_min_max(pos2(-3000.0, -900.0), pos2(1000.0, 600.0)));
+        assert_eq!(left.page_origin(0), pos2(3000.0, 900.0));
+        assert_eq!(left.page_at(pos2(0.0, 0.0)), Some(0), "all of it is paper");
+        // The view scrolls past every edge of it, up to the page's box.
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), seen.size());
+        let bounds = View::scroll_bounds(rect, 1.0, &left);
+        assert_eq!(bounds.min, pos2(-97_000.0, -99_100.0));
+        assert_eq!(bounds.max, pos2(103_000.0 - 1000.0, 100_900.0 - 600.0));
+        // Scrolled up and left of it: it grows there.
+        let up = Rect::from_min_size(pos2(-5000.0, -2000.0), seen.size());
+        assert_eq!(left.grown(Some(left.area()), up).area().min, pos2(-5000.0, -2000.0));
+        // Other pages scroll from their top.
+        assert_eq!(View::scroll_bounds(rect, 1.0, &layout()).min, Pos2::ZERO);
         // Erased: back to what the view shows, never less.
         let away = Rect::from_min_size(pos2(-3000.0, 0.0), seen.size());
         assert_eq!(page.grown(None, away).area(), away);
