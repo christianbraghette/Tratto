@@ -368,6 +368,16 @@ pub struct InkApp {
     /// An infinite page just opened (or made): its next frame shows what is
     /// on it across the middle of the view, if it fits (see `grow_canvas`).
     canvas_centre: bool,
+    /// Escape pressed this frame while something that closes itself on it
+    /// was open: a menu or dropdown (a popup), the context menu, a library
+    /// dialog, or a text field or text box being typed in. Escape is then
+    /// theirs alone. Taken at the start of the frame, before they close.
+    ///
+    /// Else one Escape does one thing, the first of: close the window on top
+    /// (`escape_closes_window`), drop the PDF text selection, drop the
+    /// selection, close the sidebar, end the presentation. Each takes it
+    /// (`consume_key`) from those after it.
+    escape_for_overlay: bool,
     /// Outline entries shown open (their children visible), by index.
     outline_open: HashSet<usize>,
     /// A note read (or a PDF imported) in the background; a loading screen
@@ -589,6 +599,7 @@ impl InkApp {
             gap_drag: None,
             canvas_area: None,
             canvas_centre: false,
+            escape_for_overlay: false,
             outline_open: HashSet::new(),
             loading: None,
             egui_ctx: cc.egui_ctx.clone(),
@@ -1123,6 +1134,11 @@ fn to_page_point(view: &View, page: u32, pos: Pos2, pressure: f32) -> Point {
 impl eframe::App for InkApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        self.escape_for_overlay = ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            && (egui::Popup::is_any_open(ctx)
+                || ctx.egui_wants_keyboard_input()
+                || self.context_menu.is_some()
+                || self.lib_ui.dialog.is_some());
         // Windows: the window shown once a frame at its maximized size is on
         // screen. The first one may still be at the size it was created with
         // (the drawing surface then starts over, blank, at the new size), and

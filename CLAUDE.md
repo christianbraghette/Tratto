@@ -101,6 +101,10 @@ and [crates/ui/src/app/mod.rs](crates/ui/src/app/mod.rs) first for the map.
 - **`.ink` compatibility**: bincode is positional, so *any* change to `Document`, `NoteMeta`
   or journal `Delta` (even adding a field) changes the format. Bump `FORMAT_VERSION` in
   storage.rs (currently 9), keep the readers for older versions (6, 7, 8) and add a test.
+- **Escape**: one press does one thing. Anything that closes itself on Escape without consuming
+  it (egui popups, the context menu, library dialogs, focused text fields) owns it for the frame
+  (`InkApp::escape_for_overlay`); other handlers must check that flag and use `consume_key`, in
+  the priority order documented on the field.
 - **License header** on every new source file:
   ```rust
   // SPDX-FileCopyrightText: 2026 Christian Braghette

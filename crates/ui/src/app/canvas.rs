@@ -153,9 +153,11 @@ impl InkApp {
         if export && !self.reading() {
             self.open_export_dialog(ctx, false);
         }
-        // While the context menu is open, Escape belongs to it.
+        // While the context menu (or another menu, a dialog) is open, Escape
+        // belongs to it (see `escape_for_overlay`).
         if (self.selection.is_some() || self.picture.is_some())
             && self.context_menu.is_none()
+            && !self.escape_for_overlay
             && !ctx.egui_wants_keyboard_input()
             && !self.reading()
         {

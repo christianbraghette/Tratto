@@ -1064,9 +1064,16 @@ impl InkApp {
                     out.push(Command::FindNext(true));
                 }
                 // Presenting: F5 or Escape ends it, L turns the laser on or off.
+                // Escape last: what is selected is dropped first (see
+                // `escape_for_overlay`).
                 let presenting = self.presenting.is_some();
+                let selected = self.text_sel.is_some() || self.selection.is_some() || self.picture.is_some();
                 if i.consume_key(Modifiers::NONE, Key::F5)
-                    || presenting && self.context_menu.is_none() && i.consume_key(Modifiers::NONE, Key::Escape)
+                    || presenting
+                        && !selected
+                        && self.context_menu.is_none()
+                        && !self.escape_for_overlay
+                        && i.consume_key(Modifiers::NONE, Key::Escape)
                 {
                     out.push(Command::Present);
                 }
@@ -1094,6 +1101,7 @@ impl InkApp {
                     }
                     if self.text_sel.is_some()
                         && self.context_menu.is_none()
+                        && !self.escape_for_overlay
                         && i.consume_key(Modifiers::NONE, Key::Escape)
                     {
                         out.push(Command::Deselect);
@@ -1511,7 +1519,9 @@ impl InkApp {
         {
             self.top_window = Some(top.id);
         }
-        if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
+        // A field typed in, a menu, or the context menu (above every window)
+        // close first.
+        if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) || self.context_menu.is_some() {
             return;
         }
         // A library dialog closes itself.

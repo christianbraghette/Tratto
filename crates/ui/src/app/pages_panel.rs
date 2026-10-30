@@ -147,6 +147,7 @@ impl InkApp {
         // nothing else wants it: a window, a menu, a dialog, a field being
         // typed in, a selection (all take it before).
         let free = self.context_menu.is_none()
+            && !self.escape_for_overlay
             && self.lib_ui.dialog.is_none()
             && !ui.ctx().egui_wants_keyboard_input()
             && !egui::Popup::is_any_open(ui.ctx());
