@@ -474,6 +474,14 @@ impl PdfBackground {
         let row = ((y - CANVAS_PDF_INSET) / stride).floor();
         (row >= 0.0).then(|| (row as usize).min(self.pages.len().saturating_sub(1)))
     }
+
+    /// On an infinite page, the band of the height `y`: from the top of the
+    /// place of `pages[i]` to that of the next one, counted on past the last
+    /// one (a page's own and what is beside it). Above the first, none.
+    fn canvas_band(&self, y: f32) -> Option<usize> {
+        let row = ((y - CANVAS_PDF_INSET) / (self.slot_size().y + self.gap)).floor();
+        (row >= 0.0).then_some(row as usize)
+    }
 }
 
 /// A PDF as formats 6 to 8 saved it, before the room between its pages (see
@@ -745,46 +753,103 @@ impl Document {
         pdf.pages.iter().enumerate().map(|(i, p)| (*p, pdf.canvas_slot(i))).collect()
     }
 
-    /// On an infinite page with a PDF: a blank page before `pages[index]`
-    /// (past the last one, at the end). It and the pages below it move
-    /// down a place, with what is on or beside them.
-    pub fn insert_canvas_page(&mut self, index: usize) {
+    /// On an infinite page with a PDF: a page before `pages[index]` (past
+    /// the last one, at the end), on PDF page `pdf_page` (`None`: blank).
+    /// The pages below it move down a place, with what is on or beside them.
+    pub fn insert_canvas_page(&mut self, index: usize, pdf_page: Option<u32>) {
         let Some(pdf) = self.pdf.as_ref().filter(|_| self.is_canvas()) else { return };
         let index = index.min(pdf.pages.len());
         let (old, stride) = (pdf.clone(), pdf.slot_size().y + pdf.gap);
         self.move_items(|page, r| {
-            let below = old.canvas_row(r.center().y).is_some_and(|row| row >= index);
+            let below = old.canvas_band(r.center().y).is_some_and(|band| band >= index);
             (page, 1.0, vec2(0.0, if below { stride } else { 0.0 }))
         });
-        self.pdf.as_mut().expect("checked above").pages.insert(index, None);
+        self.pdf.as_mut().expect("checked above").pages.insert(index, pdf_page);
     }
 
-    /// The blank page `pages[index]` of an infinite page with a PDF can go:
-    /// nothing is on it or beside it.
-    pub fn can_remove_canvas_page(&self, index: usize) -> bool {
-        let Some(pdf) = self.pdf.as_ref().filter(|_| self.is_canvas()) else { return false };
-        let in_row = |r: Rect| pdf.canvas_row(r.center().y) == Some(index);
-        pdf.pages.get(index) == Some(&None)
-            && !self.strokes.iter().any(|s| in_row(s.rect()))
-            && !self.texts.iter().any(|t| in_row(t.rect()))
-            && !self.images.iter().any(|i| in_row(i.rect()))
-    }
-
-    /// The blank page `pages[index]` taken away (`can_remove_canvas_page`),
-    /// the pages below it moving up a place with what is on or beside them;
-    /// false, and nothing changes, if it cannot go.
-    pub fn remove_canvas_page(&mut self, index: usize) -> bool {
-        if !self.can_remove_canvas_page(index) {
+    /// On an infinite page with a PDF: page `pages[index]` deleted with what
+    /// is on it or beside it (its band, `canvas_band`), the pages below it
+    /// moving up a place with what is on or beside them: the infinite page
+    /// is that much shorter. The only page is only emptied. False if there
+    /// is no such page.
+    pub fn delete_canvas_page(&mut self, index: usize) -> bool {
+        let Some(pdf) = self.pdf.as_ref().filter(|pdf| self.is_canvas() && index < pdf.pages.len()) else {
             return false;
-        }
-        let pdf = self.pdf.as_ref().expect("can_remove_canvas_page checked it");
+        };
         let (old, stride) = (pdf.clone(), pdf.slot_size().y + pdf.gap);
-        self.move_items(|page, r| {
-            let below = old.canvas_row(r.center().y).is_some_and(|row| row > index);
-            (page, 1.0, vec2(0.0, if below { -stride } else { 0.0 }))
-        });
-        self.pdf.as_mut().expect("checked above").pages.remove(index);
+        let band = |r: Rect| old.canvas_band(r.center().y);
+        self.strokes.retain(|s| band(s.rect()) != Some(index));
+        self.texts.retain(|t| band(t.rect()) != Some(index));
+        self.images.retain(|i| band(i.rect()) != Some(index));
+        if old.pages.len() > 1 {
+            self.move_items(|page, r| {
+                let below = band(r).is_some_and(|b| b > index);
+                (page, 1.0, vec2(0.0, if below { -stride } else { 0.0 }))
+            });
+            self.pdf.as_mut().expect("checked above").pages.remove(index);
+        }
         true
+    }
+
+    /// On an infinite page with a PDF: page `pages[index]` as a note page of
+    /// its own, as large as its place, with what is on it or beside it (its
+    /// band; beside it is outside the page): to copy it or make a picture
+    /// of it.
+    pub fn canvas_page(&self, index: usize) -> Option<Document> {
+        let pdf = self.pdf.as_ref().filter(|pdf| self.is_canvas() && index < pdf.pages.len())?;
+        let slot = pdf.canvas_slot(index);
+        let on = |r: Rect| pdf.canvas_band(r.center().y) == Some(index);
+        let up = -slot.min.to_vec2();
+        let mut doc = Document {
+            page_width: slot.width(),
+            page_height: slot.height(),
+            page_count: 1,
+            strokes: Vec::new(),
+            texts: Vec::new(),
+            images: Vec::new(),
+            pdf: Some(PdfBackground { pages: vec![pdf.pages[index]], ..pdf.clone() }),
+            ..self.clone()
+        };
+        for s in self.strokes.iter().filter(|s| on(s.rect())) {
+            let mut s = s.clone();
+            s.translate(up.x, up.y);
+            doc.strokes.push(s);
+        }
+        let texts = self.texts.iter().filter(|t| on(t.rect()));
+        doc.texts.extend(texts.map(|t| TextBox { x: t.x + up.x, y: t.y + up.y, ..t.clone() }));
+        let images = self.images.iter().filter(|i| on(i.rect()));
+        doc.images.extend(images.map(|i| Image { x: i.x + up.x, y: i.y + up.y, ..i.clone() }));
+        Some(doc)
+    }
+
+    /// On an infinite page with a PDF: a page pasted before `pages[index]`
+    /// (`insert_canvas_page`), on PDF page `pdf_page`, with `strokes`,
+    /// `texts` and `images` (page space of that page, as `canvas_page`
+    /// makes them) on it, as new ones.
+    pub fn paste_canvas_page(
+        &mut self,
+        index: usize,
+        pdf_page: Option<u32>,
+        (strokes, texts, images): (&[Stroke], &[TextBox], &[Image]),
+    ) {
+        let Some(len) = self.pdf.as_ref().filter(|_| self.is_canvas()).map(|pdf| pdf.pages.len()) else { return };
+        let index = index.min(len);
+        self.insert_canvas_page(index, pdf_page);
+        let by = self.pdf.as_ref().expect("checked above").canvas_slot(index).min.to_vec2();
+        for s in strokes {
+            let mut s = s.clone();
+            (s.id, s.page) = (self.alloc_id(), 0);
+            s.translate(by.x, by.y);
+            self.strokes.push(s);
+        }
+        for t in texts {
+            let text = TextBox { id: self.alloc_id(), page: 0, x: t.x + by.x, y: t.y + by.y, ..t.clone() };
+            self.texts.push(text);
+        }
+        for i in images {
+            let image = Image { id: self.alloc_id(), page: 0, x: i.x + by.x, y: i.y + by.y, ..i.clone() };
+            self.images.push(image);
+        }
     }
 
     /// A note on a PDF made one infinite page: its PDF's pages go one under
@@ -1199,10 +1264,11 @@ mod tests {
         let mut doc = Document::on_pdf(PdfFile::new(Vec::new()), vec![[600.0, 800.0], [600.0, 800.0], [800.0, 600.0]]);
         let mut s = line(2.0);
         s.translate(100.0, 200.0);
-        s.page = 1;
+        (s.id, s.page) = (doc.alloc_id(), 1);
         doc.strokes.push(s);
         let data = Arc::new(ImageData::new(1, 1, Vec::new()));
-        doc.images.push(Image { id: 2, page: 2, x: 50.0, y: 60.0, width: 40.0, height: 30.0, data });
+        let id = doc.alloc_id();
+        doc.images.push(Image { id, page: 2, x: 50.0, y: 60.0, width: 40.0, height: 30.0, data });
         doc
     }
 
@@ -1384,7 +1450,7 @@ mod tests {
         let stride = pdf.slot_size().y + pdf.gap;
         // The stroke is on the second PDF page, the picture on the third.
         let (stroke, picture) = (doc.strokes[0].points[0], doc.images[0].y);
-        doc.insert_canvas_page(1);
+        doc.insert_canvas_page(1, None);
         assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), None, Some(1), Some(2)]);
         assert_eq!(doc.strokes[0].points[0].y, stroke.y + stride, "moved down with its page");
         assert_eq!(doc.images[0].y, picture + stride);
@@ -1399,29 +1465,58 @@ mod tests {
         assert_eq!((pages.page_count, pages.pdf_page(1), pages.strokes[0].page), (4, None, 2));
 
         // Taken away again: all back where it was.
-        assert!(doc.can_remove_canvas_page(1));
-        assert!(!doc.can_remove_canvas_page(0), "a PDF page stays");
-        assert!(doc.remove_canvas_page(1));
+        assert!(doc.delete_canvas_page(1));
         assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), Some(1), Some(2)]);
         assert_eq!((doc.strokes[0].points[0], doc.images[0].y), (stroke, picture));
     }
 
     #[test]
-    fn a_blank_page_with_something_on_it_stays() {
+    fn deleting_a_page_of_an_infinite_page_deletes_its_band_and_shortens_it() {
         let mut doc = note_on_pdf();
         doc.pdf_to_canvas();
         // At the end: nothing moves.
         let before = doc.strokes[0].points[0];
-        doc.insert_canvas_page(99);
+        doc.insert_canvas_page(99, None);
         assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), Some(1), Some(2), None]);
         assert_eq!(doc.strokes[0].points[0], before);
-        // Written on, it stays.
-        let mut s = line(2.0);
-        let slot = doc.pdf.as_ref().unwrap().canvas_slot(3);
-        s.translate(slot.left() + 50.0, slot.top() + 50.0);
-        doc.strokes.push(s);
-        assert!(!doc.can_remove_canvas_page(3));
-        assert!(!doc.remove_canvas_page(3));
-        assert_eq!(doc.pdf.as_ref().unwrap().pages.len(), 4);
+        // Beside the second PDF page, in its band: goes with it.
+        let pdf = doc.pdf.clone().unwrap();
+        let mut beside = line(2.0);
+        beside.translate(pdf.canvas_slot(1).right() + 500.0, pdf.canvas_slot(1).center().y);
+        doc.strokes.push(beside);
+        let (picture, used) = (doc.images[0].y, doc.canvas_used().unwrap().bottom());
+        assert!(doc.delete_canvas_page(1));
+        assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), Some(2), None]);
+        assert!(doc.strokes.is_empty(), "the stroke on it and the one beside it");
+        let stride = pdf.slot_size().y + pdf.gap;
+        assert_eq!(doc.images[0].y, picture - stride, "the third page's picture moved up");
+        assert_eq!(doc.canvas_used().unwrap().bottom(), used - stride);
+        assert!(!doc.delete_canvas_page(9));
+        // The only page left is only emptied.
+        for _ in 0..2 {
+            assert!(doc.delete_canvas_page(0));
+        }
+        assert!(doc.delete_canvas_page(0));
+        assert_eq!(doc.pdf.as_ref().unwrap().pages, [None]);
+    }
+
+    #[test]
+    fn a_page_of_an_infinite_page_is_copied_and_pasted_with_what_is_on_it() {
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        let page = doc.canvas_page(1).unwrap();
+        assert_eq!((page.page_count, page.page_width, page.page_height), (1, 600.0 * PT_TO_PX, 800.0 * PT_TO_PX));
+        assert_eq!(page.pdf_page(0), Some(1));
+        assert_eq!(page.strokes.len(), 1);
+        assert_eq!(page.strokes[0].points[0].pos2(), pos2(100.0, 200.0), "where it is on its page");
+        assert!(doc.canvas_page(3).is_none());
+        // Pasted after the last page: a copy, with new ids, on its PDF page.
+        let ids: Vec<u64> = doc.strokes.iter().map(|s| s.id).collect();
+        doc.paste_canvas_page(3, Some(1), (&page.strokes, &page.texts, &page.images));
+        assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), Some(1), Some(2), Some(1)]);
+        let pasted = doc.strokes.last().unwrap();
+        assert!(!ids.contains(&pasted.id) && pasted.page == 0);
+        let (_, place) = doc.pdf_places(0)[3];
+        assert_eq!(pasted.points[0].pos2(), place.min + vec2(100.0, 200.0));
     }
 }

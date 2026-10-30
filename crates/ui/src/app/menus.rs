@@ -209,8 +209,8 @@ fn keycap(ui: &mut Ui, keys: &str) {
 }
 
 /// Copying, cutting and pasting whole pages, by `page`, and a picture of
-/// it (Page menu, context menu, pages panel). `enabled`: they can be (not
-/// on the pages of an infinite page); `paste`: pages were copied.
+/// it (Page menu, context menu, pages panel). `enabled`: they can be;
+/// `paste`: pages were copied.
 pub(super) fn page_clipboard_entries(
     ui: &mut Ui,
     page: u32,

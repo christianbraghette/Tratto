@@ -1041,6 +1041,52 @@ mod tests {
     }
 
     #[test]
+    fn the_paper_s_lines_stay_under_the_pdf_pages_of_an_infinite_page() {
+        if !pdfium_available() {
+            return;
+        }
+        // The "PDF": an A4 page with a thick black line at y 500, x 100..600.
+        let mut source = Document::default();
+        let id = source.alloc_id();
+        let line = (0..=50).map(|i| Point::new(100.0 + i as f32 * 10.0, 500.0, 1.0)).collect();
+        source.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 40.0, line));
+        let path = std::env::temp_dir().join("tratto_rules_source.pdf");
+        pdf_export::export_notes(&[PdfNote { doc: &source, title: "s".into() }], &path, &PdfOptions::default())
+            .unwrap();
+        let file = PdfFile::new(std::fs::read(&path).unwrap());
+        let sizes = page_sizes(&file).unwrap();
+
+        // On ruled paper, made an infinite page, exported as its sheets.
+        let mut note = Document::on_pdf(file, sizes);
+        note.page.kind = crate::model::PageKind::Ruled;
+        note.pdf_to_canvas();
+        let sheets = note.as_sheets();
+        let opts = PdfOptions::default();
+        pdf_export::export_notes(&[PdfNote { doc: &sheets, title: "n".into() }], &path, &opts).unwrap();
+        let exported = PdfFile::new(std::fs::read(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+
+        // Rendered 1:1: a rule line's height inside the PDF page is white,
+        // the same height beside it is the rule's colour.
+        let (w, h) = (sheets.page_width.round() as u32, sheets.page_height);
+        let (tx, rx) = mpsc::channel();
+        render(&exported, 0, w, None, tx, Arc::new(|| {}));
+        let (w, _, rgba) = rx.recv().unwrap().image.unwrap();
+        let px = |x: f32, y: f32| -> [u8; 3] {
+            rgba[(((y.round() as u32) * w + x.round() as u32) * 4) as usize..][..3].try_into().unwrap()
+        };
+        let (_, place) = sheets.pdf_places(0)[0];
+        let spacing = sheets.page.spacing;
+        // A rule inside the PDF page, away from its black line.
+        let rule = ((place.top() + 40.0) / spacing).ceil() * spacing;
+        assert!(rule < h && rule < place.bottom());
+        let inside = px(place.left() + 30.0, rule);
+        assert!(inside.iter().all(|&c| c > 250), "a rule over the PDF page: {inside:?}");
+        let outside = px(place.left() * 0.5, rule);
+        assert!(outside.iter().any(|&c| c < 250), "the rule beside it: {outside:?}");
+    }
+
+    #[test]
     fn tiles_match_the_whole_page() {
         if !pdfium_available() {
             return;

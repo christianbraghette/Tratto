@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui::{self, Pos2, Rect, Vec2, pos2, vec2};
 
 use tratto_core::history::Action;
-use tratto_core::model::{Image, Stroke, TextBox};
+use tratto_core::model::{Document, Image, Stroke, TextBox};
 
 use crate::markdown;
 use crate::toolbar::Tool;
@@ -368,22 +368,16 @@ impl InkApp {
 
     // ------------------------------------------------------------- pages
 
-    /// The pages `pages` copied, with what is on them.
-    fn pages_content(&self, pages: &[u32]) -> Vec<PageContent> {
-        let pdf_key = self.doc.pdf.as_ref().and_then(|p| p.file.as_ref()).map(|f| f.key);
-        let on = |page: u32| PageContent {
-            strokes: self.doc.strokes.iter().filter(|s| s.page == page).cloned().collect(),
-            texts: self.doc.texts.iter().filter(|t| t.page == page).cloned().collect(),
-            images: self.doc.images.iter().filter(|i| i.page == page).cloned().collect(),
-            pdf: pdf_key.zip(self.doc.pdf_page(page)),
-        };
-        pages.iter().map(|&p| on(p)).collect()
-    }
-
-    /// Copies page `page` with what is on it.
+    /// Copies page `page` with what is on it; of an infinite page with a
+    /// PDF, one of its pages with what is beside it (`Document::canvas_page`).
     pub(super) fn copy_page(&mut self, ctx: &egui::Context, page: u32) {
-        let pages = self.pages_content(&[page]);
-        let size = (self.doc.page_width, self.doc.page_height);
+        let doc = self.doc.canvas_page(page as usize);
+        let (doc, page_of) = match &doc {
+            Some(doc) => (doc, 0),
+            None => (&self.doc, page),
+        };
+        let pages = vec![page_content(doc, page_of)];
+        let size = (doc.page_width, doc.page_height);
         crate::snapshot::export(
             ctx,
             crate::snapshot::Snapshot::of_page(&pages[0], size),
@@ -408,27 +402,36 @@ impl InkApp {
         }
     }
 
-    /// Inserts `pages` so that the first gets `index`; one undo step.
+    /// Inserts `pages` so that the first gets `index`; one undo step. On an
+    /// infinite page with a PDF, among its pages (`Document::paste_canvas_page`).
     fn paste_pages(&mut self, pages: &[PageContent], index: u32) {
-        if self.doc.is_canvas() {
-            return self.toast("Pages cannot be pasted on an infinite page: copy what is on them instead");
-        }
-        self.before_page_change();
-        let index = index.min(self.doc.page_count);
         let pdf_key = self.doc.pdf.as_ref().and_then(|p| p.file.as_ref()).map(|f| f.key);
-        let mut actions = Vec::new();
-        let mut lost_pdf = false;
-        for (n, p) in pages.iter().enumerate() {
-            let page = index + n as u32;
-            // The PDF page under it only comes along into a note on that PDF.
-            let pdf_page = p.pdf.filter(|(key, _)| Some(*key) == pdf_key).map(|(_, pdf_page)| pdf_page);
-            lost_pdf |= p.pdf.is_some() && pdf_page.is_none();
-            actions.push(Action::InsertPage { index: page, pdf_page });
-            actions.extend(self.added(page, Vec2::ZERO, &p.strokes, &p.texts, &p.images).0);
+        // The PDF page under it only comes along into a note on that PDF.
+        let pdf_page = |p: &PageContent| p.pdf.filter(|(key, _)| Some(*key) == pdf_key).map(|(_, pdf_page)| pdf_page);
+        let lost_pdf = pages.iter().any(|p| p.pdf.is_some() && pdf_page(p).is_none());
+        if self.pdf_slots().is_some() {
+            self.change_canvas_pages(|doc| {
+                for (n, p) in pages.iter().enumerate() {
+                    doc.paste_canvas_page(index as usize + n, pdf_page(p), (&p.strokes, &p.texts, &p.images));
+                }
+                true
+            });
+            self.show_page(index);
+        } else if self.doc.is_canvas() {
+            return self.toast("Pages cannot be pasted on an infinite page: copy what is on them instead");
+        } else {
+            self.before_page_change();
+            let index = index.min(self.doc.page_count);
+            let mut actions = Vec::new();
+            for (n, p) in pages.iter().enumerate() {
+                let page = index + n as u32;
+                actions.push(Action::InsertPage { index: page, pdf_page: pdf_page(p) });
+                actions.extend(self.added(page, Vec2::ZERO, &p.strokes, &p.texts, &p.images).0);
+            }
+            self.history.exec(&mut self.doc, Action::Batch(actions));
+            let layout = self.layout();
+            self.scroll_to = Some(layout.page_stop(index));
         }
-        self.history.exec(&mut self.doc, Action::Batch(actions));
-        let layout = self.layout();
-        self.scroll_to = Some(layout.page_stop(index));
         if lost_pdf {
             self.toast("Pasted without the PDF page under it: it belongs to another PDF");
         }
@@ -507,6 +510,17 @@ impl InkApp {
     pub(super) fn publish_clipboard(&self, ctx: &egui::Context) {
         let note = self.clipboard.note().is_some();
         ctx.data_mut(|d| d.insert_temp(note_pastable_id(), note));
+    }
+}
+
+/// Page `page` of `doc` copied, with what is on it.
+fn page_content(doc: &Document, page: u32) -> PageContent {
+    let pdf_key = doc.pdf.as_ref().and_then(|p| p.file.as_ref()).map(|f| f.key);
+    PageContent {
+        strokes: doc.strokes.iter().filter(|s| s.page == page).cloned().collect(),
+        texts: doc.texts.iter().filter(|t| t.page == page).cloned().collect(),
+        images: doc.images.iter().filter(|i| i.page == page).cloned().collect(),
+        pdf: pdf_key.zip(doc.pdf_page(page)),
     }
 }
 

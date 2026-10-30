@@ -380,12 +380,14 @@ pub fn paint_rgba(kind: StrokeKind, rgba: [u8; 4]) -> [u8; 4] {
 // ------------------------------------------------------------------ cache
 
 /// One batch of the cache: the strokes of one layer of a page, or the
-/// selected strokes of a page while they are moved.
+/// selected strokes of a page while they are moved, or (`part`) those of
+/// one part of a page, shown in the same frame as its other parts.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct BatchKey {
     page: u32,
     layer: Layer,
     moved: bool,
+    part: Option<u32>,
 }
 
 /// Where a stroke's triangles are in its batch.
@@ -599,13 +601,13 @@ pub fn paint_strokes(
     let is_moved = |id: u64| moved.is_some_and(|m| m.ids.contains(&id));
     for page in view.visible_pages() {
         let in_page = strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer && !is_moved(s.id));
-        let batch = cache.batch(BatchKey { page, layer, moved: false }, in_page, made, aa);
+        let batch = cache.batch(BatchKey { page, layer, moved: false, part: None }, in_page, made, aa);
         stroke_gpu::paint_batch(painter, batch, view.page_origin_screen(page).to_vec2(), k, layer.blend());
     }
     if let Some(m) = moved {
         let selected =
             strokes.iter().filter(|s| s.page == m.page && Layer::of(s.kind) == layer && m.ids.contains(&s.id));
-        let batch = cache.batch(BatchKey { page: m.page, layer, moved: true }, selected, made, aa);
+        let batch = cache.batch(BatchKey { page: m.page, layer, moved: true, part: None }, selected, made, aa);
         let offset = view.page_origin_screen(m.page).to_vec2() + m.offset * view.scale;
         stroke_gpu::paint_batch(painter, batch, offset, k, layer.blend());
     }
@@ -629,7 +631,28 @@ pub fn paint_page_strokes(
     // Highlighters first, as on the page.
     for layer in [Layer::Highlight, Layer::Ink] {
         let in_page = strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer);
-        let batch = cache.batch(BatchKey { page, layer, moved: false }, in_page, made, aa);
+        let batch = cache.batch(BatchKey { page, layer, moved: false, part: None }, in_page, made, aa);
+        stroke_gpu::paint_batch(painter, batch, offset, scale / made, layer.blend());
+    }
+}
+
+/// Paints the strokes of `page` that touch `within` (page space), as
+/// `paint_page_strokes` does, in batches of their own (`part`): the parts
+/// of one page shown at once, as the pages view shows the pages of a PDF on
+/// an infinite page (a batch is drawn at one place a frame).
+#[allow(clippy::too_many_arguments)]
+pub fn paint_page_part_strokes(
+    painter: &Painter,
+    (offset, scale, made): (Vec2, f32, f32),
+    strokes: &[Stroke],
+    (page, within, part): (u32, Rect, u32),
+    cache: &mut StrokeCache,
+    aa: f32,
+) {
+    let touches = |s: &Stroke| s.rect().expand(s.width * 0.5).intersects(within);
+    for layer in [Layer::Highlight, Layer::Ink] {
+        let in_part = strokes.iter().filter(|s| s.page == page && Layer::of(s.kind) == layer && touches(s));
+        let batch = cache.batch(BatchKey { page, layer, moved: false, part: Some(part) }, in_part, made, aa);
         stroke_gpu::paint_batch(painter, batch, offset, scale / made, layer.blend());
     }
 }
@@ -1034,7 +1057,7 @@ mod tests {
 
     #[test]
     fn batches_follow_the_strokes() {
-        let key = BatchKey { page: 0, layer: Layer::Ink, moved: false };
+        let key = BatchKey { page: 0, layer: Layer::Ink, moved: false, part: None };
         let mut strokes: Vec<Stroke> = (0..5).map(|i| stroke(i, i as f32 * 40.0, StrokeKind::Pen)).collect();
         let mut cache = StrokeCache::default();
         let check = |strokes: &[Stroke], cache: &mut StrokeCache| {
@@ -1078,7 +1101,7 @@ mod tests {
 
     #[test]
     fn batches_are_made_again_at_another_zoom() {
-        let key = BatchKey { page: 0, layer: Layer::Ink, moved: false };
+        let key = BatchKey { page: 0, layer: Layer::Ink, moved: false, part: None };
         let strokes: Vec<Stroke> = (0..3).map(|i| stroke(i, i as f32 * 40.0, StrokeKind::Pen)).collect();
         let mut cache = StrokeCache::default();
         cache.begin_frame(1.0);

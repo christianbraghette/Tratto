@@ -59,7 +59,7 @@ impl InkApp {
     pub(super) fn insert_page(&mut self, index: u32) {
         if self.pdf_slots().is_some() {
             self.change_canvas_pages(|doc| {
-                doc.insert_canvas_page(index as usize);
+                doc.insert_canvas_page(index as usize, None);
                 true
             });
         } else if self.doc.is_canvas() {
@@ -72,11 +72,12 @@ impl InkApp {
     }
 
     /// Deletes a page with its content (undoable). On an infinite page with
-    /// a PDF, a blank one with nothing on it (see
-    /// `Document::remove_canvas_page`); on another infinite page, none.
+    /// a PDF, one of its pages with what is beside it, the infinite page
+    /// getting shorter (see `Document::delete_canvas_page`); on another
+    /// infinite page, none.
     pub(super) fn delete_page(&mut self, index: u32) {
         if self.pdf_slots().is_some() {
-            if !self.change_canvas_pages(|doc| doc.remove_canvas_page(index as usize)) {
+            if !self.change_canvas_pages(|doc| doc.delete_canvas_page(index as usize)) {
                 return;
             }
         } else if self.doc.is_canvas() {
@@ -90,7 +91,7 @@ impl InkApp {
 
     /// Scrolls to page `index`: on an infinite page with a PDF, to the
     /// place of that one of its pages.
-    fn show_page(&mut self, index: u32) {
+    pub(super) fn show_page(&mut self, index: u32) {
         match self.pdf_slots().and_then(|s| s.get(index as usize).copied()) {
             Some(slot) => {
                 self.scroll_to = Some((slot.top() - MARGIN).max(0.0));
@@ -102,7 +103,7 @@ impl InkApp {
 
     /// A change to the pages of an infinite page on a PDF (`change`: true if
     /// it made one), as one undo step: what is on it moves with them.
-    fn change_canvas_pages(&mut self, change: impl FnOnce(&mut Document) -> bool) -> bool {
+    pub(super) fn change_canvas_pages(&mut self, change: impl FnOnce(&mut Document) -> bool) -> bool {
         self.before_page_change();
         let mut doc = self.doc.clone();
         let changed = change(&mut doc);
@@ -114,7 +115,7 @@ impl InkApp {
 
     /// On an infinite page with a PDF, the places of its PDF's pages on it
     /// (the pages view lists them); else none.
-    fn pdf_slots(&self) -> Option<Vec<Rect>> {
+    pub(super) fn pdf_slots(&self) -> Option<Vec<Rect>> {
         let pdf = self.doc.pdf.as_ref().filter(|pdf| self.doc.is_canvas() && !pdf.pages.is_empty())?;
         Some((0..pdf.pages.len()).map(|i| pdf.canvas_slot(i)).collect())
     }
@@ -457,17 +458,13 @@ impl InkApp {
         };
         let blue = color::accent();
         // A PDF in the reader: its pages are looked at, not changed. On an
-        // infinite page, blank pages are added between the PDF's, and taken
-        // away when nothing is on them (not moved, copied or pasted).
+        // infinite page they are not dragged to another place either.
         let changeable = !self.reading();
         let editable = changeable && slots.is_none();
         let can_paste = self.clipboard.has_pages();
 
         // Disjoint field borrows, released again after `show`.
         let doc = &self.doc;
-        // Asked about the page pointed at only: on an infinite page it looks
-        // at all that is on it (see `Document::can_remove_canvas_page`).
-        let deletable = |i: u32| editable || slots.is_some() && changeable && doc.can_remove_canvas_page(i as usize);
         let strokes = &self.doc.strokes;
         let texts = &self.doc.texts;
         let cache = &mut self.thumb_cache;
@@ -549,7 +546,14 @@ impl InkApp {
                             pdf_textures.paint(&clipped, doc, page, whole, false, 1.0);
                             pictures.paint_page(&clipped, &doc.images, page, origin, (scale, made), &[]);
                             let offset = origin.to_vec2();
-                            render::paint_page_strokes(&clipped, offset, scale, made, strokes, page, cache, aa);
+                            match &slots {
+                                // Every card shows a part of the same page.
+                                Some(s) => {
+                                    let part = (page, s[i as usize], i);
+                                    render::paint_page_part_strokes(&clipped, (offset, scale, made), strokes, part, cache, aa);
+                                }
+                                None => render::paint_page_strokes(&clipped, offset, scale, made, strokes, page, cache, aa),
+                            }
                             render::paint_page_texts(&clipped, offset, scale, texts, page);
                             let p = ui.painter();
                             if i == current {
@@ -582,7 +586,7 @@ impl InkApp {
                         let del_rect = Rect::from_center_size(rect.right_top() + vec2(-13.0, 13.0), vec2(22.0, 22.0));
                         let del = ui.interact(del_rect, ui.scope_id().with(("page_del", i)), Sense::click());
                         let pointed = ui.rect_contains_pointer(card) && drag.is_none();
-                        let can_delete = pointed && deletable(i);
+                        let can_delete = pointed && changeable;
                         if can_delete {
                             let p = ui.painter();
                             let fill = if del.hovered() { color::danger() } else { color::chrome() };
@@ -609,9 +613,9 @@ impl InkApp {
                                 ui.close();
                             };
                             ui.separator();
-                            menus::page_clipboard_entries(ui, i, (editable, can_paste), &mut push);
+                            menus::page_clipboard_entries(ui, i, (true, can_paste), &mut push);
                             ui.separator();
-                            menus::page_insert_entries(ui, i, deletable(i), &mut push);
+                            menus::page_insert_entries(ui, i, true, &mut push);
                         });
                         if can_delete && del.clicked() {
                             delete = Some(i);

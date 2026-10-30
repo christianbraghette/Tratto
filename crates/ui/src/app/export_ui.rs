@@ -785,7 +785,11 @@ impl InkApp {
     /// rules, the PDF under it), then saves it.
     /// An infinite page: as far as it is written on (`Document::as_pages`).
     pub(super) fn save_page_png(&mut self, page: u32) {
-        let snap = Snapshot::of_note_page(&self.doc.as_pages(), page);
+        // A page of an infinite page with a PDF: that one, as a page.
+        let snap = match self.doc.canvas_page(page as usize) {
+            Some(doc) => Snapshot::of_note_page(&doc, 0),
+            None => Snapshot::of_note_page(&self.doc.as_pages(), page),
+        };
         let what = if self.doc.is_canvas() { "page".to_owned() } else { format!("page {}", page + 1) };
         self.ask_png_path(snap, &what);
     }
@@ -861,30 +865,8 @@ fn paint_page(
     let at = |x: f32, y: f32| pos2(origin.x + x * f, origin.y + y * f);
     let paper = Rect::from_min_max(at(0.0, 0.0), at(doc.page_width, doc.page_height));
     let p = ui.painter_at(paper);
-    let on_pdf = opts.include_pdf_pages && !doc.pdf_places(page).is_empty();
-    if on_pdf {
-        textures.paint(&p, doc, page, paper, true, 1.0);
-    }
-    let rgb = |(r, g, b): (f32, f32, f32)| Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
-    let paint_strokes = |kind: StrokeKind| {
-        for st in doc.strokes.iter().filter(|st| st.page == page && st.kind == kind) {
-            let ink = rgb(opts.stroke_rgb(st));
-            let samples = stroke_path::centerline(st.kind, st.width, &st.points, 2.0);
-            let width = |r: f32| (r * 2.0 * f).max(0.6);
-            match samples.as_slice() {
-                [] => {}
-                [one] => {
-                    p.circle_filled(at(one.x, one.y), width(one.r) * 0.5, ink);
-                }
-                many => {
-                    let r = many.iter().map(|s| s.r).sum::<f32>() / many.len() as f32;
-                    let pts = many.iter().map(|s| at(s.x, s.y)).collect();
-                    p.add(Shape::line(pts, Stroke::new(width(r), ink)));
-                }
-            }
-        }
-    };
-    // As in the PDF: rules, pictures, highlighters, text, pen.
+    // As in the PDF: rules, the PDF's pages, pictures, highlighters, text,
+    // pen.
     if opts.include_rules && doc.ruled(page) {
         let spacing = doc.page.spacing.max(8.0);
         if doc.page.kind == PageKind::Dotted {
@@ -916,6 +898,32 @@ fn paint_page(
             }
         }
     }
+    // Each PDF page on its own paper, over the rules (an infinite page's).
+    if opts.include_pdf_pages {
+        for (_, r) in doc.pdf_places(page) {
+            p.rect_filled(Rect::from_min_max(at(r.left(), r.top()), at(r.right(), r.bottom())), 0.0, Color32::WHITE);
+        }
+        textures.paint(&p, doc, page, paper, true, 1.0);
+    }
+    let rgb = |(r, g, b): (f32, f32, f32)| Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+    let paint_strokes = |kind: StrokeKind| {
+        for st in doc.strokes.iter().filter(|st| st.page == page && st.kind == kind) {
+            let ink = rgb(opts.stroke_rgb(st));
+            let samples = stroke_path::centerline(st.kind, st.width, &st.points, 2.0);
+            let width = |r: f32| (r * 2.0 * f).max(0.6);
+            match samples.as_slice() {
+                [] => {}
+                [one] => {
+                    p.circle_filled(at(one.x, one.y), width(one.r) * 0.5, ink);
+                }
+                many => {
+                    let r = many.iter().map(|s| s.r).sum::<f32>() / many.len() as f32;
+                    let pts = many.iter().map(|s| at(s.x, s.y)).collect();
+                    p.add(Shape::line(pts, Stroke::new(width(r), ink)));
+                }
+            }
+        }
+    };
     pictures.paint_page(&p, &doc.images, page, origin, (f, f), &[]);
     // Highlighters darken what is under them, as in the PDF.
     if opts.include_highlighter {
