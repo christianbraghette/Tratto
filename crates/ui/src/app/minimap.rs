@@ -4,8 +4,8 @@
 //! The minimap: the vertical scroll bar widened into the note in small, to
 //! find a place at a glance and go there.
 //!
-//! The scroll bar hovered for `HOVER_DELAY` (or pressed with a pen or a
-//! finger, which cannot hover) grows from its right edge into the minimap,
+//! The scroll bar dragged (with a mouse, a pen or a finger) grows from its
+//! right edge into the minimap,
 //! over the canvas (nothing moves), its thumb becoming the view box, and
 //! shrinks back into it when it goes.
 //! It shows the pages as they are stacked (an infinite page as far as it is
@@ -28,8 +28,6 @@ use crate::zoom::ZoomRender;
 
 use super::InkApp;
 
-/// Seconds the scroll bar is hovered before the minimap comes out.
-const HOVER_DELAY: f64 = 0.5;
 /// Seconds the mouse may be away from it before it goes.
 const LEAVE_GRACE: f64 = 0.3;
 /// Its width (the scroll bar's included), and the room around the pages in
@@ -42,8 +40,6 @@ const GROW_TIME: f32 = 0.15;
 #[derive(Default)]
 pub(super) struct Minimap {
     open: bool,
-    /// Since when the scroll bar is hovered (egui's time).
-    hovered_at: Option<f64>,
     /// Since when the mouse is away from it, while it is out.
     away_at: Option<f64>,
     /// A press on it: where, and the scroll then (after the box was brought
@@ -118,27 +114,17 @@ impl InkApp {
         let full = Rect::from_min_max(pos2(bar.right() - WIDTH, canvas.top()), pos2(bar.right(), canvas.bottom()));
         let was_open = self.minimap.open;
         let on = |p: Pos2| bar.contains(p) || was_open && full.contains(p);
-        let usable = state.enabled && !self.busy() && self.presenting.is_none();
+        let usable = self.settings.minimap && state.enabled && !self.busy() && self.presenting.is_none();
 
         let mm = &mut self.minimap;
-        // Out: hovered long enough, or the bar pressed with a pen or a finger.
-        let hovering = state.hovered && !touch && pointer.is_some_and(|p| bar.contains(p));
-        if hovering {
-            let since = *mm.hovered_at.get_or_insert(now);
-            if now - since >= HOVER_DELAY {
-                mm.open = true;
-            } else {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(HOVER_DELAY - (now - since)));
-            }
-        } else {
-            mm.hovered_at = None;
-        }
-        if state.active && touch {
+        // Out: the bar dragged.
+        if state.active {
             mm.open = true;
         }
-        // Away: a press elsewhere, or the mouse gone from it for a moment. A
-        // pen or a finger lifted leaves no pointer: it stays.
-        if mm.open && mm.drag.is_none() {
+        // Away: a press elsewhere, or the mouse gone from it for a moment (not
+        // while the bar is dragged). A pen or a finger lifted leaves no
+        // pointer: it stays.
+        if mm.open && mm.drag.is_none() && !state.active {
             if pressed && origin.is_some_and(|o| !on(o)) {
                 mm.open = false;
             } else if pointer.is_some_and(|p| !on(p)) && !touch {

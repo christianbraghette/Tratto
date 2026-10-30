@@ -332,6 +332,9 @@ impl InkApp {
                     .on_hover_text("Momentum: how far the view glides after a flick (finger, or a pen or mouse drag)")
                     .on_disabled_hover_text(off);
             });
+            row(ui, "Minimap", |ui| {
+                ui.checkbox(&mut s.minimap, "Dragging the scroll bar shows the note in small");
+            });
             row(ui, "At startup", |ui| {
                 ui.checkbox(&mut s.reopen_last_note, "Reopen the note that was open, where you left it").on_hover_text(
                     "Every note opens where it was left; this also reopens the last one when Tratto starts",

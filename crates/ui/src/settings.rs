@@ -274,6 +274,8 @@ pub struct Settings {
     /// Glide after a flick (a finger, or pen or mouse drag that pans):
     /// `0` none, `1` the default.
     pub touch_fling: f32,
+    /// The scroll bar dragged widens into the note in small.
+    pub minimap: bool,
     /// Line width follows the pen pressure.
     pub pressure: bool,
     /// How much it follows it: `1` all of the pen's range, less keeps the
@@ -431,6 +433,7 @@ impl Default for Settings {
             mouse_accel: 1.0,
             touchpad_accel: 1.0,
             touch_fling: 1.0,
+            minimap: true,
             pressure: true,
             pressure_strength: 0.5,
             side_button_eraser: true,
