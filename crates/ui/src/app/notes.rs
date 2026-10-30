@@ -525,6 +525,7 @@ impl InkApp {
         self.gap_drag = None;
         // An infinite page's view is remembered from its corner (`view_place`).
         self.canvas_area = None;
+        self.canvas_centre = true;
         self.active = None;
         self.erase_session.clear();
         self.last_erase_pos = None;

@@ -18,6 +18,7 @@ use crate::toolbar;
 use crate::view::{Layout, MARGIN};
 
 use super::InkApp;
+use super::canvas::centred_left;
 use super::menus;
 
 /// Width of the pages view (points); every view of the sidebar has its own,
@@ -95,10 +96,12 @@ impl InkApp {
         match self.pdf_slots().and_then(|s| s.get(index as usize).copied()) {
             Some(slot) => {
                 // The place is on the page; the scroll from where it is shown.
-                let at = slot.min + self.layout().page_origin(0).to_vec2();
-                // On an infinite page: it grows to the room above and left.
-                self.scroll_to = Some(at.y - MARGIN);
-                self.scroll_to_x = Some(at.x - MARGIN);
+                let slot = slot.translate(self.layout().page_origin(0).to_vec2());
+                // Across the middle of the view if it fits, else from its
+                // left; the infinite page grows to the room above and left.
+                let x = centred_left(slot, self.shown_content.width()).unwrap_or(slot.left() - MARGIN);
+                self.scroll_to = Some(slot.top() - MARGIN);
+                self.scroll_to_x = Some(x);
             }
             None => self.scroll_to = Some(self.layout().page_top(index) - MARGIN),
         }

@@ -14,6 +14,11 @@
 //! minimap scrolls in it with the view, as in VS Code. The mouse leaving it
 //! (for `LEAVE_GRACE`) or a press elsewhere puts it away.
 //!
+//! On an infinite page it shows what is written and what the view shows
+//! (`Layout::grown`). The box held against an edge of it scrolls on that
+//! way and the page grows to follow, as with the scroll bars; while the box
+//! is held the page only grows, so the minimap stays under the pointer.
+//!
 //! It is drawn with what the pages panel draws pages with (the stroke
 //! batches, the small images of PDF pages, the pictures' smallest levels),
 //! its strokes in a cache of their own, and only while it is out.
@@ -27,6 +32,7 @@ use crate::view::{Layout, TOP_PAD_PX, View};
 use crate::zoom::ZoomRender;
 
 use super::InkApp;
+use super::canvas::bar_push_speed;
 
 /// Seconds the mouse may be away from it before it goes.
 const LEAVE_GRACE: f64 = 0.3;
@@ -57,6 +63,20 @@ impl Minimap {
     /// It is out (or sliding).
     pub(super) fn out(&self) -> bool {
         self.rect.is_some()
+    }
+
+    /// Its view box is held (an infinite page then only grows, see
+    /// `grow_canvas`).
+    pub(super) fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Content space moved by `by` (see `InkApp::shift_view`): the scroll
+    /// a drag started from stays where it was on the page.
+    pub(super) fn shift(&mut self, by: Vec2) {
+        if let Some((_, start)) = self.drag.as_mut() {
+            *start += by;
+        }
     }
 
     /// Forgets the open note's strokes (another note).
@@ -216,7 +236,19 @@ impl InkApp {
                     let to = if view_box.contains(p) { Vec2::ZERO } else { (p - view_box.center()) / per };
                     (p, (self.scroll + to).clamp(Vec2::ZERO, max))
                 });
-                self.scroll = (start + (p - at) / per).clamp(Vec2::ZERO, max);
+                let wanted = start + (p - at) / per;
+                self.scroll = wanted.clamp(Vec2::ZERO, max);
+                // An infinite page: the box held against an edge of it goes
+                // on that way, faster the further the pointer is past it, and
+                // the page grows to follow (as with the scroll bars). The
+                // drag goes on from there, the pointer as far past the edge.
+                let past = (wanted - self.scroll) * per;
+                if layout.canvas && past != Vec2::ZERO {
+                    let speed = |d: f32| if d == 0.0 { 0.0 } else { bar_push_speed(Some((d > 0.0, d.abs()))) };
+                    let dt = ctx.input(|i| i.stable_dt.min(1.0 / 30.0));
+                    self.scroll += vec2(speed(past.x), speed(past.y)) * dt / scale;
+                    self.minimap.drag = Some((p - past, self.scroll));
+                }
                 self.kinetic.stop();
                 ctx.request_repaint();
             }
@@ -235,18 +267,20 @@ impl InkApp {
         let (from, to) = (map.top, map.top + map.inner.height() / map.m);
         for page in layout.pages_overlapping(from, to) {
             let origin = map.to_mini(layout.page_origin(page));
+            // The whole page, from its corner (what its PDF is placed on).
+            let whole = Rect::from_min_size(origin, vec2(layout.page_w, layout.page_h) * map.m);
             // An infinite page: as far as it is shown, from the corner of content space.
             let rect = if layout.canvas {
                 Rect::from_min_size(map.to_mini(pos2(0.0, 0.0)), layout.extent * map.m)
             } else {
-                Rect::from_min_size(origin, vec2(layout.page_w, layout.page_h) * map.m)
+                whole
             };
             if !rect.intersects(painter.clip_rect()) {
                 continue;
             }
             painter.rect_filled(rect, 0.0, color::page());
             let clipped = painter.with_clip_rect(painter.clip_rect().intersect(rect));
-            self.pdf_textures.paint(&clipped, &self.doc, page, rect, false, 1.0);
+            self.pdf_textures.paint(&clipped, &self.doc, page, whole, false, 1.0);
             self.picture_textures.paint_page(&clipped, &self.doc.images, page, origin, (map.m, made), &[]);
             let strokes = &self.doc.strokes;
             let aa = 1.0 / ppp;

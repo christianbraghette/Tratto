@@ -210,6 +210,7 @@ impl InkApp {
         crate::markdown::lay_out_document(&self.egui_ctx, &mut doc);
         self.history.exec(&mut self.doc, Action::Swap(Box::new(doc)));
         self.scroll = egui::Vec2::ZERO;
+        self.canvas_centre = true;
         self.kinetic.stop();
     }
 

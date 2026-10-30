@@ -365,6 +365,9 @@ pub struct InkApp {
     /// An infinite page: how far it was shown last frame (page space; see
     /// `Layout::grown`). Content space, and the scroll, start at its corner.
     canvas_area: Option<Rect>,
+    /// An infinite page just opened (or made): its next frame shows what is
+    /// on it across the middle of the view, if it fits (see `grow_canvas`).
+    canvas_centre: bool,
     /// Outline entries shown open (their children visible), by index.
     outline_open: HashSet<usize>,
     /// A note read (or a PDF imported) in the background; a loading screen
@@ -585,6 +588,7 @@ impl InkApp {
             nav_back: Vec::new(),
             gap_drag: None,
             canvas_area: None,
+            canvas_centre: false,
             outline_open: HashSet::new(),
             loading: None,
             egui_ctx: cc.egui_ctx.clone(),
@@ -866,6 +870,7 @@ impl InkApp {
         self.scroll_to = self.scroll_to.map(|y| y + by.y);
         self.scroll_to_x = self.scroll_to_x.map(|x| x + by.x);
         self.last_erase_pos = self.last_erase_pos.map(|p| p + by);
+        self.minimap.shift(by);
     }
 
     /// The middle of the view on note page `current_page` (page space; an

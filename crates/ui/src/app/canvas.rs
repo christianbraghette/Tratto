@@ -192,7 +192,10 @@ impl InkApp {
             y = layout.page_top(page) + placed.top() + share * placed.height() - MARGIN;
         }
         if layout.canvas {
-            self.scroll_to_x = Some(layout.page_origin(page).x + placed.left() - MARGIN);
+            // Across the middle of the view if it fits, else from its left.
+            let placed = placed.translate(layout.page_origin(page).to_vec2());
+            let x = centred_left(placed, self.shown_content.width()).unwrap_or(placed.left() - MARGIN);
+            self.scroll_to_x = Some(x);
         }
         if self.nav_back.len() >= NAV_BACK_MAX {
             self.nav_back.remove(0);
@@ -320,6 +323,7 @@ impl InkApp {
     /// with it.
     fn grow_canvas(&mut self, full: Rect) -> Layout {
         let mut layout = Layout::of(&self.doc);
+        let centre = std::mem::take(&mut self.canvas_centre);
         if !layout.canvas {
             self.canvas_area = None;
             return layout;
@@ -327,15 +331,22 @@ impl InkApp {
         let shown = full.size() / View::scale_for(self.zoom(), full, &layout);
         let before = self.canvas_area;
         let corner = before.map_or(Vec2::ZERO, |a| a.min.to_vec2());
+        // Just opened: what is on it (its PDF) across the middle of the view.
+        if centre && let Some(written) = self.doc.canvas_used() {
+            let (rect, scale, _) = self.canvas_geometry(full, &layout);
+            if let Some(left) = centred_left(written, rect.width() / scale) {
+                self.scroll.x = left - corner.x;
+            }
+        }
         let seen = Rect::from_min_size((corner + self.scroll).to_pos2(), shown);
         layout = layout.grown(self.doc.canvas_used(), seen);
         if let Some(before) = before {
             if self.busy() {
                 // Not under a pen, eraser or drag: only larger, from where it starts.
                 layout = layout.with_area(Rect::from_min_max(before.min, before.max.max(layout.area().max)));
-            } else if self.vbar_grab.is_some() || self.hbar_grab.is_some() {
-                // A scroll bar held: only larger, so its thumb stays under
-                // the pointer; it shrinks back once let go.
+            } else if self.vbar_grab.is_some() || self.hbar_grab.is_some() || self.minimap.dragging() {
+                // A scroll bar or the minimap's box held: only larger, so
+                // they stay under the pointer; it shrinks back once let go.
                 layout = layout.with_area(before.union(layout.area()));
             }
         }
@@ -475,11 +486,13 @@ impl InkApp {
                     self.ease_scroll(base - vec2(0.0, page_len));
                 }
             }
-            // An infinite page: the top left of what is written on it, and
+            // An infinite page: the top of what is written on it (across
+            // the middle of the view if it fits, else from its left), and
             // its bottom (it reaches further only while the view is there).
             let (first, last) = if layout.canvas {
                 let w = self.doc.canvas_used().unwrap_or(Rect::ZERO).translate(-layout.origin);
-                (w.min.to_vec2(), vec2(w.left(), (w.bottom() - visible).max(w.top())))
+                let left = centred_left(w, canvas.width() / scale).unwrap_or(w.left());
+                (vec2(left, w.top()), vec2(left, (w.bottom() - visible).max(w.top())))
             } else {
                 (vec2(base.x, 0.0), vec2(base.x, max.y))
             };
@@ -631,7 +644,12 @@ impl InkApp {
         }
 
         // The minimap beside the vertical bar, which may scroll too.
+        let before_map = self.scroll;
         self.minimap(ui.ctx(), canvas, vbar_rect, &vstate, &layout, scale, max);
+        // Its box pushed past an edge of an infinite page: it grows there.
+        if layout.canvas && self.scroll != before_map {
+            layout = self.grow_canvas(full);
+        }
 
         if self.vbar_grab.is_some() || self.hbar_grab.is_some() {
             self.kinetic.stop();
@@ -1037,16 +1055,31 @@ fn autoscroll_velocity(canvas: Rect, pointer: Pos2) -> Vec2 {
 /// The view's speed (points per second, along the bar) while a scroll bar's
 /// thumb is held against an end of its track (`BarState::pushed`): slow at
 /// the end, faster as the pointer goes on past it (see `AUTOSCROLL_EDGE`).
-fn bar_push_speed(pushed: Option<(bool, f32)>) -> f32 {
+pub(super) fn bar_push_speed(pushed: Option<(bool, f32)>) -> f32 {
     let Some((forward, past)) = pushed else { return 0.0 };
     let depth = (past / AUTOSCROLL_EDGE).clamp(0.0, 1.0).powi(2);
     let speed = AUTOSCROLL_SPEED * (BAR_PUSH_MIN + (1.0 - BAR_PUSH_MIN) * depth);
     if forward { speed } else { -speed }
 }
 
+/// On an infinite page, the left of a view `width` wide that shows
+/// `written` across its middle; `None` if it is wider than the view.
+pub(super) fn centred_left(written: Rect, width: f32) -> Option<f32> {
+    (written.width() <= width).then(|| written.center().x - width * 0.5)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_fits_across_the_view_is_shown_in_its_middle() {
+        // A PDF 48 from the corner, 600 wide, in a view 1000 wide: 200 of
+        // room each side, the view starting left of the corner.
+        let pdf = Rect::from_min_size(pos2(48.0, 48.0), vec2(600.0, 800.0));
+        assert_eq!(centred_left(pdf, 1000.0), Some(-152.0));
+        assert_eq!(centred_left(pdf, 500.0), None, "wider than the view: from its left");
+    }
 
     #[test]
     fn a_thumb_pushed_against_an_end_scrolls_that_way() {
