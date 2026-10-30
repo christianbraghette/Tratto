@@ -220,7 +220,8 @@ impl InkApp {
         let file = self.doc.pdf.as_ref()?.file.clone()?;
         let page = view.layout.page_at(view.screen_to_content(pos))?;
         let page_origin = view.page_origin_screen(page);
-        let on_screen = |r: Rect| Rect::from_min_size(page_origin + r.min.to_vec2() * view.scale, r.size() * view.scale);
+        let on_screen =
+            |r: Rect| Rect::from_min_size(page_origin + r.min.to_vec2() * view.scale, r.size() * view.scale);
         let (pdf_page, placed) =
             self.doc.pdf_places(page).into_iter().map(|(p, r)| (p, on_screen(r))).find(|(_, r)| r.contains(pos))?;
         let (origin, size) = (placed.min, placed.size());

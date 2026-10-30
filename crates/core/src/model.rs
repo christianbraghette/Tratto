@@ -453,7 +453,8 @@ impl PdfBackground {
     /// first PDF page (the others are fitted into it), as large as the pages
     /// of a note on the PDF start (see `Document::on_pdf`).
     pub fn slot_size(&self) -> Vec2 {
-        let [w, h] = self.sizes.first().copied().unwrap_or([DEFAULT_PAGE_WIDTH / PT_TO_PX, DEFAULT_PAGE_HEIGHT / PT_TO_PX]);
+        let [w, h] =
+            self.sizes.first().copied().unwrap_or([DEFAULT_PAGE_WIDTH / PT_TO_PX, DEFAULT_PAGE_HEIGHT / PT_TO_PX]);
         (vec2(w, h) * PT_TO_PX).max(vec2(1.0, 1.0))
     }
 
@@ -876,7 +877,8 @@ impl Document {
                     let [x, y, w, h] = pdf.placement(pdf_page, r.width(), r.height())?;
                     Some(Rect::from_min_size(r.min + vec2(x, y), vec2(w, h)))
                 };
-                let on_pdf = pdf.pages.get(i).copied().flatten().and_then(|p| Some((fitted(page, p)?, fitted(slot, p)?)));
+                let on_pdf =
+                    pdf.pages.get(i).copied().flatten().and_then(|p| Some((fitted(page, p)?, fitted(slot, p)?)));
                 // Without a PDF page: the page fitted into its place.
                 let (from, to) = on_pdf.unwrap_or_else(|| {
                     let k = (slot.width() / page.width()).min(slot.height() / page.height());
@@ -992,7 +994,8 @@ impl Document {
         // Paper left of or above the corner only if something is there (not
         // just half the width of a stroke drawn along the edge).
         let before = |v: f32| if v < -EDGE_OVERHANG { v - CANVAS_MARGIN } else { 0.0 };
-        let min = used.map_or(Pos2::ZERO, |c| pos2(before(c.min.x), before(c.min.y))).max(pos2(-CANVAS_SIZE, -CANVAS_SIZE));
+        let min =
+            used.map_or(Pos2::ZERO, |c| pos2(before(c.min.x), before(c.min.y))).max(pos2(-CANVAS_SIZE, -CANVAS_SIZE));
         let max = used.map_or(Pos2::ZERO, |c| c.max + margin);
         let max = max.max(pos2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT)).min(pos2(CANVAS_SIZE, CANVAS_SIZE));
         Rect::from_min_max(min, max)

@@ -504,8 +504,12 @@ mod tests {
         use crate::model::PdfBackground;
         let mut doc = Document::default();
         doc.page_count = 3;
-        doc.pdf =
-            Some(PdfBackground { sizes: vec![[600.0, 800.0]; 3], pages: vec![Some(0), Some(1), Some(2)], gap: 0.0, file: None });
+        doc.pdf = Some(PdfBackground {
+            sizes: vec![[600.0, 800.0]; 3],
+            pages: vec![Some(0), Some(1), Some(2)],
+            gap: 0.0,
+            file: None,
+        });
         let pages = |d: &Document| d.pdf.as_ref().unwrap().pages.clone();
         let mut h = History::default();
 

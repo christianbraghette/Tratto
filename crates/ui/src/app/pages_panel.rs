@@ -557,9 +557,18 @@ impl InkApp {
                                 // Every card shows a part of the same page.
                                 Some(s) => {
                                     let part = (page, s[i as usize], i);
-                                    render::paint_page_part_strokes(&clipped, (offset, scale, made), strokes, part, cache, aa);
+                                    render::paint_page_part_strokes(
+                                        &clipped,
+                                        (offset, scale, made),
+                                        strokes,
+                                        part,
+                                        cache,
+                                        aa,
+                                    );
                                 }
-                                None => render::paint_page_strokes(&clipped, offset, scale, made, strokes, page, cache, aa),
+                                None => {
+                                    render::paint_page_strokes(&clipped, offset, scale, made, strokes, page, cache, aa)
+                                }
                             }
                             render::paint_page_texts(&clipped, offset, scale, texts, page);
                             let p = ui.painter();
