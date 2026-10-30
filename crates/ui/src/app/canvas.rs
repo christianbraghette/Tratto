@@ -250,7 +250,9 @@ impl InkApp {
         let w = (full.width() - sb).max(50.0);
         let mut rect = Rect::from_min_size(full.min, vec2(w, full.height()));
         let mut scale = View::scale_for(self.settings.zoom, rect, layout);
-        let hbar = layout.content_w() * scale > rect.width() + 0.5;
+        // An infinite page is always wider than the view (it grows to it):
+        // not even the frame of a zoom out, before it has, drops the bar.
+        let hbar = layout.canvas || layout.content_w() * scale > rect.width() + 0.5;
         if hbar {
             rect = Rect::from_min_size(full.min, vec2(w, (full.height() - sb).max(50.0)));
             scale = View::scale_for(self.settings.zoom, rect, layout);
@@ -387,7 +389,7 @@ impl InkApp {
                 let pct = ((scale * zd * 100.0).round() as u32).clamp(*range.start(), *range.end());
                 *self.zoom_mut() = ZoomMode::Percent(pct);
                 (canvas, scale, hbar) = self.canvas_geometry(full, &layout);
-                let pad = View::pad_x_for(canvas.width(), layout.content_w(), scale);
+                let pad = View::pad_x_for(canvas.width(), &layout, scale);
                 self.scroll.x = c.x - (anchor.x - canvas.left() - pad) / scale;
                 self.scroll.y = c.y - (anchor.y - canvas.top() - TOP_PAD_PX) / scale;
                 self.kinetic.stop();

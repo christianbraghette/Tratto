@@ -267,8 +267,14 @@ impl View {
         s.clamp(0.1, 8.0)
     }
 
-    pub fn pad_x_for(rect_w: f32, content_w: f32, scale: f32) -> f32 {
-        ((rect_w - content_w * scale) * 0.5).max(0.0)
+    /// Pages narrower than the view are centred in it. Not an infinite page:
+    /// it has no width to centre, and always fills the view once it has grown
+    /// to it (see `Layout::grown`); zoomed out, it would jump left as it does.
+    pub fn pad_x_for(rect_w: f32, layout: &Layout, scale: f32) -> f32 {
+        if layout.canvas {
+            return 0.0;
+        }
+        ((rect_w - layout.content_w() * scale) * 0.5).max(0.0)
     }
 
     /// Largest valid scroll offsets (content units).
@@ -291,7 +297,7 @@ impl View {
     }
 
     pub fn new(rect: Rect, scroll: Vec2, scale: f32, layout: Layout) -> Self {
-        let pad_x = Self::pad_x_for(rect.width(), layout.content_w(), scale);
+        let pad_x = Self::pad_x_for(rect.width(), &layout, scale);
         Self { rect, scroll, scale, made: scale, pad_x, layout }
     }
 
@@ -348,6 +354,17 @@ mod tests {
         // Left of the paper, and below the last page.
         assert_eq!(l.page_at(pos2(5.0, 100.0)), None);
         assert_eq!(l.page_at(pos2(100.0, l.page_top(2) + 1123.0 + 10.0)), None);
+    }
+
+    #[test]
+    fn narrow_pages_are_centred_an_infinite_page_never_is() {
+        // Pages 850 wide (with their margin) in a view 1050 wide: 100 each side.
+        assert_eq!(View::pad_x_for(1050.0, &layout(), 1.0), 100.0);
+        // An infinite page shown 1000 wide, zoomed out to half: it has not
+        // grown to the view yet, but stays where the zoom put it.
+        let page = Layout { canvas: true, page_w: 100_000.0, page_h: 100_000.0, count: 1, ..layout() };
+        let page = page.with_area(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 600.0)));
+        assert_eq!(View::pad_x_for(1000.0, &page, 0.5), 0.0);
     }
 
     #[test]
