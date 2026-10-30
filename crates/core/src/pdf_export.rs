@@ -16,8 +16,8 @@
 //!   on the paper (`model::highlight_on`), with the Darken blend mode: each
 //!   point keeps the darker of the highlighter and what is under it, so
 //!   overlapping highlighters never darken and nothing is covered (as on
-//!   screen). Page order: highlighters, rules, text, pen strokes, on the
-//!   white page.
+//!   screen). Page order: rules, pictures, highlighters, text, pen strokes,
+//!   on the white page.
 //! * Notes written on a PDF: the PDF's pages go under the pages as vector
 //!   form XObjects (`pdf_pages::underlay`, PDFium), so their text stays
 //!   text; such pages get no rules.
@@ -159,8 +159,13 @@ pub struct PdfNote<'a> {
 pub fn export_notes(notes: &[PdfNote], path: &Path, opts: &PdfOptions) -> io::Result<()> {
     let bytes = export_bytes(notes, opts)?;
     let tmp = path.with_extension("pdf.tmp");
-    fs::write(&tmp, &bytes)?;
-    fs::rename(&tmp, path)
+    // E.g. the PDF is open in a viewer that locks it (Windows): no
+    // half-made file left behind next to it.
+    let written = fs::write(&tmp, &bytes).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// The PDF `export_notes` writes, as bytes (to print it).
@@ -289,9 +294,9 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
     let author = if opts.author.trim().is_empty() {
         String::new()
     } else {
-        format!("/Author ({}) ", pdf_string(opts.author.trim()))
+        format!("/Author {} ", text_string(opts.author.trim()))
     };
-    pdf.obj(4, &format!("<< /Title ({}) {author}/Producer (Tratto) >>", pdf_string(&opts.title)));
+    pdf.obj(4, &format!("<< /Title {} {author}/Producer (Tratto) >>", text_string(&opts.title)));
     pdf.obj(gs_obj, "<< /Type /ExtGState /BM /Darken >>");
 
     // Text boxes use the standard fonts (no font embedding needed).
@@ -342,8 +347,8 @@ fn build_pdf(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>> {
             pdf.obj(
                 items[i],
                 &format!(
-                    "<< /Title ({}) /Parent {outline_obj} 0 R {prev}{next}/Dest [{page_obj} 0 R /Fit] >>",
-                    pdf_string(&notes[n].title)
+                    "<< /Title {} /Parent {outline_obj} 0 R {prev}{next}/Dest [{page_obj} 0 R /Fit] >>",
+                    text_string(&notes[n].title)
                 ),
             );
         }
@@ -718,6 +723,17 @@ fn pdf_string(s: &str) -> String {
         }
     }
     out
+}
+
+/// A PDF text string (the document's title and author, bookmarks), with its
+/// delimiters. These are not drawn with the page fonts: plain ASCII as a
+/// literal string, anything else in UTF-16 (any script shows).
+fn text_string(s: &str) -> String {
+    if s.chars().all(|c| (' '..='~').contains(&c)) {
+        return format!("({})", pdf_string(s));
+    }
+    let hex: String = s.encode_utf16().map(|u| format!("{u:04X}")).collect();
+    format!("<FEFF{hex}>")
 }
 
 fn write_stroke(c: &mut String, s: &Stroke, opts: &PdfOptions) {
@@ -1125,6 +1141,20 @@ mod tests {
         assert_eq!(pdf_string("è"), "\\350");
         assert_eq!(pdf_string("€"), "\\200");
         assert_eq!(pdf_string("漢"), "?");
+    }
+
+    #[test]
+    fn titles_and_bookmarks_keep_every_script() {
+        assert_eq!(text_string("Notes (1)"), "(Notes \\(1\\))");
+        // UTF-16, not the page fonts' WinAnsi: "€" is no bullet, "東" no "?".
+        assert_eq!(text_string("€"), "<FEFF20AC>");
+        assert_eq!(text_string("東京"), "<FEFF67714EAC>");
+        let doc = sample_doc();
+        let notes = [PdfNote { doc: &doc, title: "Città".into() }, PdfNote { doc: &doc, title: "B".into() }];
+        let opts = PdfOptions { title: "Łódź".into(), ..PdfOptions::default() };
+        let text = String::from_utf8_lossy(&build_pdf(&notes, &opts).unwrap()).into_owned();
+        assert!(text.contains("/Title <FEFF014100F30064017A>"), "the document's title");
+        assert!(text.contains("/Title <FEFF004300690074007400E0>"), "a bookmark");
     }
 
     #[test]

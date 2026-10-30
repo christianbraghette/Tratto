@@ -12,7 +12,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use eframe::egui::{self, Align2, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, vec2};
+use eframe::egui::{self, Align2, CursorIcon, Painter, Pos2, Rect, Stroke, StrokeKind, vec2};
 
 use tratto_core::history::Action;
 use tratto_core::model::{Image, TextBox};
@@ -61,19 +61,21 @@ pub(super) struct TransformDrag {
 
 /// The scale of corner `k` of `from` dragged to `now` (page space), about
 /// the opposite corner (returned with it): along the box's diagonal, kept
-/// on a page `page` large (unless it is out of it already).
-fn corner_scale(from: Rect, k: usize, now: Pos2, page: Vec2) -> (Pos2, f32) {
+/// within `page` (`Layout::page_box`: on an infinite page, left of and
+/// above its corner too), unless it is out of it already.
+fn corner_scale(from: Rect, k: usize, now: Pos2, page: Rect) -> (Pos2, f32) {
     let c = corners(from);
     let anchor = c[(k + 2) % 4];
     let diag = c[k] - anchor;
     let s = (now - anchor).dot(diag) / diag.length_sq().max(f32::EPSILON);
     let min = MIN_SIZE / from.width().max(from.height()).max(f32::EPSILON);
-    let room = |d: f32, a: f32, extent: f32| match d {
-        d if d > 0.0 => (extent - a) / d,
-        d if d < 0.0 => a / -d,
+    let room = |d: f32, a: f32, (lo, hi): (f32, f32)| match d {
+        d if d > 0.0 => (hi - a) / d,
+        d if d < 0.0 => (a - lo) / -d,
         _ => f32::INFINITY,
     };
-    let max = room(diag.x, anchor.x, page.x).min(room(diag.y, anchor.y, page.y)).max(1.0);
+    let (x, y) = ((page.left(), page.right()), (page.top(), page.bottom()));
+    let max = room(diag.x, anchor.x, x).min(room(diag.y, anchor.y, y)).max(1.0);
     (anchor, s.clamp(min, max.max(min)))
 }
 
@@ -135,8 +137,7 @@ impl InkApp {
         let doc = &mut self.doc;
         let (map, scale): (Box<dyn Fn(Pos2) -> Pos2>, f32) = match d.handle {
             Handle::Corner(k) => {
-                let page = vec2(view.layout.page_w, view.layout.page_h);
-                let (anchor, s) = corner_scale(d.from, k, now, page);
+                let (anchor, s) = corner_scale(d.from, k, now, view.layout.page_box());
                 (Box::new(move |p| anchor + (p - anchor) * s), s)
             }
             Handle::Rotate => {
@@ -335,7 +336,17 @@ mod tests {
     use super::*;
     use eframe::egui::pos2;
 
-    const PAGE: Vec2 = vec2(800.0, 1000.0);
+    const PAGE: Rect = Rect { min: pos2(0.0, 0.0), max: pos2(800.0, 1000.0) };
+
+    #[test]
+    fn on_an_infinite_page_it_grows_left_of_and_above_the_corner_too() {
+        // Written left of and above the infinite page's corner, pulled out
+        // further that way by its top-left corner: twice as large.
+        let page = Rect::from_min_max(pos2(-100_000.0, -100_000.0), pos2(100_000.0, 100_000.0));
+        let from = Rect::from_min_max(pos2(-300.0, -200.0), pos2(-100.0, -100.0));
+        let (anchor, s) = corner_scale(from, 0, pos2(-500.0, -300.0), page);
+        assert_eq!((anchor, s), (pos2(-100.0, -100.0), 2.0));
+    }
 
     #[test]
     fn a_corner_scales_about_the_opposite_one() {

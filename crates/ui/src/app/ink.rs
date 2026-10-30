@@ -13,7 +13,7 @@ use tratto_core::stroke_builder::StrokeBuilder;
 use crate::render::LiveStroke;
 use crate::settings::EraserMode;
 use crate::toolbar::Tool;
-use crate::view::{Layout, View};
+use crate::view::View;
 
 use super::{ActiveStroke, InkApp, to_page_point};
 
@@ -124,7 +124,9 @@ impl InkApp {
     }
 
     fn erase_at(&mut self, center: Pos2, radius: f32) {
-        let layout = Layout::of(&self.doc);
+        // As the view lays the pages out: an infinite page's content space
+        // starts where it is shown from, not at its corner.
+        let layout = self.layout();
         // The strokes hit, and where the eraser is on their page.
         let mut hits: Vec<(u64, Pos2)> = Vec::new();
         // The eraser circle may touch two neighbouring pages near the gap.

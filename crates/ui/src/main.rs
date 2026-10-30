@@ -17,6 +17,8 @@
 //! - `stroke_gpu`     strokes kept on the GPU (wgpu pipelines: ink, darkening highlighters)
 //! - `stroke_mesh`    anti-aliased stroke tessellation
 //! - `kinetic`        scroll momentum, wheel acceleration and eased jumps
+//! - `zoom`           the zoom the page is made at while the view zooms
+//! - `markdown`       Markdown in text boxes: layout, editor styling, list keys
 //! - `scrollbar`      large pen-friendly scrollbars
 //! - `toolbar`        the floating toolbars (tools, navigation, settings)
 //! - `settings`       persisted UI settings (toolbar position, tool styles)

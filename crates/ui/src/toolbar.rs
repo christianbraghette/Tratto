@@ -13,7 +13,9 @@
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{self, Align2, Color32, Margin, Order, Pos2, Rect, Sense, Shape, Slider, Stroke, pos2, vec2};
+use eframe::egui::{
+    self, Align2, Color32, Margin, Order, Pos2, Rect, Sense, Shape, Slider, SliderClamping, Stroke, pos2, vec2,
+};
 use egui_phosphor::regular as icon;
 
 use crate::scrollbar;
@@ -726,7 +728,10 @@ fn size_slider(
     above: bool,
 ) -> egui::Response {
     let (min, max) = (*range.start(), *range.end());
-    let resp = ui.add(Slider::new(value, range).step_by(step.into()).show_value(false));
+    // A size out of the range stays as it is until the slider is moved: a
+    // text box resized past it keeps its size while it is edited.
+    let slider = Slider::new(value, range).step_by(step.into()).show_value(false).clamping(SliderClamping::Edits);
+    let resp = ui.add(slider);
     if resp.hovered() || resp.dragged() {
         // Where egui puts the handle: the rail inset by the handle's radius.
         let r = resp.rect;

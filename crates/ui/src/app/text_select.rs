@@ -648,14 +648,14 @@ pub(super) fn word_at(glyphs: &[Glyph], i: usize) -> Range<usize> {
     start..end
 }
 
-/// The rectangles covering `range`, one per line (gaps between the words
-/// of a line filled).
 /// The middle of the drop of a selection handle, below the end of a line at
 /// `mid` (the middle of its edge) and `h` high.
 fn handle_center(mid: Pos2, h: f32) -> Pos2 {
     pos2(mid.x, mid.y + h * 0.5 + HANDLE * 1.5)
 }
 
+/// The rectangles covering `range`, one per line (gaps between the words
+/// of a line filled).
 pub(super) fn line_rects(glyphs: &[Glyph], range: Range<usize>) -> Vec<Rect> {
     let mut out: Vec<Rect> = Vec::new();
     for r in glyphs[range].iter().filter_map(|g| g.rect) {

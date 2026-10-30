@@ -210,7 +210,9 @@ impl InkApp {
     /// Back to where the view was before the last link followed.
     pub(super) fn go_back(&mut self) {
         if let Some(back) = self.nav_back.pop() {
+            // Across too: on an infinite page a link may lead to the side.
             self.scroll_to = Some(back.y);
+            self.scroll_to_x = Some(back.x);
         }
     }
 

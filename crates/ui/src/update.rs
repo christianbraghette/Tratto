@@ -579,24 +579,32 @@ pub fn remove_leftovers() {
         }
         None => return,
     };
-    fn sweep(dir: &Path, depth: u32) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if path.is_dir() {
-                if depth > 0 {
-                    sweep(&path, depth - 1);
-                }
-            } else if name.ends_with(OLD) || name.ends_with(NEW) {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
     // The archive's files sit next to the executable or one folder down
     // (the licenses).
-    sweep(&dir, 1);
+    sweep_leftovers(&dir, 1);
+}
+
+/// Removes the `.old` and `.new` files of `dir` and, `depth` folders down,
+/// of its folders; only what an update leaves: `<file>.old` or `<file>.new`
+/// next to the file it replaced. A portable app may sit in a folder of the
+/// user's, whose own "notes.old" stays.
+fn sweep_leftovers(dir: &Path, depth: u32) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if depth > 0 {
+                sweep_leftovers(&path, depth - 1);
+            }
+        } else if let Some(replaced) = name.strip_suffix(OLD).or_else(|| name.strip_suffix(NEW))
+            && !replaced.is_empty()
+            && dir.join(replaced).is_file()
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Starts the app again if an update asked for it (`RESTART`), once the
@@ -614,6 +622,30 @@ pub fn restart_if_requested() {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn only_what_an_update_left_is_swept() {
+        let dir = std::env::temp_dir().join("tratto_update_leftovers_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("licenses")).unwrap();
+        for f in [
+            "tratto.exe",
+            "tratto.exe.old",
+            "pdfium.dll",
+            "pdfium.dll.new",
+            "notes.old",
+            "licenses/A",
+            "licenses/A.old",
+        ] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        sweep_leftovers(&dir, 1);
+        let there = |f: &str| dir.join(f).exists();
+        assert!(!there("tratto.exe.old") && !there("pdfium.dll.new") && !there("licenses/A.old"));
+        assert!(there("tratto.exe") && there("pdfium.dll") && there("licenses/A"));
+        assert!(there("notes.old"), "the user's own file, nothing of the app's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn versions_compare() {

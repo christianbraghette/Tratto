@@ -234,11 +234,19 @@ impl PdfTextures {
 
     /// Forgets every page (another note was opened). Their textures may have
     /// been painted this frame, so they are retired, not dropped.
+    ///
+    /// Renders still asked for go to a channel of their own, dropped: the
+    /// PDF worker skips a render asked for again later in its queue, without
+    /// an answer, so the same tiles asked for anew (the note opened again
+    /// meanwhile) would never be counted back, and past `MAX_IN_FLIGHT` no
+    /// tile would be asked for again.
     pub fn clear(&mut self) {
         let frame = self.frame;
         self.retired.extend(self.entries.drain().filter_map(|(_, e)| e.texture).map(|t| (frame, t)));
         self.levels.clear();
         self.backlog.clear();
+        (self.reply, self.results) = mpsc::channel();
+        self.in_flight = 0;
         self.error = None;
         self.reported = false;
     }
@@ -574,6 +582,23 @@ mod tests {
             })
             .collect();
         assert_eq!(left, [0], "the tile on screen stays, the one scrolled past goes");
+    }
+
+    #[test]
+    fn renders_asked_for_before_a_clear_are_not_counted_after_it() {
+        let ctx = egui::Context::default();
+        let mut tex = PdfTextures::default();
+        // Asked for, and never answered (the worker skips a render asked for
+        // again later in its queue).
+        let old = tex.reply.clone();
+        tex.in_flight = MAX_IN_FLIGHT;
+        tex.clear();
+        assert_eq!(tex.in_flight, 0, "tiles can be asked for again");
+        // An answer to the note before goes nowhere.
+        let image = Ok((1, 1, vec![255; 4]));
+        let _ = old.send(RenderedPage { key: 1, page: 0, requested_width: SMALL_PX, region: None, image });
+        crate::test_frame(&ctx, RawInput::default(), |ui| tex.begin_frame(ui.ctx()));
+        assert_eq!(tex.in_flight, 0);
     }
 
     #[test]

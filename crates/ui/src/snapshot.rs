@@ -98,6 +98,10 @@ struct Scene {
     size: [usize; 2],
     paper: bool,
     pictures: Vec<(Rect, Arc<ImageData>)>,
+    /// The highlighters' triangles, painted as one layer: where strokes
+    /// overlap they do not darken (as on screen).
+    highlights: Vec<ClippedPrimitive>,
+    /// The text and pen strokes, over them.
     primitives: Vec<ClippedPrimitive>,
     /// Points to pixels of `primitives`.
     ppp: f32,
@@ -166,8 +170,10 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
     let size = [(area.width() * density).ceil().max(1.0) as usize, (area.height() * density).ceil().max(1.0) as usize];
     let at = |p: Pos2| ((p - area.min) * scale).to_pos2();
 
-    // Bottom to top, as on the page: highlighters, text, pen.
+    // Bottom to top, as on the page: highlighters (a layer of their own),
+    // text, pen.
     let layer = LayerId::new(Order::Background, Id::unique("clipboard_snapshot"));
+    let highlight_layer = LayerId::new(Order::Background, Id::unique("clipboard_snapshot_highlights"));
     let painter = Painter::new(ctx.clone(), layer, Rect::EVERYTHING);
     let strokes = |kind: tratto_core::model::StrokeKind| {
         let mut mesh = Mesh::default();
@@ -177,15 +183,21 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
         mesh.translate(-(area.min.to_vec2() * scale));
         mesh
     };
-    painter.add(Shape::mesh(strokes(tratto_core::model::StrokeKind::Highlighter)));
+    painter
+        .clone()
+        .with_layer_id(highlight_layer)
+        .add(Shape::mesh(strokes(tratto_core::model::StrokeKind::Highlighter)));
     for t in &snap.texts {
         let color = Color32::from_rgb(t.color[0], t.color[1], t.color[2]);
         crate::render::paint_text_box(&painter, at(pos2(t.x, t.y)), (scale, scale), t, color);
     }
     painter.add(Shape::mesh(strokes(tratto_core::model::StrokeKind::Pen)));
     // Taken back before the frame ends: never shown.
-    let shapes: Vec<_> = ctx.graphics_mut(|g| std::mem::take(g.entry(layer)).all_entries().cloned().collect());
-    let primitives = ctx.tessellate(shapes, ppp);
+    let take = |layer| {
+        let shapes: Vec<_> = ctx.graphics_mut(|g| std::mem::take(g.entry(layer)).all_entries().cloned().collect());
+        ctx.tessellate(shapes, ppp)
+    };
+    let (highlights, primitives) = (take(highlight_layer), take(layer));
     let atlas = ctx.fonts(|f| f.image());
 
     let pictures = snap
@@ -203,7 +215,7 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
         snap.rules.map(|style| rule_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
     let dots = snap.rules.map(|style| dot_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
     let underlay = snap.underlay.iter().map(|(file, page, rect)| (file.clone(), *page, px(*rect))).collect();
-    Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, rules, dots, underlay }
+    Scene { size, paper: snap.paper, pictures, highlights, primitives, ppp, atlas, rules, dots, underlay }
 }
 
 /// The page-local positions of the rules of a page `extent` long.
@@ -248,6 +260,16 @@ struct Canvas {
     px: Vec<[f32; 4]>,
 }
 
+/// How a triangle's pixels mix with those under them.
+#[derive(Clone, Copy, PartialEq)]
+enum Blend {
+    /// Painted over.
+    Over,
+    /// The stronger of both (highlighters among themselves): overlapping
+    /// strokes, and a stroke's own round joins, never darken.
+    Strongest,
+}
+
 impl Canvas {
     /// `c` (premultiplied) over the pixel at `i`.
     fn over(&mut self, i: usize, c: [f32; 4]) {
@@ -255,6 +277,19 @@ impl Canvas {
         let k = 1.0 - c[3];
         for n in 0..4 {
             d[n] = c[n] + d[n] * k;
+        }
+    }
+
+    /// `c` (premultiplied) mixed into the pixel at `i` by `blend`.
+    fn blend(&mut self, i: usize, c: [f32; 4], blend: Blend) {
+        match blend {
+            Blend::Over => self.over(i, c),
+            Blend::Strongest => {
+                let d = &mut self.px[i];
+                if c[3] > d[3] {
+                    *d = c;
+                }
+            }
         }
     }
 }
@@ -294,15 +329,27 @@ fn rasterise(scene: &Scene) -> Rgba {
     for (rect, data) in &scene.pictures {
         draw_picture(&mut canvas, *rect, data);
     }
-    for p in &scene.primitives {
-        if let Primitive::Mesh(mesh) = &p.primitive {
-            let clip = Rect::from_min_max(
-                (p.clip_rect.min.to_vec2() * scene.ppp).to_pos2(),
-                (p.clip_rect.max.to_vec2() * scene.ppp).to_pos2(),
-            );
-            draw_mesh(&mut canvas, mesh, scene.ppp, clip, &scene.atlas);
+    let draw = |canvas: &mut Canvas, primitives: &[ClippedPrimitive], blend: Blend| {
+        for p in primitives {
+            if let Primitive::Mesh(mesh) = &p.primitive {
+                let clip = Rect::from_min_max(
+                    (p.clip_rect.min.to_vec2() * scene.ppp).to_pos2(),
+                    (p.clip_rect.max.to_vec2() * scene.ppp).to_pos2(),
+                );
+                draw_mesh(canvas, mesh, scene.ppp, clip, &scene.atlas, blend);
+            }
+        }
+    };
+    if !scene.highlights.is_empty() {
+        let mut layer = Canvas { size: scene.size, px: vec![[0.0; 4]; w * h] };
+        draw(&mut layer, &scene.highlights, Blend::Strongest);
+        for (i, c) in layer.px.into_iter().enumerate() {
+            if c[3] > 0.0 {
+                canvas.over(i, c);
+            }
         }
     }
+    draw(&mut canvas, &scene.primitives, Blend::Over);
     // Unmultiplied. Where nothing is, white (still fully transparent): an
     // app that ignores the alpha of a pasted picture (Windows' plain bitmap
     // has none) shows white paper there, not black.
@@ -380,8 +427,8 @@ fn draw_rgba(canvas: &mut Canvas, rect: Rect, size: [u32; 2], pixel: impl Fn(u32
 }
 
 /// The triangles of `mesh` (points, `ppp` pixels each), within `clip`
-/// (pixels), sampling the font atlas for text.
-fn draw_mesh(canvas: &mut Canvas, mesh: &Mesh, ppp: f32, clip: Rect, atlas: &ColorImage) {
+/// (pixels), sampling the font atlas for text, mixed in by `blend`.
+fn draw_mesh(canvas: &mut Canvas, mesh: &Mesh, ppp: f32, clip: Rect, atlas: &ColorImage, blend: Blend) {
     let textured = mesh.texture_id == TextureId::default();
     let [w, h] = canvas.size;
     let [aw, ah] = atlas.size;
@@ -418,7 +465,7 @@ fn draw_mesh(canvas: &mut Canvas, mesh: &Mesh, ppp: f32, clip: Rect, atlas: &Col
                         color[n] *= texel[n];
                     }
                 }
-                canvas.over(y * w + x, color);
+                canvas.blend(y * w + x, color, blend);
             }
         }
     }
@@ -498,6 +545,34 @@ mod tests {
     }
 
     #[test]
+    fn crossing_highlighters_do_not_darken() {
+        use tratto_core::model::{Point, StrokeKind};
+        let line = |id, pts: Vec<Point>| Stroke::new(id, 0, StrokeKind::Highlighter, [255, 220, 0, 96], 14.0, pts);
+        let across = line(1, (0..=10).map(|i| Point::new(10.0 + i as f32 * 8.0, 50.0, 1.0)).collect());
+        let down = line(2, (0..=10).map(|i| Point::new(50.0, 10.0 + i as f32 * 8.0, 1.0)).collect());
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0));
+        let snap = Snapshot {
+            strokes: vec![across, down],
+            texts: Vec::new(),
+            images: Vec::new(),
+            area,
+            paper: true,
+            rules: None,
+            underlay: Vec::new(),
+        };
+        let ctx = egui::Context::default();
+        let mut made = None;
+        crate::test_frame(&ctx, egui::RawInput::default(), |ui| {
+            made = Some(scene(ui.ctx(), &snap, MAX_SIDE, MAX_DENSITY))
+        });
+        let image = rasterise(&made.unwrap());
+        let px = |x: f32, y: f32| image.pixel((x * 3.0) as usize, (y * 3.0) as usize);
+        let (alone, crossed) = (px(30.0, 50.0), px(50.0, 50.0));
+        assert!(alone[2] < 200, "highlighted: {alone:?}");
+        assert_eq!(crossed, alone, "no darker where they cross");
+    }
+
+    #[test]
     fn a_page_saved_as_png_has_its_paper_and_rules() {
         let mut doc = Document::default();
         (doc.page_width, doc.page_height) = (100.0, 80.0);
@@ -559,7 +634,7 @@ mod tests {
         mesh.texture_id = TextureId::User(1);
         let atlas = ColorImage::filled([1, 1], Color32::WHITE);
         let clip = Rect::from_min_max(pos2(0.0, 0.0), pos2(4.0, 4.0));
-        draw_mesh(&mut canvas, &mesh, 1.0, clip, &atlas);
+        draw_mesh(&mut canvas, &mesh, 1.0, clip, &atlas, Blend::Over);
         let row: Vec<f32> = (0..4).map(|x| canvas.px[4 + x][0]).collect();
         assert_eq!(row, [1.0, 1.0, 0.0, 0.0], "only the left half, fully red");
         assert!(canvas.px.iter().all(|p| p[1] == 0.0 && p[2] == 0.0));

@@ -140,8 +140,6 @@ struct EditState {
     orig: Option<TextBox>,
 }
 
-/// A press with the text tool: tap = edit / create, drag = move / size, or
-/// resize the box being edited.
 /// Presentation mode: full screen with the page alone, fitted whole, one
 /// page per step (keys, taps, the wheel); no toolbar, sidebar or title bar.
 /// Nothing is written: the pen moves around, or points with the laser.
@@ -154,6 +152,8 @@ struct Presentation {
     zoom: ZoomMode,
 }
 
+/// A press with the text tool: tap = edit / create, drag = move / size, or
+/// resize the box being edited.
 struct TextPress {
     /// Existing text box under the pen.
     hit: Option<u64>,
@@ -884,6 +884,7 @@ impl InkApp {
         self.scroll_to_x = self.scroll_to_x.map(|x| x + by.x);
         self.last_erase_pos = self.last_erase_pos.map(|p| p + by);
         self.minimap.shift(by);
+        self.shift_laser(by);
     }
 
     /// The middle of the view on note page `current_page` (page space; an

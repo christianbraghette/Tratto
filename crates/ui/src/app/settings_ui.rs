@@ -385,7 +385,8 @@ impl InkApp {
             if ui.button(format!("{}  Reset to defaults", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
                 reset = true;
             }
-            ui.label(RichText::new("Keeps the library folder and the panels.").small().color(color::text_faint()));
+            let kept = "Keeps the library folder, the panels and where each note was left.";
+            ui.label(RichText::new(kept).small().color(color::text_faint()));
         });
 
         match pdf_reader.map(|on| (on, if on { file_assoc::register() } else { file_assoc::unregister() })) {
@@ -402,9 +403,16 @@ impl InkApp {
         }
         if reset {
             let old = std::mem::take(&mut self.settings);
-            self.settings.library_root = old.library_root;
-            self.settings.sidebar = old.sidebar;
-            self.settings.sidebar_last = old.sidebar_last;
+            let s = &mut self.settings;
+            s.library_root = old.library_root;
+            s.sidebar = old.sidebar;
+            s.sidebar_last = old.sidebar_last;
+            // Not preferences: where each note was left (and the open note's
+            // zoom), the note to reopen, the PDFs read lately.
+            s.zoom = old.zoom;
+            s.last_note = old.last_note;
+            s.note_views = old.note_views;
+            s.recent_pdfs = old.recent_pdfs;
         }
     }
 }

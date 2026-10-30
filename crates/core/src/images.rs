@@ -4,17 +4,19 @@
 //! Pictures in notes: their files, made from what is inserted (a file, the
 //! clipboard's pixels), and decoded for the screen and the PDF.
 //!
-//! A note keeps a picture as a PNG or a JPEG. One inserted as such and not
-//! too large is kept byte for byte; anything else (GIF, BMP, WebP, the
-//! clipboard's pixels, a very large picture) is decoded, made smaller if it
-//! is too large, and saved as a PNG (a JPEG photo as a JPEG).
+//! A note keeps a picture as a PNG or a JPEG. One inserted as such, not too
+//! large and upright is kept byte for byte; anything else (GIF, BMP, WebP,
+//! the clipboard's pixels, a very large picture, a photo stored sideways
+//! with its EXIF orientation) is decoded, turned upright, made smaller if
+//! it is too large, and saved as a PNG (a JPEG photo as a JPEG).
 
 use std::fmt;
 use std::io::Cursor;
 use std::sync::Arc;
 
 use image::imageops::FilterType;
-use image::{DynamicImage, ImageFormat, ImageReader, RgbaImage};
+use image::metadata::Orientation;
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 
 use crate::model::{Image, ImageData};
 
@@ -54,14 +56,22 @@ impl ImageData {
         ) {
             return Err(ImageError::Unsupported);
         }
-        let (w, h) = ImageReader::with_format(Cursor::new(&bytes), format).into_dimensions().map_err(broken)?;
+        let mut decoder = ImageReader::with_format(Cursor::new(&bytes), format).into_decoder().map_err(broken)?;
+        let (w, h) = decoder.dimensions();
         if w == 0 || h == 0 {
             return Err(broken("it is empty"));
         }
-        if matches!(format, ImageFormat::Png | ImageFormat::Jpeg) && w.max(h) <= MAX_SIDE {
+        // A photo taken holding the camera sideways is stored sideways, with
+        // a note (EXIF) of how to turn it; what shows it (the screen, a PDF)
+        // reads only the pixels, so they are turned here.
+        let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+        let upright = orientation == Orientation::NoTransforms;
+        if upright && matches!(format, ImageFormat::Png | ImageFormat::Jpeg) && w.max(h) <= MAX_SIDE {
+            drop(decoder);
             return Ok(Arc::new(ImageData::new(w, h, bytes)));
         }
-        let img = image::load_from_memory_with_format(&bytes, format).map_err(broken)?;
+        let mut img = DynamicImage::from_decoder(decoder).map_err(broken)?;
+        img.apply_orientation(orientation);
         encode(shrink(img), format == ImageFormat::Jpeg)
     }
 
@@ -136,15 +146,16 @@ pub fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, Ima
 }
 
 /// Where a picture of `data` goes when inserted with its centre at
-/// `center` on a page `page_w` x `page_h` (page space): at its own size,
-/// one pixel a document unit, made smaller to fit in most of the page, and
-/// kept on it.
-pub fn place(id: u64, page: u32, center: emath::Pos2, data: Arc<ImageData>, page_w: f32, page_h: f32) -> Image {
+/// `center` on a page whose paper is `paper` (page space; an infinite
+/// page's goes left of and above its corner too): at its own size, one
+/// pixel a document unit, made smaller to fit in most of the page, and kept
+/// on it.
+pub fn place(id: u64, page: u32, center: emath::Pos2, data: Arc<ImageData>, paper: emath::Rect) -> Image {
     let (w, h) = (data.width as f32, data.height as f32);
-    let fit = (page_w * 0.8 / w).min(page_h * 0.8 / h).min(1.0);
+    let fit = (paper.width() * 0.8 / w).min(paper.height() * 0.8 / h).min(1.0);
     let (width, height) = (w * fit, h * fit);
-    let x = (center.x - width * 0.5).clamp(0.0, (page_w - width).max(0.0));
-    let y = (center.y - height * 0.5).clamp(0.0, (page_h - height).max(0.0));
+    let x = (center.x - width * 0.5).clamp(paper.left(), (paper.right() - width).max(paper.left()));
+    let y = (center.y - height * 0.5).clamp(paper.top(), (paper.bottom() - height).max(paper.top()));
     Image { id, page, x, y, width, height, data }
 }
 
@@ -217,10 +228,35 @@ mod tests {
     }
 
     #[test]
+    fn a_photo_stored_sideways_is_turned_upright() {
+        let img = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 20, image::Rgb([200, 30, 30])));
+        let mut jpeg = Vec::new();
+        img.write_to(&mut Cursor::new(&mut jpeg), ImageFormat::Jpeg).unwrap();
+        // An EXIF block after the start of the file: orientation 6, "turn a
+        // quarter clockwise" (big-endian TIFF, one entry).
+        let tiff: [u8; 26] =
+            [b'M', b'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0];
+        let mut app1 = vec![0xFF, 0xE1, 0, (2 + 6 + tiff.len()) as u8];
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(&tiff);
+        jpeg.splice(2..2, app1);
+        let data = ImageData::from_file(jpeg).unwrap();
+        assert_eq!((data.width, data.height), (20, 40), "upright");
+        assert_eq!(data.decode(100).unwrap().dimensions(), (20, 40));
+        assert!(data.is_jpeg());
+    }
+
+    #[test]
     fn placing_fits_the_page() {
         let data = ImageData::from_file(png(2000, 1000)).unwrap();
-        let img = place(1, 0, emath::pos2(400.0, 500.0), data, 800.0, 1000.0);
+        let page = emath::Rect::from_min_max(emath::pos2(0.0, 0.0), emath::pos2(800.0, 1000.0));
+        let img = place(1, 0, emath::pos2(400.0, 500.0), data.clone(), page);
         assert!((img.width - 640.0).abs() < 0.01 && (img.height - 320.0).abs() < 0.01);
         assert!(img.x >= 0.0 && img.x + img.width <= 800.0);
+        // An infinite page: where it is asked for, also left of and above
+        // the page's corner.
+        let infinite = emath::Rect::from_min_max(emath::pos2(-1e5, -1e5), emath::pos2(1e5, 1e5));
+        let img = place(1, 0, emath::pos2(-3000.0, -2000.0), data, infinite);
+        assert_eq!((img.x + img.width * 0.5, img.y + img.height * 0.5), (-3000.0, -2000.0));
     }
 }

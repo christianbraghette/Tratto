@@ -172,15 +172,64 @@ fn make_preview(doc: &Document) -> Preview {
     Preview { page_w, page_h, strokes: out, bars }
 }
 
-/// First non-empty line of the top-most text box on page 1.
+/// First non-empty line of the top-most text box on page 1, without its
+/// Markdown marks (see `plain_line`).
 fn auto_title(doc: &Document) -> Option<String> {
     let first = doc
         .texts
         .iter()
         .filter(|t| t.page == 0)
         .min_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))?;
-    let line = first.text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = first.text.lines().map(plain_line).find(|l| !l.is_empty())?;
     Some(line.chars().take(48).collect())
+}
+
+/// A line of a text box's Markdown as a title: without the marks a heading,
+/// a quote or a list item starts with (`# `, `> `, `- [ ] `, `1. `) and
+/// those of bold, italic, strikethrough and code, trimmed. A note headed
+/// "# Lecture 3" is titled "Lecture 3".
+fn plain_line(line: &str) -> String {
+    let mut s = line.trim();
+    loop {
+        let before = s;
+        s = s.strip_prefix('>').unwrap_or(s).trim_start();
+        let hashes = s.len() - s.trim_start_matches('#').len();
+        if (1..=6).contains(&hashes) && s[hashes..].starts_with(' ') {
+            s = s[hashes..].trim_start();
+        }
+        for bullet in ["- ", "* ", "+ "] {
+            s = s.strip_prefix(bullet).unwrap_or(s).trim_start();
+        }
+        for task in ["[ ] ", "[x] ", "[X] "] {
+            s = s.strip_prefix(task).unwrap_or(s);
+        }
+        let digits = s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 && (s[digits..].starts_with(". ") || s[digits..].starts_with(") ")) {
+            s = s[digits + 2..].trim_start();
+        }
+        if s == before {
+            break;
+        }
+    }
+    // A heading's closing hashes ("# Title #"), not those of "C#".
+    let hashes = s.len() - s.trim_end_matches('#').len();
+    if hashes > 0 && (s.len() == hashes || s[..s.len() - hashes].ends_with(' ')) {
+        s = s[..s.len() - hashes].trim_end();
+    }
+    let s = s.replace("**", "").replace("__", "").replace("~~", "").replace('`', "");
+    // A single `*` or `_` (italic) is a mark where it opens or closes a
+    // word: a space on one side only ("*so*", not "2 * 3" or "snake_case").
+    let chars: Vec<char> = s.chars().collect();
+    let blank = |i: Option<&char>| i.is_none_or(|c| c.is_whitespace());
+    let kept: String = (0..chars.len())
+        .filter(|&i| {
+            let c = chars[i];
+            let (before, after) = (blank(i.checked_sub(1).and_then(|j| chars.get(j))), blank(chars.get(i + 1)));
+            !matches!(c, '*' | '_') || before == after
+        })
+        .map(|i| chars[i])
+        .collect();
+    kept.trim().to_owned()
 }
 
 // ---------------------------------------------------------------- errors
@@ -666,6 +715,24 @@ mod tests {
             layout: None,
         });
         doc
+    }
+
+    #[test]
+    fn titles_are_taken_without_their_markdown() {
+        for (line, title) in [
+            ("# Lecture 3", "Lecture 3"),
+            ("## **Week** 2 ##", "Week 2"),
+            ("> - [x] *Buy* milk", "Buy milk"),
+            ("1. `cargo` ~~run~~", "cargo run"),
+            ("Learning C#", "Learning C#"),
+            ("2 * 3 = snake_case", "2 * 3 = snake_case"),
+            ("#hashtag", "#hashtag"),
+        ] {
+            assert_eq!(plain_line(line), title, "{line:?}");
+        }
+        let mut doc = sample_doc();
+        doc.texts[0].text = "\n# Shopping list\nmilk".into();
+        assert_eq!(auto_title(&doc).as_deref(), Some("Shopping list"));
     }
 
     #[test]

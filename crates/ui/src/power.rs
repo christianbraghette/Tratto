@@ -55,8 +55,11 @@ fn watch(ctx: &egui::Context) {
         let _ = std::thread::Builder::new().name("power".into()).spawn(move || {
             loop {
                 std::thread::sleep(POLL);
-                let Some(now) = read() else { return };
-                if publish(now) {
+                // Unknown for a moment (Windows, waking from sleep): asked
+                // again next time, not given up on.
+                if let Some(now) = read()
+                    && publish(now)
+                {
                     ctx.request_repaint();
                 }
             }

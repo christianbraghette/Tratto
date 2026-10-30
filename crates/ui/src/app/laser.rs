@@ -63,6 +63,12 @@ impl InkApp {
         self.pen_laser || self.laser && (self.tool == Tool::Pointer || self.reading() || self.presenting.is_some())
     }
 
+    /// Content space moved by `by` (see `shift_view`): the trail stays where
+    /// it is on the page.
+    pub(super) fn shift_laser(&mut self, by: Vec2) {
+        self.laser_trail.iter_mut().for_each(|p| p.pos += by);
+    }
+
     /// Adds where the pointer went this frame (`moves`) to the trail while
     /// it is pressed on the canvas, keeps that press lit, and drops what has
     /// faded.

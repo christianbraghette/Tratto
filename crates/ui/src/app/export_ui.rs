@@ -153,15 +153,26 @@ fn file_name(title: &str) -> String {
     let name: String =
         title.chars().map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
     let name = name.trim().trim_end_matches('.').trim();
-    if name.is_empty() { "Note".to_owned() } else { name.to_owned() }
+    if name.is_empty() { "Note".to_owned() } else { tratto_core::library::not_reserved(name) }
+}
+
+/// `path` ending in `.pdf`: added unless it is there ("Lecture 3.5" is
+/// "Lecture 3.5.pdf", not a file of type "5").
+fn with_pdf_extension(path: PathBuf) -> PathBuf {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+        return path;
+    }
+    let mut name = path.into_os_string();
+    name.push(".pdf");
+    PathBuf::from(name)
 }
 
 /// Opens the PDF with the system's default viewer.
 fn open_with_system(path: &Path) -> std::io::Result<()> {
     let mut cmd = if cfg!(target_os = "windows") {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c
+        // Explorer, not `cmd /C start`: cmd would read a `&` or `^` in the
+        // path (unquoted when it has no spaces) as its own syntax.
+        std::process::Command::new("explorer.exe")
     } else if cfg!(target_os = "macos") {
         std::process::Command::new("open")
     } else {
@@ -699,10 +710,7 @@ impl InkApp {
             .collect();
         let title = if d.title.trim().is_empty() { self.scope_title(d.scope) } else { d.title.trim().to_owned() };
         let opts = self.pdf_options(d, &title);
-        let mut path = PathBuf::from(d.path.trim().trim_matches('"'));
-        if path.extension().is_none() {
-            path.set_extension("pdf");
-        }
+        let path = with_pdf_extension(PathBuf::from(d.path.trim().trim_matches('"')));
         let skipped = list.len() - docs.len();
 
         let (tx, done) = mpsc::channel();
@@ -955,6 +963,15 @@ mod tests {
         assert_eq!(file_name("a/b: c?"), "a_b_ c_");
         assert_eq!(file_name("  ...  "), "Note");
         assert_eq!(file_name("Notes."), "Notes");
+        assert_eq!(file_name("aux"), "aux_");
+    }
+
+    #[test]
+    fn exported_files_end_in_pdf() {
+        let pdf = |p: &str| with_pdf_extension(PathBuf::from(p));
+        assert_eq!(pdf("Lecture 3.5"), PathBuf::from("Lecture 3.5.pdf"));
+        assert_eq!(pdf("Notes"), PathBuf::from("Notes.pdf"));
+        assert_eq!(pdf("Notes.PDF"), PathBuf::from("Notes.PDF"));
     }
 
     #[test]

@@ -162,7 +162,7 @@ impl InkApp {
         let layout = self.layout();
         let (page, center) = at.unwrap_or_else(|| self.paste_place());
         let id = self.doc.alloc_id();
-        let image = images::place(id, page, center, data, layout.page_w, layout.page_h);
+        let image = images::place(id, page, center, data, layout.page_box());
         let index = self.doc.images.len();
         self.history.exec(&mut self.doc, Action::AddImage { index, image });
         self.clear_selection();

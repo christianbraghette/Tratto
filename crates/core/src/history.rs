@@ -344,11 +344,12 @@ impl History {
         self.push_undo(inverse);
     }
 
-    /// Records an already-performed change by its inverse.
+    /// Incremented on every document change (see `version`).
     pub fn version(&self) -> u64 {
         self.version
     }
 
+    /// Records an already-performed change by its inverse.
     pub fn push_undo(&mut self, inverse: Action) {
         self.version += 1;
         self.undo.push_back(inverse);

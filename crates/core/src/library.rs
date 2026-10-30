@@ -241,7 +241,22 @@ pub fn sanitize(name: &str) -> String {
     let cleaned: String =
         name.trim().chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
     let cleaned: String = cleaned.trim_matches(|c| c == '.' || c == ' ').chars().take(60).collect();
-    if cleaned.is_empty() { "Untitled".to_owned() } else { cleaned }
+    // Cut short, it may end in a dot or a space again, which Windows drops.
+    let cleaned = cleaned.trim_end_matches(['.', ' ']);
+    if cleaned.is_empty() { "Untitled".to_owned() } else { not_reserved(cleaned) }
+}
+
+/// `name`, unless Windows keeps it for a device (`CON`, `NUL`, `COM1`...,
+/// whatever the case and the extension: "con.ink" cannot be made either);
+/// then with an `_` after that part, "CON_".
+pub fn not_reserved(name: &str) -> String {
+    let base = name.split('.').next().unwrap_or(name).trim_end();
+    let upper = base.to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        upper.strip_prefix(prefix).is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n != "0")
+    };
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str()) || numbered("COM") || numbered("LPT");
+    if reserved { format!("{base}_{}", &name[base.len()..]) } else { name.to_owned() }
 }
 
 /// `dir/stem.ext`, or `dir/stem (2).ext`, ... if that exists already.
@@ -288,7 +303,9 @@ pub fn create_section(notebook: &Path, name: &str) -> Result<PathBuf> {
 /// Where `path` goes when renamed to `stem` (already sanitized), or `None`
 /// if the name does not change. A change of case only keeps the name as it
 /// is: on case-insensitive file systems (Windows, macOS) the old name would
-/// otherwise count as taken and give "Name (2)".
+/// otherwise count as taken and give "Name (2)". Unless another file of the
+/// folder has that exact name (a case-sensitive file system, Linux): the
+/// rename would replace it.
 fn rename_target(path: &Path, stem: &str, ext: Option<&str>) -> Option<PathBuf> {
     let current = match ext {
         Some(_) => path.file_stem(),
@@ -304,7 +321,12 @@ fn rename_target(path: &Path, stem: &str, ext: Option<&str>) -> Option<PathBuf> 
             Some(e) => format!("{stem}.{e}"),
             None => stem.to_owned(),
         };
-        return Some(parent.join(file));
+        // The folder's own names, as stored: on a case-insensitive file
+        // system the note itself is listed under its old case only.
+        let taken = fs::read_dir(parent).is_ok_and(|rd| rd.flatten().any(|e| e.file_name() == file.as_str()));
+        if !taken {
+            return Some(parent.join(file));
+        }
     }
     Some(unique_path(parent, stem, ext))
 }
@@ -434,9 +456,13 @@ pub fn trash(root: &Path, path: &Path) -> Result<()> {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "item".into());
         unique_path(&dir, &name, None)
     };
+    let note = is_note(path);
     move_path(path, &target)?;
-    // The rolling backup of a deleted note is not needed any more.
-    let _ = fs::remove_file(path.with_extension("ink.bak"));
+    // The rolling backup of a deleted note is not needed any more. (A
+    // folder has none: `with_extension` would name another note's.)
+    if note {
+        let _ = fs::remove_file(path.with_extension("ink.bak"));
+    }
     let mut index = read_trash_index(root);
     let origin = path.strip_prefix(root).unwrap_or(path).to_path_buf();
     index.push(TrashEntry { name: file_name(&target), origin, deleted: storage::now_secs() });
@@ -640,6 +666,15 @@ mod tests {
     fn sanitize_and_unique() {
         assert_eq!(sanitize("  a/b:c?  "), "a_b_c_");
         assert_eq!(sanitize("..."), "Untitled");
+        // Cut at 60 characters right after a space: not left ending in it.
+        let long = format!("{} {}", "a".repeat(59), "b".repeat(10));
+        assert_eq!(sanitize(&long), "a".repeat(59));
+        // Names Windows keeps for devices.
+        assert_eq!(sanitize("con"), "con_");
+        assert_eq!(sanitize("NUL.notes"), "NUL_.notes");
+        assert_eq!(sanitize("Com3"), "Com3_");
+        assert_eq!(sanitize("COM0"), "COM0");
+        assert_eq!(sanitize("Console"), "Console");
         let dir = std::env::temp_dir().join("tratto_unique_test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -753,6 +788,39 @@ mod tests {
         assert!(delete_forever(&root, &note).is_err()); // not in the trash
         assert_eq!(empty_trash(&root).unwrap(), 1);
         assert!(list_trash(&root).is_empty() && !note.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_change_of_case_never_replaces_another_note() {
+        let dir = std::env::temp_dir().join("tratto_rename_case_test");
+        let _ = fs::remove_dir_all(&dir);
+        let upper = create_note(&dir, "Plan").unwrap();
+        // Only a case-sensitive file system (Linux) can hold both.
+        let case_sensitive = !dir.join("PLAN.ink").exists();
+        if case_sensitive {
+            let lower = create_note(&dir, "plan").unwrap();
+            assert_eq!(lower, dir.join("plan.ink"));
+            let renamed = rename_note(&upper, "plan").unwrap();
+            assert_eq!(renamed, dir.join("plan (2).ink"));
+            assert!(lower.is_file() && renamed.is_file());
+        } else {
+            // In place, not "plan (2)".
+            assert_eq!(rename_note(&upper, "plan").unwrap(), dir.join("plan.ink"));
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trashing_a_folder_keeps_the_backups_next_to_it() {
+        let root = std::env::temp_dir().join("tratto_trash_folder_bak_test");
+        let _ = fs::remove_dir_all(&root);
+        let note = create_note(&root, "Physics").unwrap();
+        fs::write(note.with_extension("ink.bak"), b"old").unwrap();
+        // A notebook whose name has a dot: "Physics.2024".
+        let nb = create_notebook(&root, "Physics.2024").unwrap();
+        trash(&root, &nb).unwrap();
+        assert!(note.with_extension("ink.bak").exists(), "the note's backup is not the folder's");
         let _ = fs::remove_dir_all(&root);
     }
 
