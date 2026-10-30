@@ -1,2 +1,10 @@
-# Shell scripts also run in WSL and on the CI's Linux/macOS runners.
-*.sh text eol=lf
+# Every text file is stored and checked out with LF line endings, on every
+# platform: rustfmt writes LF too (rustfmt.toml), so it never rewrites whole
+# files, and shell scripts run as-is in WSL and on the CI's Linux/macOS runners.
+* text=auto eol=lf
+
+# Binary assets.
+*.ttf binary
+*.ico binary
+*.icns binary
+*.png binary
