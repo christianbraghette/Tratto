@@ -170,30 +170,26 @@ impl InkApp {
         }
     }
 
-    /// The note page written on page `pdf_page` of the PDF (the first, if
-    /// several are; none if it was deleted).
-    fn note_page_of(&self, pdf_page: u32) -> Option<u32> {
-        let pages = &self.doc.pdf.as_ref()?.pages;
-        pages.iter().position(|p| *p == Some(pdf_page)).map(|i| i as u32)
-    }
-
     /// Scrolls to where a link or an outline entry leads, remembering where
     /// the view was for Back.
     pub(super) fn go_to_target(&mut self, target: Target) {
-        let Some(page) = self.note_page_of(target.page) else {
+        // The note page that PDF page is on (the first, if several are; none
+        // if it was deleted), and its place there.
+        let Some((page, placed)) = self.doc.pdf_place_of(target.page) else {
             self.toast("That page of the PDF is no longer in this note");
             return;
         };
         let layout = self.layout();
-        let mut y = layout.page_stop(page);
+        // From the PDF page's top (on an infinite page, it is among others).
+        let mut y = if layout.canvas { layout.page_top(page) + placed.top() - MARGIN } else { layout.page_stop(page) };
         // A height on the page: shown at the top, with a little room above.
-        if let Some(pdf) = &self.doc.pdf {
-            let placed = pdf.placement(target.page, layout.page_w, layout.page_h);
-            let size = pdf.sizes.get(target.page as usize);
-            if let (Some(top), Some([_, py, _, ph]), Some([_, h])) = (target.top, placed, size) {
-                let share = (1.0 - top / h.max(1.0)).clamp(0.0, 1.0);
-                y = layout.page_top(page) + py + share * ph - MARGIN;
-            }
+        let size = self.doc.pdf.as_ref().and_then(|pdf| pdf.sizes.get(target.page as usize));
+        if let (Some(top), Some([_, h])) = (target.top, size) {
+            let share = (1.0 - top / h.max(1.0)).clamp(0.0, 1.0);
+            y = layout.page_top(page) + placed.top() + share * placed.height() - MARGIN;
+        }
+        if layout.canvas {
+            self.scroll_to_x = Some((layout.page_origin(page).x + placed.left() - MARGIN).max(0.0));
         }
         if self.nav_back.len() >= NAV_BACK_MAX {
             self.nav_back.remove(0);
@@ -212,15 +208,14 @@ impl InkApp {
     /// The PDF link under the screen point `pos`, and its screen rectangle.
     /// Asks for the links of that page the first time.
     fn link_at(&mut self, view: &View, pos: Pos2) -> Option<(Rect, LinkAction)> {
-        let pdf = self.doc.pdf.as_ref()?;
-        let file = pdf.file.as_ref()?;
-        let layout = view.layout;
-        let page = layout.page_at(view.screen_to_content(pos))?;
-        let pdf_page = (*pdf.pages.get(page as usize)?)?;
-        let [x, y, w, h] = pdf.placement(pdf_page, layout.page_w, layout.page_h)?;
-        let origin = view.page_origin_screen(page) + vec2(x, y) * view.scale;
-        let size = vec2(w, h) * view.scale;
-        self.pdf_nav.links(file, pdf_page).iter().find_map(|l| {
+        let file = self.doc.pdf.as_ref()?.file.clone()?;
+        let page = view.layout.page_at(view.screen_to_content(pos))?;
+        let page_origin = view.page_origin_screen(page);
+        let on_screen = |r: Rect| Rect::from_min_size(page_origin + r.min.to_vec2() * view.scale, r.size() * view.scale);
+        let (pdf_page, placed) =
+            self.doc.pdf_places(page).into_iter().map(|(p, r)| (p, on_screen(r))).find(|(_, r)| r.contains(pos))?;
+        let (origin, size) = (placed.min, placed.size());
+        self.pdf_nav.links(&file, pdf_page).iter().find_map(|l| {
             let [l0, t0, r0, b0] = l.rect;
             let rect = Rect::from_min_max(origin + vec2(l0, t0) * size, origin + vec2(r0, b0) * size);
             rect.contains(pos).then(|| (rect, l.action.clone()))
@@ -320,7 +315,7 @@ impl InkApp {
         // is (see `Layout::grown`).
         if layout.canvas {
             let shown = full.size() / View::scale_for(self.zoom(), full, &layout);
-            layout = layout.grown(self.doc.content_bounds(0).map(|r| r.max), shown, self.scroll);
+            layout = layout.grown(self.doc.canvas_used().map(|r| r.max), shown, self.scroll);
         }
         ui.painter().rect_filled(full, 0.0, crate::theme::color::desk());
 
@@ -664,14 +659,27 @@ impl InkApp {
         // Bottom to top: paper, highlighters, rules, text, pen (see `render`).
         let painter = ui.painter_at(canvas);
         render::paint_paper(&painter, &view);
+        // An infinite page with a PDF: its rules under the PDF's pages, which
+        // cover them.
+        let rules_under = view.layout.canvas && self.doc.pdf.is_some();
+        if rules_under {
+            render::paint_rules(&painter, &view, &self.doc);
+        }
         // A note written on a PDF: its pages, right on the paper.
         for page in view.visible_pages() {
             self.pdf_textures.paint(&painter, &self.doc, page, view.page_screen_rect(page), true, made / scale);
-            // The reader: the links of the pages shown, ready before they are pointed at.
-            if let (true, Some(pdf)) = (self.navigating(), &self.doc.pdf)
-                && let (Some(file), Some(pdf_page)) = (&pdf.file, self.doc.pdf_page(page))
+            // The reader: the links of the PDF pages shown, ready before they are pointed at.
+            if self.navigating()
+                && let Some(file) = self.doc.pdf.as_ref().and_then(|pdf| pdf.file.clone())
             {
-                self.pdf_nav.links(file, pdf_page);
+                let page_rect = view.page_screen_rect(page);
+                let k = page_rect.width() / self.doc.page_width;
+                for (pdf_page, r) in self.doc.pdf_places(page) {
+                    let shown = Rect::from_min_size(page_rect.min + r.min.to_vec2() * k, r.size() * k);
+                    if shown.intersects(view.rect) {
+                        self.pdf_nav.links(&file, pdf_page);
+                    }
+                }
             }
         }
         let ppp = ui.ctx().pixels_per_point();
@@ -689,7 +697,9 @@ impl InkApp {
                 a.live.paint(&painter, &view, a.page, a.kind, a.color, a.width, points, ppp);
             }
         };
-        render::paint_rules(&painter, &view, &self.doc);
+        if !rules_under {
+            render::paint_rules(&painter, &view, &self.doc);
+        }
         // Pictures, on the paper and under the ink; the ones dragged (alone or
         // selected) where they are now.
         picture_moves.extend(self.picture_drag.as_ref().map(|d| d.now.clone()));

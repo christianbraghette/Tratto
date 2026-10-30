@@ -33,14 +33,19 @@ impl InkApp {
     pub(super) fn outline_view(&mut self, ui: &mut egui::Ui) {
         let Some(pdf) = self.doc.pdf.as_ref() else { return };
         let file = pdf.file.clone();
-        // The note page written on each PDF page (the first, if several are).
-        let mut note_page: HashMap<u32, u32> = HashMap::new();
-        for (i, p) in pdf.pages.iter().enumerate() {
-            if let Some(p) = p {
-                note_page.entry(*p).or_insert(i as u32);
+        // Where each PDF page is written on (the first place, if several
+        // are): the page number shown (the note page's; on an infinite page,
+        // the PDF's own) and its top, in content space.
+        let layout = self.layout();
+        let mut place: HashMap<u32, (u32, f32)> = HashMap::new();
+        for page in 0..self.doc.page_count.max(1) {
+            for (p, r) in self.doc.pdf_places(page) {
+                let number = if layout.canvas { p } else { page };
+                place.entry(p).or_insert((number, layout.page_top(page) + r.top()));
             }
         }
-        let current = self.current_page;
+        // The middle of the view: the part being read is above it.
+        let current = self.shown_content.center().y;
         let open = &self.outline_open;
         let nav = &mut self.pdf_nav;
         let mut clicked = None;
@@ -75,9 +80,11 @@ impl InkApp {
                     }
                     Read::Ready(entries) => entries,
                 };
-                let page_of = |e: &OutlineEntry| e.target.and_then(|t| note_page.get(&t.page).copied());
-                // The part being read: the last entry at or before the current page.
-                let reading = entries.iter().rposition(|e| page_of(e).is_some_and(|p| p <= current));
+                let place_of = |e: &OutlineEntry| e.target.and_then(|t| place.get(&t.page).copied());
+                let page_of = |e: &OutlineEntry| place_of(e).map(|(number, _)| number);
+                // The part being read: the last entry whose page starts above
+                // the middle of the view.
+                let reading = entries.iter().rposition(|e| place_of(e).is_some_and(|(_, top)| top <= current));
                 let shown = shown_entries(entries, open);
                 // Marked: that entry, or the open entry it is hidden under.
                 let marked = reading.and_then(|r| shown.iter().rev().copied().find(|&i| i <= r));

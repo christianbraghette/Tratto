@@ -34,6 +34,8 @@ use eframe::egui::{self, Color32, ColorImage, Painter, Pos2, Rect, TextureHandle
 use tratto_core::model::Document;
 use tratto_core::pdf_pages::{self, PdfError, PdfFile, RenderedPage};
 
+use crate::theme::color;
+
 /// Width of the whole-page stand-in (and page preview) images, in pixels.
 const SMALL_PX: u32 = 512;
 /// Side of a tile, in pixels.
@@ -365,17 +367,50 @@ impl PdfTextures {
         complete
     }
 
-    /// Paints the PDF page under note page `page` (if it has one) into
-    /// `page_rect`, the page on screen. `sharp` false: page previews (the
-    /// small image only). `made`: the zoom the page is made at over the
-    /// zoom shown (see `zoom`), the tiles' level is for that zoom.
+    /// Paints the PDF pages on note page `page` (the one under it, or those
+    /// on an infinite page) into `page_rect`, the page on screen. `sharp`
+    /// false: page previews (the small image only). `made`: the zoom the
+    /// page is made at over the zoom shown (see `zoom`), the tiles' level is
+    /// for that zoom. On an infinite page each is a sheet of its own: on
+    /// paper that covers the rules, with an edge (and a shadow, `sharp`).
     pub fn paint(&mut self, painter: &Painter, doc: &Document, page: u32, page_rect: Rect, sharp: bool, made: f32) {
-        let Some(pdf) = doc.pdf.as_ref() else { return };
-        let (Some(file), Some(pdf_page)) = (pdf.file.as_ref(), doc.pdf_page(page)) else { return };
-        let Some([x, y, w, h]) = pdf.placement(pdf_page, doc.page_width, doc.page_height) else { return };
-        let Some(&size) = pdf.sizes.get(pdf_page as usize) else { return };
+        let Some(file) = doc.pdf.as_ref().and_then(|pdf| pdf.file.clone()) else { return };
         let k = page_rect.width() / doc.page_width;
-        let rect = Rect::from_min_size(page_rect.min + vec2(x, y) * k, vec2(w, h) * k);
+        let sheets = doc.is_canvas();
+        let on_screen = |r: Rect| Rect::from_min_size(page_rect.min + r.min.to_vec2() * k, r.size() * k);
+        // A blank page among them: only its edge, its paper is the page's.
+        for (_, slot) in doc.canvas_slots().into_iter().filter(|(p, _)| p.is_none()) {
+            let edge = egui::Stroke::new(1.0, color::page_edge());
+            painter.rect_stroke(on_screen(slot), 0.0, edge, egui::StrokeKind::Middle);
+        }
+        for (pdf_page, placed) in doc.pdf_places(page) {
+            let rect = Rect::from_min_size(page_rect.min + placed.min.to_vec2() * k, placed.size() * k);
+            if sheets && painter.clip_rect().intersects(rect.expand(4.0)) {
+                if sharp {
+                    painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), 2.0, Color32::from_black_alpha(60));
+                }
+                painter.rect_filled(rect, 0.0, color::page());
+            }
+            self.paint_pdf_page(painter, doc, &file, pdf_page, rect, sharp, made);
+            if sheets {
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, color::page_edge()), egui::StrokeKind::Middle);
+            }
+        }
+    }
+
+    /// Paints PDF page `pdf_page` of `doc` into `rect` (screen).
+    #[allow(clippy::too_many_arguments)]
+    fn paint_pdf_page(
+        &mut self,
+        painter: &Painter,
+        doc: &Document,
+        file: &Arc<PdfFile>,
+        pdf_page: u32,
+        rect: Rect,
+        sharp: bool,
+        made: f32,
+    ) {
+        let Some(&size) = doc.pdf.as_ref().and_then(|pdf| pdf.sizes.get(pdf_page as usize)) else { return };
         let visible = painter.clip_rect().intersect(rect);
         if !visible.is_positive() {
             return;

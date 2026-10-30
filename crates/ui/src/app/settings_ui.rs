@@ -11,7 +11,7 @@
 use eframe::egui::{self, Align2, DragValue, RichText, Slider, Ui, vec2};
 use egui_phosphor::regular as icon;
 use tratto_core::history::Action;
-use tratto_core::model::{CANVAS_SIZE, PAPERS, PageKind, paper_label};
+use tratto_core::model::{CANVAS_SIZE, PAPERS, PDF_GAPS, PageKind, paper_label};
 
 use super::InkApp;
 use super::library_ui::{Dialog, location, when};
@@ -48,13 +48,16 @@ pub(super) fn section(ui: &mut Ui, title: &str) {
 
 /// Paper size, size, paper style and line spacing rows (the open note, or the
 /// defaults for new notes). The paper size can be infinite (`model::CANVAS_SIZE`)
-/// if `infinite` (else that entry is there, disabled); an infinite page has
-/// no size to set.
+/// if `infinite` (else that entry is there, disabled), and a size if `sized`
+/// (else those entries are disabled, with `unsized_why`); an infinite page
+/// has no size to set.
+#[allow(clippy::too_many_arguments)]
 fn paper_rows(
     ui: &mut Ui,
     id: &str,
     (width, height): (&mut f32, &mut f32),
     infinite: bool,
+    (sized, unsized_why): (bool, &str),
     kind: &mut PageKind,
     spacing: &mut f32,
 ) {
@@ -64,7 +67,8 @@ fn paper_rows(
             .width(180.0)
             .show_ui(ui, |ui| {
                 for (name, dims, w, h) in PAPERS {
-                    if ui.selectable_label(false, format!("{name}  ({dims})")).clicked() {
+                    let entry = egui::Button::selectable(false, format!("{name}  ({dims})"));
+                    if ui.add_enabled(sized, entry).on_disabled_hover_text(unsized_why).clicked() {
                         *width = w;
                         *height = h;
                     }
@@ -72,7 +76,7 @@ fn paper_rows(
                 let entry = egui::Button::selectable(false, "Infinite  (grows as you write)");
                 let entry = ui
                     .add_enabled(infinite, entry)
-                    .on_disabled_hover_text("Only a note of one page, not written on a PDF, can have an infinite page");
+                    .on_disabled_hover_text("Only a note of one page, or written on a PDF, can have an infinite page");
                 if entry.clicked() {
                     (*width, *height) = (CANVAS_SIZE, CANVAS_SIZE);
                 }
@@ -133,15 +137,31 @@ impl InkApp {
     /// The page size, the paper and the pages of the open note (an infinite
     /// page is the only one).
     fn page_settings(&mut self, ui: &mut Ui) {
+        let (was_canvas, before) = (self.doc.is_canvas(), (self.doc.page_width, self.doc.page_height));
+        // An infinite page on a PDF becomes pages again only if all on it
+        // has a page to go to.
+        let on_pdf = self.doc.pdf.is_some();
+        let sized = !(was_canvas && on_pdf) || self.doc.can_leave_canvas();
+        let why = "Move what is beside the PDF's pages onto them first: it would have no page";
         section(ui, "Page");
         rows(ui, "note_page", |ui| {
             let d = &mut self.doc;
             let infinite = d.can_be_canvas();
             let size = (&mut d.page_width, &mut d.page_height);
-            paper_rows(ui, "note", size, infinite, &mut d.page.kind, &mut d.page.spacing);
+            paper_rows(ui, "note", size, infinite, (sized, why), &mut d.page.kind, &mut d.page.spacing);
         });
+        if on_pdf && self.doc.is_canvas() != was_canvas {
+            let picked = (self.doc.page_width, self.doc.page_height);
+            (self.doc.page_width, self.doc.page_height) = before;
+            self.pdf_paper_switched(picked);
+        }
         if self.doc.is_canvas() {
-            hint(ui, "An infinite page grows right and down as you write on it.");
+            if let Some(gap) = self.doc.pdf.as_ref().map(|pdf| pdf.gap) {
+                self.pdf_gap_rows(ui, gap);
+                hint(ui, "The PDF's pages are on it, one under the other; what is on or beside a page moves with it.");
+            } else {
+                hint(ui, "An infinite page grows right and down as you write on it.");
+            }
             return;
         }
         hint(ui, "Changing the size keeps existing ink where it is; it is not rescaled.");
@@ -171,6 +191,51 @@ impl InkApp {
                 }
             });
         });
+    }
+
+    /// A note on a PDF made one infinite page, or pages again (of the size
+    /// `picked`): what is on it goes along, its PDF's pages too (see
+    /// `Document::pdf_to_canvas`). One undo step.
+    fn pdf_paper_switched(&mut self, picked: (f32, f32)) {
+        self.before_page_change();
+        let mut doc = self.doc.clone();
+        if doc.is_canvas() {
+            if !doc.canvas_to_pdf_pages() {
+                return;
+            }
+            (doc.page_width, doc.page_height) = picked;
+        } else {
+            doc.pdf_to_canvas();
+        }
+        crate::markdown::lay_out_document(&self.egui_ctx, &mut doc);
+        self.history.exec(&mut self.doc, Action::Swap(Box::new(doc)));
+        self.scroll = egui::Vec2::ZERO;
+        self.kinetic.stop();
+    }
+
+    /// The room between the PDF's pages on an infinite page (`gap`). The
+    /// pages move while it is dragged; one undo step once it is let go.
+    fn pdf_gap_rows(&mut self, ui: &mut Ui, gap: f32) {
+        let mut value = gap;
+        let mut resp = None;
+        rows(ui, "note_pdf_gap", |ui| {
+            row(ui, "Page spacing", |ui| {
+                resp = Some(ui.add(Slider::new(&mut value, PDF_GAPS).step_by(4.0).suffix(" px")));
+            });
+        });
+        if value != gap {
+            if self.gap_drag.is_none() {
+                self.before_page_change();
+                self.gap_drag = Some(self.doc.clone());
+            }
+            self.doc.set_pdf_gap(value);
+        }
+        if resp.is_some_and(|r| !r.dragged())
+            && let Some(before) = self.gap_drag.take()
+        {
+            let after = std::mem::replace(&mut self.doc, before);
+            self.history.exec(&mut self.doc, Action::Swap(Box::new(after)));
+        }
     }
 
     /// The title, dates and place of the open note.
@@ -420,7 +485,7 @@ impl InkApp {
         section(ui, "New notes");
         rows(ui, "global_new_notes", |ui| {
             let size = (&mut s.new_page_width, &mut s.new_page_height);
-            paper_rows(ui, "new", size, true, &mut s.new_page_kind, &mut s.new_page_spacing);
+            paper_rows(ui, "new", size, true, (true, ""), &mut s.new_page_kind, &mut s.new_page_spacing);
         });
         hint(ui, "Used for notes created from now on. Each note keeps its own paper (Note settings).");
 

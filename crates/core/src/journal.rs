@@ -29,6 +29,27 @@ pub(crate) struct Delta {
     images: ListDelta<ImagePlace>,
     /// The files of the pictures that were not in the document before.
     image_files: Vec<Arc<ImageData>>,
+    /// The room between the PDF's pages on an infinite page.
+    pdf_gap: Option<f32>,
+}
+
+/// A record as formats 7 and 8 saved it, before the room between the PDF's
+/// pages (see `storage`).
+#[derive(Deserialize)]
+pub(crate) struct DeltaV8 {
+    layout: Option<Layout>,
+    pdf_pages: Option<Vec<Option<u32>>>,
+    strokes: ListDelta<Stroke>,
+    texts: ListDelta<TextBox>,
+    images: ListDelta<ImagePlace>,
+    image_files: Vec<Arc<ImageData>>,
+}
+
+impl From<DeltaV8> for Delta {
+    fn from(d: DeltaV8) -> Self {
+        let DeltaV8 { layout, pdf_pages, strokes, texts, images, image_files } = d;
+        Delta { layout, pdf_pages, strokes, texts, images, image_files, pdf_gap: None }
+    }
 }
 
 /// A record as format 6 saved it, before pictures (see `storage`).
@@ -43,7 +64,8 @@ pub(crate) struct DeltaV6 {
 impl From<DeltaV6> for Delta {
     fn from(d: DeltaV6) -> Self {
         let DeltaV6 { layout, pdf_pages, strokes, texts } = d;
-        Delta { layout, pdf_pages, strokes, texts, images: ListDelta::default(), image_files: Vec::new() }
+        let (images, image_files) = (ListDelta::default(), Vec::new());
+        DeltaV8 { layout, pdf_pages, strokes, texts, images, image_files }.into()
     }
 }
 
@@ -221,6 +243,7 @@ impl Delta {
             && self.texts.is_empty()
             && self.images.is_empty()
             && self.image_files.is_empty()
+            && self.pdf_gap.is_none()
     }
 
     pub(crate) fn apply(self, doc: &mut Document) {
@@ -229,6 +252,9 @@ impl Delta {
         }
         if let (Some(pages), Some(pdf)) = (self.pdf_pages, doc.pdf.as_mut()) {
             pdf.pages = pages;
+        }
+        if let (Some(gap), Some(pdf)) = (self.pdf_gap, doc.pdf.as_mut()) {
+            pdf.gap = gap;
         }
         apply_list(&mut doc.strokes, self.strokes);
         apply_list(&mut doc.texts, self.texts);
@@ -254,8 +280,8 @@ impl Delta {
 /// The changes from `old` to `new`. `None` when a delta cannot express them:
 /// the note is now on another PDF, or ids are not unique.
 pub(crate) fn diff(old: &Document, new: &Document) -> Option<Delta> {
-    let pdf_pages = match (&old.pdf, &new.pdf) {
-        (None, None) => None,
+    let (pdf_pages, pdf_gap) = match (&old.pdf, &new.pdf) {
+        (None, None) => (None, None),
         (Some(a), Some(b)) => {
             let same_file = match (&a.file, &b.file) {
                 (Some(x), Some(y)) => x.key == y.key && x.bytes.len() == y.bytes.len(),
@@ -265,7 +291,7 @@ pub(crate) fn diff(old: &Document, new: &Document) -> Option<Delta> {
             if !same_file || a.sizes != b.sizes {
                 return None;
             }
-            (a.pages != b.pages).then(|| b.pages.clone())
+            ((a.pages != b.pages).then(|| b.pages.clone()), (a.gap != b.gap).then_some(b.gap))
         }
         _ => return None,
     };
@@ -284,6 +310,7 @@ pub(crate) fn diff(old: &Document, new: &Document) -> Option<Delta> {
         texts: diff_list(&old.texts, &new.texts)?,
         images: diff_list(&ImagePlace::of(&old.images), &ImagePlace::of(&new.images))?,
         image_files,
+        pdf_gap,
     })
 }
 
@@ -467,6 +494,25 @@ mod tests {
         Action::MovePage { from: 0, to: 3 }.apply(&mut doc);
         let d = replays(&saved, &doc);
         assert_eq!(d.pdf_pages.unwrap(), [None, Some(1), Some(2), Some(0)]);
+    }
+
+    #[test]
+    fn a_note_on_a_pdf_made_an_infinite_page_replays() {
+        let file = PdfFile::new(b"%PDF-1.5 pretend".to_vec());
+        let mut doc = Document::on_pdf(file, vec![[612.0, 792.0]; 3]);
+        let s = stroke(&mut doc, 2, 40.0);
+        doc.strokes.push(s);
+        let saved = doc.clone();
+        doc.pdf_to_canvas();
+        replays(&saved, &doc);
+        // More room between its pages.
+        let saved = doc.clone();
+        doc.set_pdf_gap(120.0);
+        assert_eq!(replays(&saved, &doc).pdf_gap, Some(120.0));
+        // And back.
+        let canvas = doc.clone();
+        assert!(doc.canvas_to_pdf_pages());
+        replays(&canvas, &doc);
     }
 
     #[test]

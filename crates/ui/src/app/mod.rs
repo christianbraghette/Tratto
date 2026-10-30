@@ -358,6 +358,10 @@ pub struct InkApp {
     /// Where the view was before each link or outline entry followed
     /// (scroll offsets), for Back.
     nav_back: Vec<Vec2>,
+    /// The note as it was when the room between the pages of its PDF (an
+    /// infinite page) started to change: one undo step once it is let go
+    /// (see `settings_ui::pdf_gap_rows`).
+    gap_drag: Option<Document>,
     /// Outline entries shown open (their children visible), by index.
     outline_open: HashSet<usize>,
     /// A note read (or a PDF imported) in the background; a loading screen
@@ -576,6 +580,7 @@ impl InkApp {
             pdf_textures: PdfTextures::default(),
             pdf_nav: PdfNav::default(),
             nav_back: Vec::new(),
+            gap_drag: None,
             outline_open: HashSet::new(),
             loading: None,
             egui_ctx: cc.egui_ctx.clone(),

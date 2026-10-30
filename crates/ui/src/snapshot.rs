@@ -54,32 +54,31 @@ pub struct Snapshot {
     paper: bool,
     /// The paper's rules or grid.
     rules: Option<PageStyle>,
-    /// The PDF page under it: its file, the page, and where it goes (page
-    /// space).
-    underlay: Option<(Arc<PdfFile>, u32, Rect)>,
+    /// The PDF pages under it: their file, each page and where it goes
+    /// (page space).
+    underlay: Vec<(Arc<PdfFile>, u32, Rect)>,
 }
 
 impl Snapshot {
     pub fn of_content(c: &Content) -> Self {
         let area = c.bounds.expand(MARGIN);
         let (strokes, texts, images) = (c.strokes.clone(), c.texts.clone(), c.images.clone());
-        Self { strokes, texts, images, area, paper: false, rules: None, underlay: None }
+        Self { strokes, texts, images, area, paper: false, rules: None, underlay: Vec::new() }
     }
 
     pub fn of_page(p: &PageContent, (w, h): (f32, f32)) -> Self {
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(w, h));
         let (strokes, texts, images) = (p.strokes.clone(), p.texts.clone(), p.images.clone());
-        Self { strokes, texts, images, area, paper: true, rules: None, underlay: None }
+        Self { strokes, texts, images, area, paper: true, rules: None, underlay: Vec::new() }
     }
 
     /// Page `page` of `doc` as it looks: on its paper, with its rules or
-    /// grid and the PDF page under it.
+    /// grid and the PDF pages on it.
     pub fn of_note_page(doc: &Document, page: u32) -> Self {
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(doc.page_width, doc.page_height));
-        let underlay = doc.pdf.as_ref().and_then(|pdf| {
-            let pdf_page = doc.pdf_page(page)?;
-            let [x, y, w, h] = pdf.placement(pdf_page, doc.page_width, doc.page_height)?;
-            Some((pdf.file.clone()?, pdf_page, Rect::from_min_size(pos2(x, y), egui::vec2(w, h))))
+        let file = doc.pdf.as_ref().and_then(|pdf| pdf.file.clone());
+        let underlay = file.map_or_else(Vec::new, |file| {
+            doc.pdf_places(page).into_iter().map(|(pdf_page, rect)| (file.clone(), pdf_page, rect)).collect()
         });
         Self {
             strokes: doc.strokes.iter().filter(|s| s.page == page).cloned().collect(),
@@ -106,8 +105,8 @@ struct Scene {
     /// The paper's rules and dots (pixels).
     rules: Vec<Rect>,
     dots: Vec<Rect>,
-    /// The PDF page under it, and where it goes (pixels).
-    underlay: Option<(Arc<PdfFile>, u32, Rect)>,
+    /// The PDF pages under it, and where each goes (pixels).
+    underlay: Vec<(Arc<PdfFile>, u32, Rect)>,
 }
 
 /// Makes a picture of `snap` and puts it on the system clipboard, in the
@@ -203,7 +202,7 @@ fn scene(ctx: &egui::Context, snap: &Snapshot, max_side: f32, max_density: f32) 
     let rules =
         snap.rules.map(|style| rule_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
     let dots = snap.rules.map(|style| dot_rects(style, area.size())).unwrap_or_default().into_iter().map(px).collect();
-    let underlay = snap.underlay.as_ref().map(|(file, page, rect)| (file.clone(), *page, px(*rect)));
+    let underlay = snap.underlay.iter().map(|(file, page, rect)| (file.clone(), *page, px(*rect))).collect();
     Scene { size, paper: snap.paper, pictures, primitives, ppp, atlas, rules, dots, underlay }
 }
 
@@ -279,9 +278,6 @@ fn rasterise(scene: &Scene) -> Rgba {
     let [w, h] = scene.size;
     let paper = if scene.paper { [1.0; 4] } else { [0.0; 4] };
     let mut canvas = Canvas { size: scene.size, px: vec![paper; w * h] };
-    if let Some((file, page, rect)) = &scene.underlay {
-        draw_pdf_page(&mut canvas, file, *page, *rect);
-    }
     let [r, g, b, _] = crate::theme::color::page_rule().to_array().map(|c| c as f32 / 255.0);
     for rule in &scene.rules {
         fill_rect(&mut canvas, *rule, [r, g, b, 1.0]);
@@ -289,6 +285,11 @@ fn rasterise(scene: &Scene) -> Rgba {
     let [r, g, b, _] = crate::theme::color::page_dot().to_array().map(|c| c as f32 / 255.0);
     for dot in &scene.dots {
         fill_rect(&mut canvas, *dot, [r, g, b, 1.0]);
+    }
+    // Over the rules (an infinite page): each on white paper of its own.
+    for (file, page, rect) in &scene.underlay {
+        fill_rect(&mut canvas, *rect, [1.0; 4]);
+        draw_pdf_page(&mut canvas, file, *page, *rect);
     }
     for (rect, data) in &scene.pictures {
         draw_picture(&mut canvas, *rect, data);
@@ -475,7 +476,7 @@ mod tests {
             area,
             paper: false,
             rules: None,
-            underlay: None,
+            underlay: Vec::new(),
         };
         let ctx = egui::Context::default();
         let mut made = None;

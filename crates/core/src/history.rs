@@ -19,6 +19,9 @@
 //! * `MovePage`     reorders pages (their content follows).
 //! * `DeletePage` / `RestorePage`   delete a page with its content and bring it
 //!   back (the content travels inside the inverse action).
+//! * `Swap`         the whole document for another one (a note on a PDF made
+//!   an infinite page, or pages again: everything on it moves); the old one
+//!   travels inside the inverse.
 //! * `Batch`        groups actions, e.g. everything erased in one drag.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -96,6 +99,8 @@ pub enum Action {
         insert_page: bool,
         pdf_page: Option<u32>,
     },
+    /// Swap the whole document for this one.
+    Swap(Box<Document>),
     Batch(Vec<Action>),
 }
 
@@ -314,6 +319,7 @@ impl Action {
                 }
                 Action::DeletePage { index }
             }
+            Action::Swap(other) => Action::Swap(Box::new(std::mem::replace(doc, *other))),
             Action::Batch(actions) => {
                 let mut inverses: Vec<Action> = actions.into_iter().map(|a| a.apply(doc)).collect();
                 inverses.reverse(); // undo in the opposite order
@@ -499,7 +505,7 @@ mod tests {
         let mut doc = Document::default();
         doc.page_count = 3;
         doc.pdf =
-            Some(PdfBackground { sizes: vec![[600.0, 800.0]; 3], pages: vec![Some(0), Some(1), Some(2)], file: None });
+            Some(PdfBackground { sizes: vec![[600.0, 800.0]; 3], pages: vec![Some(0), Some(1), Some(2)], gap: 0.0, file: None });
         let pages = |d: &Document| d.pdf.as_ref().unwrap().pages.clone();
         let mut h = History::default();
 
@@ -594,6 +600,22 @@ mod tests {
         );
         h.redo(&mut doc);
         assert_eq!(doc.page_count, 2);
+    }
+
+    #[test]
+    fn a_swapped_document_comes_back_on_undo() {
+        let mut doc = Document::default();
+        doc.strokes.push(stroke(1));
+        let mut other = doc.clone();
+        other.strokes[0].page = 3;
+        other.page_count = 4;
+        let mut h = History::default();
+        h.exec(&mut doc, Action::Swap(Box::new(other)));
+        assert_eq!((doc.page_count, doc.strokes[0].page), (4, 3));
+        h.undo(&mut doc);
+        assert_eq!((doc.page_count, doc.strokes[0].page), (1, 0));
+        h.redo(&mut doc);
+        assert_eq!((doc.page_count, doc.strokes[0].page), (4, 3));
     }
 
     #[test]

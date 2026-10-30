@@ -170,32 +170,29 @@ pub fn export_bytes(notes: &[PdfNote], opts: &PdfOptions) -> io::Result<Vec<u8>>
     if under.is_empty() { Ok(bytes) } else { pdf_pages::underlay(bytes, under).map_err(io::Error::other) }
 }
 
-/// The PDF page under a note page that is exported on its PDF page, if any.
-fn pdf_under(doc: &Document, page: u32, opts: &PdfOptions) -> Option<u32> {
-    let pdf = doc.pdf.as_ref().filter(|p| opts.include_pdf_pages && p.file.is_some())?;
-    let source = doc.pdf_page(page)?;
-    pdf.placement(source, doc.page_width, doc.page_height).map(|_| source)
-}
-
 /// The PDF pages to put under the exported pages (notes written on a PDF),
-/// placed like the note pages they belong to.
+/// placed like the note pages they belong to: one under each, or (an
+/// infinite page) all of them where they are on it.
 fn underlays(notes: &[PdfNote], opts: &PdfOptions) -> Vec<Underlay> {
     let mut out = Vec::new();
+    if !opts.include_pdf_pages {
+        return out;
+    }
     for (p, &(note, page)) in export_pages(notes, opts).iter().enumerate() {
         let doc = notes[note].doc;
-        let Some(source) = pdf_under(doc, page, opts) else { continue };
-        let pdf = doc.pdf.as_ref().expect("pdf_under checked it");
-        let [x, y, w, h] = pdf.placement(source, doc.page_width, doc.page_height).expect("pdf_under checked it");
+        let Some(file) = doc.pdf.as_ref().and_then(|pdf| pdf.file.clone()) else { continue };
         let ((_, out_h), s, (ox, oy)) = opts.placement(doc);
-        // Page units (y down) to PDF points (y up) on the output page.
-        let (left, top) = ((ox + x * s) * PX_TO_PT, (oy + y * s) * PX_TO_PT);
-        let (width, height) = (w * s * PX_TO_PT, h * s * PX_TO_PT);
-        out.push(Underlay {
-            page: p as u32,
-            file: pdf.file.clone().expect("pdf_under checked it"),
-            source_page: source,
-            rect: [left, out_h * PX_TO_PT - top - height, width, height],
-        });
+        for (source, r) in doc.pdf_places(page) {
+            // Page units (y down) to PDF points (y up) on the output page.
+            let (left, top) = ((ox + r.left() * s) * PX_TO_PT, (oy + r.top() * s) * PX_TO_PT);
+            let (width, height) = (r.width() * s * PX_TO_PT, r.height() * s * PX_TO_PT);
+            out.push(Underlay {
+                page: p as u32,
+                file: file.clone(),
+                source_page: source,
+                rect: [left, out_h * PX_TO_PT - top - height, width, height],
+            });
+        }
     }
     out
 }
@@ -485,12 +482,39 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions, pictures: &HashMap
         num(ox * PX_TO_PT, 3),
         num((out_h - oy) * PX_TO_PT, 3),
     ));
+    // Only the page: what crosses onto the next one (a sheet of an infinite
+    // page, see `Document::as_sheets`) is cut off at its edge, not drawn in
+    // the margin.
+    c.push_str(&format!("0 0 {} {} re W n\n", num(doc.page_width, 2), num(doc.page_height, 2)));
 
     // Bottom to top, as on screen: rules, pictures, highlighters, text, pen
     // strokes.
     let strokes = |kind: StrokeKind| doc.strokes.iter().filter(move |s| s.page == page && s.kind == kind);
     if opts.include_rules && doc.ruled(page) {
-        write_rules(&mut c, doc);
+        // Not over the PDF's pages on it (an infinite page): they go under
+        // everything (see `underlays`), and cover the rules on screen.
+        let holes = if opts.include_pdf_pages { doc.pdf_places(page) } else { Vec::new() };
+        if holes.is_empty() {
+            write_rules(&mut c, doc);
+        } else {
+            let re = |r: emath::Rect| {
+                let [x, y, w, h] = [r.left(), r.top(), r.width(), r.height()].map(|v| num(v, 2));
+                format!("{x} {y} {w} {h} re
+")
+            };
+            c.push_str("q
+");
+            c.push_str(&re(emath::Rect::from_min_size(emath::Pos2::ZERO, emath::vec2(doc.page_width, doc.page_height))));
+            for (_, r) in holes {
+                c.push_str(&re(r));
+            }
+            // Even-odd: the page without the PDF's pages.
+            c.push_str("W* n
+");
+            write_rules(&mut c, doc);
+            c.push_str("Q
+");
+        }
     }
     for img in doc.images.iter().filter(|i| i.page == page) {
         if let Some(n) = pictures.get(&img.data.key) {
@@ -792,6 +816,49 @@ fn num(v: f32, decimals: usize) -> String {
 mod tests {
     use super::*;
     use crate::model::{Point, TextBox};
+    use crate::pdf_pages::PdfFile;
+
+    #[test]
+    fn an_infinite_page_on_a_pdf_exports_all_of_the_pdf_where_it_is() {
+        let mut doc = Document::on_pdf(PdfFile::new(Vec::new()), vec![[600.0, 800.0]; 3]);
+        doc.pdf_to_canvas();
+        let page = doc.as_pages();
+        let notes = [PdfNote { doc: &page, title: String::new() }];
+        let under = underlays(&notes, &PdfOptions::default());
+        assert_eq!(under.iter().map(|u| (u.page, u.source_page)).collect::<Vec<_>>(), [(0, 0), (0, 1), (0, 2)]);
+        // One under the other on the one exported page (y up: lower bottoms).
+        assert!(under[0].rect[1] > under[1].rect[1] && under[1].rect[1] > under[2].rect[1]);
+        let none = PdfOptions { include_pdf_pages: false, ..PdfOptions::default() };
+        assert!(underlays(&notes, &none).is_empty());
+    }
+
+    #[test]
+    fn the_rules_of_an_infinite_page_stay_under_its_pdf_pages() {
+        let mut doc = Document::on_pdf(PdfFile::new(Vec::new()), vec![[600.0, 800.0]; 2]);
+        doc.page.kind = PageKind::Ruled;
+        doc.pdf_to_canvas();
+        let page = doc.as_pages();
+        let opts = PdfOptions::default();
+        let content = page_content(&page, 0, &opts, &HashMap::new());
+        // The page with a hole per PDF page, then the rules, inside it.
+        let clip = content.find("W* n").expect("the rules are clipped");
+        assert_eq!(content[..clip].matches(" re
+").count(), 3);
+        assert!(content[clip..].contains(" l S
+"));
+        // Without the PDF's pages, nothing to keep them off.
+        let bare = PdfOptions { include_pdf_pages: false, ..opts };
+        assert!(!page_content(&page, 0, &bare, &HashMap::new()).contains("W* n"));
+    }
+
+    #[test]
+    fn what_crosses_onto_the_next_sheet_is_cut_off_at_the_page() {
+        let doc = sample_doc();
+        let content = page_content(&doc, 0, &PdfOptions::default(), &HashMap::new());
+        let clip = format!("0 0 {} {} re W n", num(doc.page_width, 2), num(doc.page_height, 2));
+        let at = content.find(&clip).expect("clipped to the page");
+        assert!(at < content.find(" l S").unwrap_or(usize::MAX), "before anything is drawn");
+    }
 
     fn sample_doc() -> Document {
         let mut doc = Document::default();

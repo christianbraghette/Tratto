@@ -81,9 +81,9 @@ pub(super) struct ExportDialog {
     /// Notes ticked for `Scope::Selection`.
     selected: HashSet<PathBuf>,
     /// Other notes, loaded once for the preview and the export (`None` =
-    /// unreadable), an infinite page made a page (`Document::as_pages`).
+    /// unreadable), an infinite page cut into sheets (`Document::as_sheets`).
     /// The open note is taken from memory, unless its page is infinite: then it is
-    /// here too, made a page when the dialog opened.
+    /// here too, cut into sheets when the dialog opened.
     loaded: HashMap<PathBuf, Option<Document>>,
     /// Index of the previewed page among the exported pages.
     preview: usize,
@@ -231,7 +231,7 @@ impl InkApp {
             if Some(path) != self.note_path.as_ref() && !d.loaded.contains_key(path) {
                 let doc = storage::load_note(path).ok().map(|(_, mut doc)| {
                     crate::markdown::lay_out_document(&self.egui_ctx, &mut doc);
-                    if doc.is_canvas() { doc.as_pages().into_owned() } else { doc }
+                    if doc.is_canvas() { doc.as_sheets().into_owned() } else { doc }
                 });
                 d.loaded.insert(path.clone(), doc);
             }
@@ -259,10 +259,10 @@ impl InkApp {
     }
 
     fn pdf_options(&self, d: &ExportDialog, title: &str) -> PdfOptions {
-        let count = self.doc.page_count.max(1);
+        let count = self.doc.sheet_count();
         let s = &self.settings;
         let pages = match (d.scope, d.pages) {
-            (Scope::Note, Pages::Current) => Some(self.current_page..=self.current_page),
+            (Scope::Note, Pages::Current) => Some(self.current_sheet()..=self.current_sheet()),
             (Scope::Note, Pages::Range) => {
                 let (a, b) = (d.from.clamp(1, count) - 1, d.to.clamp(1, count) - 1);
                 Some(a.min(b)..=a.max(b))
@@ -283,6 +283,12 @@ impl InkApp {
             title: title.to_owned(),
             author: s.pdf_author.clone(),
         }
+    }
+
+    /// The page in view, as it is exported: on an infinite page, the sheet
+    /// the middle of the view is on (see `Document::as_sheets`).
+    fn current_sheet(&self) -> u32 {
+        if self.doc.is_canvas() { self.doc.sheet_at(self.shown_content.center().y) } else { self.current_page }
     }
 
     /// Default title of the PDF for a scope.
@@ -317,7 +323,7 @@ impl InkApp {
         }
         // The notebook as it is on disk now.
         self.refresh_library_now();
-        let count = self.doc.page_count.max(1);
+        let count = self.doc.sheet_count();
         let section: HashSet<PathBuf> =
             self.export_section().map(|g| g.notes.into_iter().map(|n| n.path).collect()).unwrap_or_default();
         let mut d = ExportDialog {
@@ -334,7 +340,7 @@ impl InkApp {
             export_now: false,
         };
         if let (Some(path), true) = (&self.note_path, self.doc.is_canvas()) {
-            d.loaded.insert(path.clone(), Some(self.doc.as_pages().into_owned()));
+            d.loaded.insert(path.clone(), Some(self.doc.as_sheets().into_owned()));
         }
         self.apply_scope_defaults(&mut d);
         self.export_dialog = Some(d);
@@ -430,8 +436,9 @@ impl InkApp {
     }
 
     fn export_options(&mut self, ui: &mut Ui, d: &mut ExportDialog) {
-        let count = self.doc.page_count.max(1);
-        let current = self.current_page + 1;
+        // An infinite page: its sheets (see `Document::as_sheets`).
+        let count = self.doc.sheet_count();
+        let current = self.current_sheet() + 1;
 
         section(ui, if d.print { "Print" } else { "Export" });
         let before = d.scope;
@@ -854,7 +861,7 @@ fn paint_page(
     let at = |x: f32, y: f32| pos2(origin.x + x * f, origin.y + y * f);
     let paper = Rect::from_min_max(at(0.0, 0.0), at(doc.page_width, doc.page_height));
     let p = ui.painter_at(paper);
-    let on_pdf = opts.include_pdf_pages && doc.pdf_page(page).is_some();
+    let on_pdf = opts.include_pdf_pages && !doc.pdf_places(page).is_empty();
     if on_pdf {
         textures.paint(&p, doc, page, paper, true, 1.0);
     }

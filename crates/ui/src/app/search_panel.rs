@@ -570,7 +570,7 @@ fn search_notes(
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                let glyphs = text.page_glyphs(page, &pdf_text(text, page));
+                let glyphs = text.page_glyphs(page, |pdf_page| pdf_text(text, pdf_page));
                 for (nth, range) in find_all(&searchable(&glyphs), query).into_iter().enumerate() {
                     hits.push(NoteHit { page, nth, snippet: snippet(&glyphs, &range) });
                 }
@@ -589,11 +589,10 @@ fn search_notes(
     }
 }
 
-/// The text of the PDF page under `page`, waiting for the PDF worker (none
-/// if it cannot be read).
-fn pdf_text(text: &NoteText, page: u32) -> Vec<TextChar> {
-    let file = text.pdf.as_ref().and_then(|pdf| pdf.file.as_ref());
-    let (Some(file), Some(pdf_page)) = (file, text.pdf_page(page)) else { return Vec::new() };
+/// The text of PDF page `pdf_page`, waiting for the PDF worker (none if it
+/// cannot be read).
+fn pdf_text(text: &NoteText, pdf_page: u32) -> Vec<TextChar> {
+    let Some(file) = text.pdf.as_ref() else { return Vec::new() };
     let (reply, answer) = mpsc::channel();
     pdf_pages::text(file, pdf_page, reply, Arc::new(|| {}));
     answer.recv().ok().and_then(|t| t.chars.ok()).unwrap_or_default()

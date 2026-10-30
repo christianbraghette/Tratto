@@ -8,6 +8,7 @@
 use eframe::egui::{self, Align2, Color32, Id, Rect, Sense, pos2, vec2};
 
 use tratto_core::history::Action;
+use tratto_core::model::Document;
 
 use crate::render;
 use crate::scrollbar;
@@ -52,25 +53,70 @@ impl InkApp {
         self.clear_selection();
     }
 
-    /// Inserts an empty page so that it gets `index` (undoable). Not on an
-    /// infinite page, the only one.
+    /// Inserts an empty page so that it gets `index` (undoable), and shows
+    /// it. On an infinite page with a PDF, a blank one among the PDF's pages
+    /// (see `Document::insert_canvas_page`); on another infinite page, none.
     pub(super) fn insert_page(&mut self, index: u32) {
-        if self.doc.is_canvas() {
+        if self.pdf_slots().is_some() {
+            self.change_canvas_pages(|doc| {
+                doc.insert_canvas_page(index as usize);
+                true
+            });
+        } else if self.doc.is_canvas() {
             return;
+        } else {
+            self.before_page_change();
+            self.history.exec(&mut self.doc, Action::InsertPage { index, pdf_page: None });
         }
-        self.before_page_change();
-        self.history.exec(&mut self.doc, Action::InsertPage { index, pdf_page: None });
+        self.show_page(index);
     }
 
-    /// Deletes a page with its content (undoable). Not the page of an
-    /// infinite page.
+    /// Deletes a page with its content (undoable). On an infinite page with
+    /// a PDF, a blank one with nothing on it (see
+    /// `Document::remove_canvas_page`); on another infinite page, none.
     pub(super) fn delete_page(&mut self, index: u32) {
-        if self.doc.is_canvas() {
+        if self.pdf_slots().is_some() {
+            if !self.change_canvas_pages(|doc| doc.remove_canvas_page(index as usize)) {
+                return;
+            }
+        } else if self.doc.is_canvas() {
             return;
+        } else {
+            self.before_page_change();
+            self.history.exec(&mut self.doc, Action::DeletePage { index });
         }
-        self.before_page_change();
-        self.history.exec(&mut self.doc, Action::DeletePage { index });
         self.toast(format!("Page {} deleted (Ctrl+Z restores it)", index + 1));
+    }
+
+    /// Scrolls to page `index`: on an infinite page with a PDF, to the
+    /// place of that one of its pages.
+    fn show_page(&mut self, index: u32) {
+        match self.pdf_slots().and_then(|s| s.get(index as usize).copied()) {
+            Some(slot) => {
+                self.scroll_to = Some((slot.top() - MARGIN).max(0.0));
+                self.scroll_to_x = Some((slot.left() - MARGIN).max(0.0));
+            }
+            None => self.scroll_to = Some(self.layout().page_top(index) - MARGIN),
+        }
+    }
+
+    /// A change to the pages of an infinite page on a PDF (`change`: true if
+    /// it made one), as one undo step: what is on it moves with them.
+    fn change_canvas_pages(&mut self, change: impl FnOnce(&mut Document) -> bool) -> bool {
+        self.before_page_change();
+        let mut doc = self.doc.clone();
+        let changed = change(&mut doc);
+        if changed {
+            self.history.exec(&mut self.doc, Action::Swap(Box::new(doc)));
+        }
+        changed
+    }
+
+    /// On an infinite page with a PDF, the places of its PDF's pages on it
+    /// (the pages view lists them); else none.
+    fn pdf_slots(&self) -> Option<Vec<Rect>> {
+        let pdf = self.doc.pdf.as_ref().filter(|pdf| self.doc.is_canvas() && !pdf.pages.is_empty())?;
+        Some((0..pdf.pages.len()).map(|i| pdf.canvas_slot(i)).collect())
     }
 
     /// The sidebar: a strip of view buttons along the window edge, always
@@ -171,8 +217,9 @@ impl InkApp {
             self.settings.sidebar_last = view;
         }
         let note_settings = !self.reading();
-        // An infinite page is the only one: no pages to show.
-        let canvas = self.doc.is_canvas();
+        // An infinite page is the only one: no pages to show, but those of
+        // a PDF on it.
+        let canvas = self.doc.is_canvas() && self.pdf_slots().is_none();
         let (top, bottom) = (toolbar::notch_margin(true), toolbar::notch_margin(false));
         // On the right the canvas scrollbar (same surface) sits next to the
         // sidebar, so the extra margin keeps the buttons exactly where they
@@ -246,7 +293,7 @@ impl InkApp {
         match view {
             Sidebar::Notebook => self.notebook_view(ui),
             // Kept for the next note with pages.
-            Sidebar::Pages if self.doc.is_canvas() => {}
+            Sidebar::Pages if self.doc.is_canvas() && self.pdf_slots().is_none() => {}
             Sidebar::Pages => self.pages_view(ui),
             Sidebar::Settings => self.note_settings_view(ui),
             Sidebar::Outline => self.outline_view(ui),
@@ -396,14 +443,31 @@ impl InkApp {
         let ctx = &ui.ctx().clone();
         let layout = Layout::of(&self.doc);
         let ppp = ctx.pixels_per_point();
-        let current = self.current_page;
+        // An infinite page on a PDF: the places of its PDF's pages on it
+        // (see `PdfBackground::canvas_slot`), each a card.
+        let slots = self.pdf_slots();
+        let (page_w, page_h, count) = match &slots {
+            Some(s) => (s[0].width(), s[0].height(), s.len() as u32),
+            None => (layout.page_w, layout.page_h, layout.count),
+        };
+        // There, the one whose rows the middle of the view is in.
+        let current = match self.doc.pdf.as_ref().filter(|_| slots.is_some()) {
+            Some(pdf) => pdf.canvas_row(self.shown_content.center().y + pdf.gap * 0.5).unwrap_or(0) as u32,
+            None => self.current_page,
+        };
         let blue = color::accent();
-        // A PDF in the reader: its pages are looked at, not changed.
-        let editable = !self.reading();
+        // A PDF in the reader: its pages are looked at, not changed. On an
+        // infinite page, blank pages are added between the PDF's, and taken
+        // away when nothing is on them (not moved, copied or pasted).
+        let changeable = !self.reading();
+        let editable = changeable && slots.is_none();
         let can_paste = self.clipboard.has_pages();
 
         // Disjoint field borrows, released again after `show`.
         let doc = &self.doc;
+        // Asked about the page pointed at only: on an infinite page it looks
+        // at all that is on it (see `Document::can_remove_canvas_page`).
+        let deletable = |i: u32| editable || slots.is_some() && changeable && doc.can_remove_canvas_page(i as usize);
         let strokes = &self.doc.strokes;
         let texts = &self.doc.texts;
         let cache = &mut self.thumb_cache;
@@ -418,10 +482,9 @@ impl InkApp {
         let mut jump: Option<u32> = None;
         let mut delete: Option<u32> = None;
         let mut add = false;
-        let mut insert: Option<u32> = None;
         let mut reorder: Option<(u32, u32)> = None;
-        // Copy, cut or paste pages (see `clipboard`).
-        let mut clip: Option<menus::Command> = None;
+        // From the context menu, as from the Page menu.
+        let mut command: Option<menus::Command> = None;
         let side = self.settings.sidebar_side;
 
         // The concave joins with the title bar and the bottom edge are drawn
@@ -438,8 +501,8 @@ impl InkApp {
                 // so the full width is usable.
                 let avail = ui.available_width();
                 let thumb_w = (avail - 2.0 * space::M).clamp(40.0, THUMB_MAX_W);
-                let thumb_h = thumb_w * layout.page_h / layout.page_w;
-                let scale = thumb_w / layout.page_w;
+                let thumb_h = thumb_w * page_h / page_w;
+                let scale = thumb_w / page_w;
                 // Resizing the panel: made again once it is done.
                 let made = thumb_zoom.update(ui.ctx(), scale, false);
                 cache.begin_frame(ppp);
@@ -453,8 +516,8 @@ impl InkApp {
 
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    let mut rects: Vec<Rect> = Vec::with_capacity(layout.count as usize);
-                    for i in 0..layout.count {
+                    let mut rects: Vec<Rect> = Vec::with_capacity(count as usize);
+                    for i in 0..count {
                         let (card, _) = ui
                             .allocate_exact_size(vec2(avail, PAD_TOP + thumb_h + PAD + NUMBER_H + PAD), Sense::hover());
                         let rect = Rect::from_min_size(
@@ -476,11 +539,18 @@ impl InkApp {
                             p.rect_filled(rect.translate(vec2(0.0, 2.0)), 2.0, Color32::from_black_alpha(90));
                             p.rect_filled(rect, 0.0, crate::theme::color::page());
                             let clipped = ui.painter_at(rect);
-                            pdf_textures.paint(&clipped, doc, i, rect, false, 1.0);
-                            pictures.paint_page(&clipped, &doc.images, i, rect.min, (scale, made), &[]);
-                            let offset = rect.min.to_vec2();
-                            render::paint_page_strokes(&clipped, offset, scale, made, strokes, i, cache, aa);
-                            render::paint_page_texts(&clipped, rect.min.to_vec2(), scale, texts, i);
+                            // The note page shown, and where its corner is: on an
+                            // infinite page, the part of it this card is.
+                            let (page, origin) = match &slots {
+                                Some(s) => (0, rect.min - s[i as usize].min.to_vec2() * scale),
+                                None => (i, rect.min),
+                            };
+                            let whole = Rect::from_min_size(origin, vec2(doc.page_width, doc.page_height) * scale);
+                            pdf_textures.paint(&clipped, doc, page, whole, false, 1.0);
+                            pictures.paint_page(&clipped, &doc.images, page, origin, (scale, made), &[]);
+                            let offset = origin.to_vec2();
+                            render::paint_page_strokes(&clipped, offset, scale, made, strokes, page, cache, aa);
+                            render::paint_page_texts(&clipped, offset, scale, texts, page);
                             let p = ui.painter();
                             if i == current {
                                 p.rect_stroke(
@@ -511,7 +581,9 @@ impl InkApp {
                         // Delete button, registered after the card so it wins hit-testing.
                         let del_rect = Rect::from_center_size(rect.right_top() + vec2(-13.0, 13.0), vec2(22.0, 22.0));
                         let del = ui.interact(del_rect, ui.scope_id().with(("page_del", i)), Sense::click());
-                        if editable && ui.rect_contains_pointer(card) && drag.is_none() {
+                        let pointed = ui.rect_contains_pointer(card) && drag.is_none();
+                        let can_delete = pointed && deletable(i);
+                        if can_delete {
                             let p = ui.painter();
                             let fill = if del.hovered() { color::danger() } else { color::chrome() };
                             p.circle(del_rect.center(), 10.0, fill, egui::Stroke::new(1.0, color::border()));
@@ -529,37 +601,19 @@ impl InkApp {
                                 jump = Some(i);
                                 ui.close();
                             }
-                            if !editable {
+                            if !changeable {
                                 return;
                             }
+                            let mut push = |ui: &mut egui::Ui, c: menus::Command| {
+                                command = Some(c);
+                                ui.close();
+                            };
                             ui.separator();
-                            if menus::entry(ui, icon::COPY, "Copy page", "", true) {
-                                clip = Some(menus::Command::CopyPage(i));
-                                ui.close();
-                            }
-                            if menus::entry(ui, icon::SCISSORS, "Cut page", "", true) {
-                                clip = Some(menus::Command::CutPage(i));
-                                ui.close();
-                            }
-                            if menus::entry(ui, icon::CLIPBOARD, "Paste page", "", can_paste) {
-                                clip = Some(menus::Command::PastePages(i + 1));
-                                ui.close();
-                            }
+                            menus::page_clipboard_entries(ui, i, (editable, can_paste), &mut push);
                             ui.separator();
-                            if menus::entry(ui, icon::ARROW_LINE_UP, "Insert page before", "", true) {
-                                insert = Some(i);
-                                ui.close();
-                            }
-                            if menus::entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
-                                insert = Some(i + 1);
-                                ui.close();
-                            }
-                            if menus::entry(ui, icon::TRASH, "Delete page", "", true) {
-                                delete = Some(i);
-                                ui.close();
-                            }
+                            menus::page_insert_entries(ui, i, deletable(i), &mut push);
                         });
-                        if editable && del.clicked() {
+                        if can_delete && del.clicked() {
                             delete = Some(i);
                         } else if resp.clicked() {
                             jump = Some(i);
@@ -568,7 +622,7 @@ impl InkApp {
                             *drag = Some(i);
                         }
                     }
-                    if editable {
+                    if changeable {
                         ui.add_space(space::XS);
                         let (row, _) = ui.allocate_exact_size(vec2(avail, 36.0), Sense::hover());
                         let tile = Rect::from_center_size(row.center(), vec2(thumb_w, 36.0));
@@ -632,15 +686,11 @@ impl InkApp {
             self.delete_page(index);
         }
         if let Some(i) = jump {
-            self.scroll_to = Some(layout.page_top(i) - MARGIN);
+            self.show_page(i);
         }
         if add {
-            self.insert_page(self.doc.page_count);
+            self.insert_page(count);
         }
-        if let Some(index) = insert {
-            self.insert_page(index);
-            self.scroll_to = Some(layout.page_top(index) - MARGIN);
-        }
-        self.pending.extend(clip);
+        self.pending.extend(command);
     }
 }

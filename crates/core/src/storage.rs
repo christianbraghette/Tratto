@@ -3,10 +3,10 @@
 
 //! Note files.
 //!
-//! Layout (format version 8, the one Tratto writes):
+//! Layout (format version 9, the one Tratto writes):
 //!
 //! ```text
-//! "INK1" | version u32 LE (= 8) | slot_size u32 LE
+//! "INK1" | version u32 LE (= 9) | slot_size u32 LE
 //!        | meta slot A | meta slot B             (slot_size bytes each)
 //!        | pdf_len u64 LE | PDF bytes             (empty unless on a PDF)
 //!        | doc_len u64 LE | bincode(Document)     (the snapshot)
@@ -37,10 +37,11 @@
 //! version to `<note>.ink.bak` at most every ten minutes, so a bug can never
 //! destroy the only good copy.
 //!
-//! Format 7 is the same without the snapshot's checksum, format 6 also
-//! without pictures (in the document and in the records); such a note is
-//! read, and its first save writes it whole as format 8 (the backup keeps
-//! the older file). Files of any other version
+//! Format 8 is the same without the room between the pages of a PDF on an
+//! infinite page (in the document and in the records), format 7 also
+//! without the snapshot's checksum, format 6 also without pictures; such a
+//! note is read, and its first save writes it whole as format 9 (the backup
+//! keeps the older file). Files of any other version
 //! (the pre-release formats 2 to 5) are refused with
 //! `StorageError::UnsupportedVersion`.
 
@@ -52,12 +53,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::journal::{self, Delta, DeltaV6};
-use crate::model::{Document, DocumentV6, Stroke};
+use crate::journal::{self, Delta, DeltaV6, DeltaV8};
+use crate::model::{Document, DocumentV6, DocumentV8, Stroke};
 use crate::pdf_pages::PdfFile;
 
 const MAGIC: &[u8; 4] = b"INK1";
-const FORMAT_VERSION: u32 = 8;
+const FORMAT_VERSION: u32 = 9;
+/// The format before the room between a PDF's pages, still read.
+const FORMAT_V8: u32 = 8;
 /// The format before the snapshot's checksum, still read.
 const FORMAT_V7: u32 = 7;
 /// The format before pictures, still read.
@@ -268,7 +271,7 @@ fn parse_header(bytes: &[u8]) -> Result<(u32, usize), StorageError> {
         Ok::<_, StorageError>(u32::from_le_bytes(b.try_into().expect("4 bytes")))
     };
     let version = word(4)?;
-    if ![FORMAT_VERSION, FORMAT_V7, FORMAT_V6].contains(&version) {
+    if ![FORMAT_VERSION, FORMAT_V8, FORMAT_V7, FORMAT_V6].contains(&version) {
         return Err(StorageError::UnsupportedVersion(version));
     }
     let size = word(8)? as usize;
@@ -530,10 +533,10 @@ fn replay(bytes: &[u8], mut at: usize, doc: &mut Document, version: u32) -> Resu
         }
         // An intact record that does not decode is no crash: the note is not
         // opened (so not overwritten either) rather than silently cut short.
-        let delta: Delta = if version == FORMAT_V6 {
-            bincode::deserialize::<DeltaV6>(body)?.into()
-        } else {
-            bincode::deserialize(body)?
+        let delta: Delta = match version {
+            FORMAT_V6 => bincode::deserialize::<DeltaV6>(body)?.into(),
+            FORMAT_V7 | FORMAT_V8 => bincode::deserialize::<DeltaV8>(body)?.into(),
+            _ => bincode::deserialize(body)?,
         };
         delta.apply(doc);
         at += RECORD_HEAD + len;
@@ -557,17 +560,17 @@ fn read_note(path: &Path, writer: bool) -> Result<(NoteMeta, Document, Option<Wr
     let snapshot = sized_part(&bytes, at)?;
     at += 8 + snapshot.len();
     // Checked before it is decoded: damage that still decodes is refused too.
-    if version == FORMAT_VERSION {
+    if version >= FORMAT_V8 {
         let crc = u32::from_le_bytes(part(&bytes, at, 4)?.try_into().expect("4 bytes"));
         if crc32(&[&bytes[pdf_at..at]]) != crc {
             return Err(StorageError::Corrupt);
         }
         at += 4;
     }
-    let mut doc: Document = if version == FORMAT_V6 {
-        bincode::deserialize::<DocumentV6>(snapshot)?.into()
-    } else {
-        bincode::deserialize(snapshot)?
+    let mut doc: Document = match version {
+        FORMAT_V6 => bincode::deserialize::<DocumentV6>(snapshot)?.into(),
+        FORMAT_V7 | FORMAT_V8 => bincode::deserialize::<DocumentV8>(snapshot)?.into(),
+        _ => bincode::deserialize(snapshot)?,
     };
     if let Some(p) = doc.pdf.as_mut() {
         if pdf.is_empty() {
@@ -945,8 +948,8 @@ mod tests {
         remove(&path);
     }
 
-    /// The format 7 file of the (format 8) note `bytes` with an empty
-    /// journal: without the snapshot's checksum.
+    /// The format 7 file of the (format 9) note `bytes` with an empty
+    /// journal and no PDF: without the snapshot's checksum.
     fn as_format_7(mut bytes: Vec<u8>) -> Vec<u8> {
         let crc_at = snapshot_range(&bytes).end;
         bytes.drain(crc_at..crc_at + 4);
@@ -954,8 +957,45 @@ mod tests {
         bytes
     }
 
+    /// A record of format 8 (or 7): one of format 9 without the room
+    /// between a PDF's pages (`None`, its last byte).
+    fn record_v8(old: &Document, new: &Document) -> Vec<u8> {
+        let mut body = bincode::serialize(&journal::diff(old, new).unwrap()).unwrap();
+        assert_eq!(body.pop(), Some(0), "no change to the room between a PDF's pages");
+        body
+    }
+
     #[test]
-    fn format_7_notes_open_and_are_saved_as_format_8() {
+    fn format_8_notes_open_and_are_saved_as_format_9() {
+        let path = std::env::temp_dir().join("tratto_format8.ink");
+        remove(&path);
+        let mut doc = sample_doc();
+        let mut meta = NoteMeta::new("Last month's note", false);
+        save_note(&path, &mut meta, &doc).unwrap();
+        // Without a PDF, the snapshot is the same as format 9's; a record is not.
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[4..8].copy_from_slice(&FORMAT_V8.to_le_bytes());
+        let old = doc.clone();
+        let s = pen(&mut doc, 5);
+        doc.strokes.push(s);
+        let body = record_v8(&old, &doc);
+        bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&crc32(&[&body]).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        fs::write(&path, &bytes).unwrap();
+
+        let (m, loaded, mut writer) = open_note(&path).unwrap();
+        assert!(same(&loaded, &doc), "the snapshot and the record are read");
+        let mut meta = m;
+        writer.save(&path, &mut meta, &loaded).unwrap();
+        let saved = fs::read(&path).unwrap();
+        assert_eq!(u32::from_le_bytes(saved[4..8].try_into().unwrap()), FORMAT_VERSION);
+        assert!(same(&load_note(&path).unwrap().1, &doc));
+        remove(&path);
+    }
+
+    #[test]
+    fn format_7_notes_open_and_are_saved_as_format_9() {
         let path = std::env::temp_dir().join("tratto_format7.ink");
         remove(&path);
         let mut doc = sample_doc();
@@ -966,7 +1006,7 @@ mod tests {
         let old = doc.clone();
         let s = pen(&mut doc, 5);
         doc.strokes.push(s);
-        let body = bincode::serialize(&journal::diff(&old, &doc).unwrap()).unwrap();
+        let body = record_v8(&old, &doc);
         bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&crc32(&[&body]).to_le_bytes());
         bytes.extend_from_slice(&body);
@@ -974,7 +1014,7 @@ mod tests {
 
         let (m, loaded, mut writer) = open_note(&path).unwrap();
         assert!(same(&loaded, &doc), "the snapshot and the record are read");
-        // The first save writes it whole, as format 8.
+        // The first save writes it whole, as format 9.
         let mut meta = m;
         writer.save(&path, &mut meta, &loaded).unwrap();
         let saved = fs::read(&path).unwrap();
@@ -984,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn format_6_notes_open_and_are_saved_as_format_8() {
+    fn format_6_notes_open_and_are_saved_as_format_9() {
         let path = std::env::temp_dir().join("tratto_format6.ink");
         remove(&path);
         // A format 6 file: a format 7 one without its (empty) pictures, and
@@ -1003,7 +1043,7 @@ mod tests {
         let old = doc.clone();
         let s = pen(&mut doc, 5);
         doc.strokes.push(s);
-        let mut body = bincode::serialize(&journal::diff(&old, &doc).unwrap()).unwrap();
+        let mut body = record_v8(&old, &doc);
         // No pictures: an empty list delta (8 + 8 + 8 + 1 bytes), no files (8).
         body.truncate(body.len() - 33);
         bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -1015,7 +1055,7 @@ mod tests {
         assert_eq!(m.title, "Old note");
         assert!(same(&loaded, &doc), "the snapshot and the record are read");
         assert!(read_meta(&path).is_ok());
-        // The first save writes it whole, as format 8.
+        // The first save writes it whole, as format 9.
         let mut meta = m;
         writer.save(&path, &mut meta, &loaded).unwrap();
         let saved = fs::read(&path).unwrap();

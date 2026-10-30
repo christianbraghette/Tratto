@@ -522,6 +522,7 @@ impl InkApp {
         self.text_gesture = None;
         self.search.reset();
         self.history.clear();
+        self.gap_drag = None;
         self.active = None;
         self.erase_session.clear();
         self.last_erase_pos = None;

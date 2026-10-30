@@ -116,6 +116,12 @@ impl Stroke {
         Self { id, page, kind, color, width, points: points.into(), bounds, rev: 0 }
     }
 
+    /// Around its points (page space), without its width.
+    pub fn rect(&self) -> Rect {
+        let [x0, y0, x1, y1] = self.bounds;
+        Rect::from_min_max(pos2(x0, y0), pos2(x1, y1))
+    }
+
     /// Moves the stroke (page space).
     pub fn translate(&mut self, dx: f32, dy: f32) {
         for p in Arc::make_mut(&mut self.points) {
@@ -417,8 +423,13 @@ pub struct PdfBackground {
     /// Size of every page of the PDF, in points (1/72 in).
     pub sizes: Vec<[f32; 2]>,
     /// For every page of the note, the PDF page under it (`None`: plain
-    /// paper, e.g. a page added later). Always `page_count` long.
+    /// paper, e.g. a page added later). Always `page_count` long, except on
+    /// an infinite page: there, the PDF's pages on it, top to bottom (see
+    /// `canvas_slot`).
     pub pages: Vec<Option<u32>>,
+    /// On an infinite page, the room between two of its PDF's pages
+    /// (document units, `PDF_GAPS`).
+    pub gap: f32,
     /// The PDF itself. Not part of the encoded document: the file stores it
     /// raw after it (see `storage`).
     #[serde(skip)]
@@ -437,6 +448,46 @@ impl PdfBackground {
         let (dw, dh) = (w * s, h * s);
         Some([(page_w - dw) * 0.5, (page_h - dh) * 0.5, dw, dh])
     }
+
+    /// The size of each PDF page's place on an infinite page: that of the
+    /// first PDF page (the others are fitted into it), as large as the pages
+    /// of a note on the PDF start (see `Document::on_pdf`).
+    pub fn slot_size(&self) -> Vec2 {
+        let [w, h] = self.sizes.first().copied().unwrap_or([DEFAULT_PAGE_WIDTH / PT_TO_PX, DEFAULT_PAGE_HEIGHT / PT_TO_PX]);
+        (vec2(w, h) * PT_TO_PX).max(vec2(1.0, 1.0))
+    }
+
+    /// On an infinite page, the place of `pages[i]`: the PDF's pages one
+    /// under the other, `gap` apart, `CANVAS_PDF_INSET` from the page's
+    /// corner.
+    pub fn canvas_slot(&self, i: usize) -> Rect {
+        let size = self.slot_size();
+        let top = CANVAS_PDF_INSET + i as f32 * (size.y + self.gap);
+        Rect::from_min_size(pos2(CANVAS_PDF_INSET, top), size)
+    }
+
+    /// On an infinite page, the place of a PDF page whose rows (from its top
+    /// to the next one's) the height `y` is in: what is beside a page moves
+    /// with it. Above the first page, none.
+    pub fn canvas_row(&self, y: f32) -> Option<usize> {
+        let stride = self.slot_size().y + self.gap;
+        let row = ((y - CANVAS_PDF_INSET) / stride).floor();
+        (row >= 0.0).then(|| (row as usize).min(self.pages.len().saturating_sub(1)))
+    }
+}
+
+/// A PDF as formats 6 to 8 saved it, before the room between its pages (see
+/// `storage`).
+#[derive(Deserialize)]
+pub(crate) struct PdfBackgroundV8 {
+    sizes: Vec<[f32; 2]>,
+    pages: Vec<Option<u32>>,
+}
+
+impl From<PdfBackgroundV8> for PdfBackground {
+    fn from(p: PdfBackgroundV8) -> Self {
+        Self { sizes: p.sizes, pages: p.pages, gap: PDF_GAP, file: None }
+    }
 }
 
 /// Side of an infinite page, in document units.
@@ -452,6 +503,15 @@ pub const CANVAS_SIZE: f32 = 100_000.0;
 /// Paper right of and below what is on an infinite page when it is made a
 /// page of its own (`canvas_area`).
 const CANVAS_MARGIN: f32 = 48.0;
+/// The room left of and above the pages of a PDF on an infinite page.
+const CANVAS_PDF_INSET: f32 = 48.0;
+/// The room between them (`PdfBackground::gap`) to start with, and the
+/// room they can have.
+pub const PDF_GAP: f32 = 48.0;
+pub const PDF_GAPS: std::ops::RangeInclusive<f32> = 0.0..=400.0;
+/// What is on an infinite page may stick out of the place of a PDF page by
+/// this much and still go back onto that page (document units).
+const SLOT_SLACK: f32 = 2.0;
 
 /// The whole note: `page_count` pages of `page_width` x `page_height`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -469,6 +529,43 @@ pub struct Document {
     pub pdf: Option<PdfBackground>,
     /// Pictures, in draw order (under the ink and the text).
     pub images: Vec<Image>,
+    /// An infinite page cut into pages (`as_pages`, `as_sheets`): its PDF's
+    /// pages stay where they were on it, one under the other (see
+    /// `pdf_places`). Not saved.
+    #[serde(skip)]
+    cut: Option<Cut>,
+}
+
+/// How an infinite page was cut into pages: where the first one starts on
+/// it, and how tall each is (document units). They are as wide as it is
+/// shown, from its left edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cut {
+    top: f32,
+    height: f32,
+}
+
+/// A document as formats 7 and 8 saved it, before the room between the
+/// pages of its PDF (see `storage`).
+#[derive(Deserialize)]
+pub(crate) struct DocumentV8 {
+    page_width: f32,
+    page_height: f32,
+    page_count: u32,
+    page: PageStyle,
+    strokes: Vec<Stroke>,
+    texts: Vec<TextBox>,
+    next_id: u64,
+    pdf: Option<PdfBackgroundV8>,
+    images: Vec<Image>,
+}
+
+impl From<DocumentV8> for Document {
+    fn from(d: DocumentV8) -> Self {
+        let DocumentV8 { page_width, page_height, page_count, page, strokes, texts, next_id, pdf, images } = d;
+        let pdf = pdf.map(PdfBackground::from);
+        Self { page_width, page_height, page_count, page, strokes, texts, next_id, pdf, images, cut: None }
+    }
 }
 
 /// A document as format 6 saved it, before pictures (see `storage`).
@@ -481,13 +578,14 @@ pub(crate) struct DocumentV6 {
     strokes: Vec<Stroke>,
     texts: Vec<TextBox>,
     next_id: u64,
-    pdf: Option<PdfBackground>,
+    pdf: Option<PdfBackgroundV8>,
 }
 
 impl From<DocumentV6> for Document {
     fn from(d: DocumentV6) -> Self {
         let DocumentV6 { page_width, page_height, page_count, page, strokes, texts, next_id, pdf } = d;
-        Self { page_width, page_height, page_count, page, strokes, texts, next_id, pdf, images: Vec::new() }
+        let images = Vec::new();
+        DocumentV8 { page_width, page_height, page_count, page, strokes, texts, next_id, pdf, images }.into()
     }
 }
 
@@ -550,6 +648,12 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
 
+/// The place of a PDF page on an infinite page (`PdfBackground::canvas_slot`)
+/// that `r` is on, if any (with `SLOT_SLACK`).
+fn slot_of(pdf: &PdfBackground, r: Rect) -> Option<usize> {
+    (0..pdf.pages.len().max(1)).find(|&i| pdf.canvas_slot(i).expand(SLOT_SLACK).contains_rect(r))
+}
+
 /// Points (1/72 in) to document units (1/96 in).
 pub const PT_TO_PX: f32 = 96.0 / 72.0;
 
@@ -565,6 +669,7 @@ impl Default for Document {
             next_id: 1,
             pdf: None,
             images: Vec::new(),
+            cut: None,
         }
     }
 }
@@ -575,29 +680,245 @@ impl Document {
         self.page_width >= CANVAS_SIZE && self.page_height >= CANVAS_SIZE
     }
 
-    /// The paper can be made infinite: a note of one page, not on a PDF
-    /// (its pages have their size).
+    /// Its PDF's pages are one under the other, as on an infinite page: it
+    /// is one, or one cut into pages (`as_pages`, `as_sheets`).
+    fn stacked(&self) -> bool {
+        self.is_canvas() || self.cut.is_some()
+    }
+
+    /// The paper can be made infinite: a note of one page, or on a PDF (its
+    /// pages go onto the infinite page, see `pdf_to_canvas`).
     pub fn can_be_canvas(&self) -> bool {
-        self.page_count <= 1 && self.pdf.is_none()
+        self.page_count <= 1 || self.pdf.is_some()
+    }
+
+    /// The PDF pages on note page `page`, each with its place there (page
+    /// space): on an infinite page all of them, one under the other, each
+    /// fitted into its place (`PdfBackground::canvas_slot`); on any other
+    /// page the one under it, fitted into the page.
+    pub fn pdf_places(&self, page: u32) -> Vec<(u32, Rect)> {
+        let Some(pdf) = &self.pdf else { return Vec::new() };
+        let fit = |pdf_page: u32, slot: Rect| {
+            let [x, y, w, h] = pdf.placement(pdf_page, slot.width(), slot.height())?;
+            Some((pdf_page, Rect::from_min_size(slot.min + vec2(x, y), vec2(w, h))))
+        };
+        if self.stacked() {
+            // The part of the infinite page this page is.
+            let top = match self.cut {
+                Some(cut) => cut.top + page as f32 * cut.height,
+                None if page == 0 => 0.0,
+                None => return Vec::new(),
+            };
+            let shown = Rect::from_min_size(pos2(0.0, top), vec2(self.page_width, self.page_height));
+            return (pdf.pages.iter().enumerate())
+                .filter_map(|(i, p)| fit((*p)?, pdf.canvas_slot(i)))
+                .filter(|(_, r)| r.intersects(shown))
+                .map(|(p, r)| (p, r.translate(vec2(0.0, -top))))
+                .collect();
+        }
+        let whole = Rect::from_min_size(Pos2::ZERO, vec2(self.page_width, self.page_height));
+        self.pdf_page(page).and_then(|p| fit(p, whole)).into_iter().collect()
+    }
+
+    /// Where PDF page `pdf_page` is in the note: the note page it is on, and
+    /// its place there (the first, if it is there more than once).
+    pub fn pdf_place_of(&self, pdf_page: u32) -> Option<(u32, Rect)> {
+        let on = |page: u32| self.pdf_places(page).into_iter().find(|(p, _)| *p == pdf_page).map(|(_, r)| (page, r));
+        if self.stacked() {
+            return (0..self.page_count.max(1)).find_map(on);
+        }
+        on(self.pdf.as_ref()?.pages.iter().position(|p| *p == Some(pdf_page))? as u32)
+    }
+
+    /// What is on an infinite page, the places of its PDF's pages (and of
+    /// the blank pages between them) included (page space); `None` when
+    /// nothing is.
+    pub fn canvas_used(&self) -> Option<Rect> {
+        let slots = self.canvas_slots().into_iter().map(|(_, r)| r);
+        self.content_bounds(0).into_iter().chain(slots).reduce(|a, b| a.union(b))
+    }
+
+    /// On an infinite page with a PDF, the places of its pages, top to
+    /// bottom, each with its PDF page (`None`: a blank page); else none.
+    pub fn canvas_slots(&self) -> Vec<(Option<u32>, Rect)> {
+        let Some(pdf) = self.pdf.as_ref().filter(|_| self.is_canvas()) else { return Vec::new() };
+        pdf.pages.iter().enumerate().map(|(i, p)| (*p, pdf.canvas_slot(i))).collect()
+    }
+
+    /// On an infinite page with a PDF: a blank page before `pages[index]`
+    /// (past the last one, at the end). It and the pages below it move
+    /// down a place, with what is on or beside them.
+    pub fn insert_canvas_page(&mut self, index: usize) {
+        let Some(pdf) = self.pdf.as_ref().filter(|_| self.is_canvas()) else { return };
+        let index = index.min(pdf.pages.len());
+        let (old, stride) = (pdf.clone(), pdf.slot_size().y + pdf.gap);
+        self.move_items(|page, r| {
+            let below = old.canvas_row(r.center().y).is_some_and(|row| row >= index);
+            (page, 1.0, vec2(0.0, if below { stride } else { 0.0 }))
+        });
+        self.pdf.as_mut().expect("checked above").pages.insert(index, None);
+    }
+
+    /// The blank page `pages[index]` of an infinite page with a PDF can go:
+    /// nothing is on it or beside it.
+    pub fn can_remove_canvas_page(&self, index: usize) -> bool {
+        let Some(pdf) = self.pdf.as_ref().filter(|_| self.is_canvas()) else { return false };
+        let in_row = |r: Rect| pdf.canvas_row(r.center().y) == Some(index);
+        pdf.pages.get(index) == Some(&None)
+            && !self.strokes.iter().any(|s| in_row(s.rect()))
+            && !self.texts.iter().any(|t| in_row(t.rect()))
+            && !self.images.iter().any(|i| in_row(i.rect()))
+    }
+
+    /// The blank page `pages[index]` taken away (`can_remove_canvas_page`),
+    /// the pages below it moving up a place with what is on or beside them;
+    /// false, and nothing changes, if it cannot go.
+    pub fn remove_canvas_page(&mut self, index: usize) -> bool {
+        if !self.can_remove_canvas_page(index) {
+            return false;
+        }
+        let pdf = self.pdf.as_ref().expect("can_remove_canvas_page checked it");
+        let (old, stride) = (pdf.clone(), pdf.slot_size().y + pdf.gap);
+        self.move_items(|page, r| {
+            let below = old.canvas_row(r.center().y).is_some_and(|row| row > index);
+            (page, 1.0, vec2(0.0, if below { -stride } else { 0.0 }))
+        });
+        self.pdf.as_mut().expect("checked above").pages.remove(index);
+        true
+    }
+
+    /// A note on a PDF made one infinite page: its PDF's pages go one under
+    /// the other (`PdfBackground::canvas_slot`), each with what is on its
+    /// note page, which keeps its place on the PDF. A note page of another
+    /// size than those places (its paper was changed) is scaled into its
+    /// place as its PDF page is. Pages without a PDF page keep their place
+    /// too, empty.
+    pub fn pdf_to_canvas(&mut self) {
+        let Some(pdf) = &self.pdf else { return };
+        if self.is_canvas() {
+            return;
+        }
+        let page = Rect::from_min_size(Pos2::ZERO, vec2(self.page_width, self.page_height));
+        // For each note page: what its points are scaled by, and moved by.
+        let moves: Vec<(f32, Vec2)> = (0..self.page_count as usize)
+            .map(|i| {
+                let slot = pdf.canvas_slot(i);
+                let fitted = |r: Rect, pdf_page: u32| {
+                    let [x, y, w, h] = pdf.placement(pdf_page, r.width(), r.height())?;
+                    Some(Rect::from_min_size(r.min + vec2(x, y), vec2(w, h)))
+                };
+                let on_pdf = pdf.pages.get(i).copied().flatten().and_then(|p| Some((fitted(page, p)?, fitted(slot, p)?)));
+                // Without a PDF page: the page fitted into its place.
+                let (from, to) = on_pdf.unwrap_or_else(|| {
+                    let k = (slot.width() / page.width()).min(slot.height() / page.height());
+                    (page, Rect::from_center_size(slot.center(), page.size() * k))
+                });
+                let k = to.width() / from.width().max(f32::EPSILON);
+                (k, to.min.to_vec2() - from.min.to_vec2() * k)
+            })
+            .collect();
+        let at = |page: u32| moves.get(page as usize).copied().unwrap_or((1.0, Vec2::ZERO));
+        self.move_items(|page, _| {
+            let (k, by) = at(page);
+            (0, k, by)
+        });
+        self.pdf.as_mut().expect("checked above").pages.resize(self.page_count as usize, None);
+        (self.page_width, self.page_height, self.page_count) = (CANVAS_SIZE, CANVAS_SIZE, 1);
+    }
+
+    /// The infinite page of a note on a PDF can be made pages again: all
+    /// that is on it is on the place of one of its PDF's pages.
+    pub fn can_leave_canvas(&self) -> bool {
+        let Some(pdf) = self.pdf.as_ref().filter(|_| self.is_canvas()) else { return false };
+        let on_a_slot = |r: Rect| slot_of(pdf, r).is_some();
+        self.strokes.iter().all(|s| on_a_slot(s.rect()))
+            && self.texts.iter().all(|t| on_a_slot(t.rect()))
+            && self.images.iter().all(|i| on_a_slot(i.rect()))
+    }
+
+    /// The infinite page of a note on a PDF made pages again, one per place
+    /// of a PDF page and as large, each with what is on that place: the
+    /// reverse of `pdf_to_canvas`. False, and nothing changes, when
+    /// something is outside those places (see `can_leave_canvas`).
+    pub fn canvas_to_pdf_pages(&mut self) -> bool {
+        if !self.can_leave_canvas() {
+            return false;
+        }
+        let pdf = self.pdf.as_mut().expect("can_leave_canvas checked it");
+        if pdf.pages.is_empty() {
+            pdf.pages.push(None);
+        }
+        let pdf = pdf.clone();
+        self.move_items(|_, r| {
+            let slot = slot_of(&pdf, r).expect("can_leave_canvas checked it");
+            (slot as u32, 1.0, -pdf.canvas_slot(slot).min.to_vec2())
+        });
+        let size = pdf.slot_size();
+        (self.page_width, self.page_height, self.page_count) = (size.x, size.y, pdf.pages.len() as u32);
+        true
+    }
+
+    /// On an infinite page with a PDF: the room between the PDF's pages is
+    /// `gap` (clamped to `PDF_GAPS`). What is on a page, or beside it, moves
+    /// with it; what is above the first page stays.
+    pub fn set_pdf_gap(&mut self, gap: f32) {
+        let Some(pdf) = self.pdf.as_ref().filter(|_| self.is_canvas()) else { return };
+        let gap = gap.clamp(*PDF_GAPS.start(), *PDF_GAPS.end());
+        let old = pdf.clone();
+        let new = PdfBackground { gap, ..old.clone() };
+        self.move_items(|page, r| {
+            let by = old.canvas_row(r.center().y).map_or(0.0, |i| new.canvas_slot(i).top() - old.canvas_slot(i).top());
+            (page, 1.0, vec2(0.0, by))
+        });
+        self.pdf.as_mut().expect("checked above").gap = gap;
+    }
+
+    /// Moves every stroke, text box and picture: `f` takes its page and its
+    /// place there, and gives its new page, the scale of its points (around
+    /// the page's corner) and how far they move after it.
+    fn move_items(&mut self, mut f: impl FnMut(u32, Rect) -> (u32, f32, Vec2)) {
+        let at = |p: Pos2, k: f32, by: Vec2| pos2(p.x * k + by.x, p.y * k + by.y);
+        for s in &mut self.strokes {
+            let (page, k, by) = f(s.page, s.rect());
+            if k == 1.0 {
+                s.translate(by.x, by.y);
+            } else {
+                *s = s.mapped(|p| at(p, k, by), k);
+            }
+            s.page = page;
+        }
+        for t in &mut self.texts {
+            let (page, k, by) = f(t.page, t.rect());
+            let corner = at(pos2(t.x, t.y), k, by);
+            (t.page, t.x, t.y) = (page, corner.x, corner.y);
+            if k != 1.0 {
+                (t.width, t.size, t.line_h) = (t.width * k, t.size * k, t.line_h * k);
+                // Laid out again at the new size (see `TextBox`).
+                t.layout = None;
+            }
+        }
+        for i in &mut self.images {
+            let (page, k, by) = f(i.page, i.rect());
+            let corner = at(pos2(i.x, i.y), k, by);
+            (i.page, i.x, i.y, i.width, i.height) = (page, corner.x, corner.y, i.width * k, i.height * k);
+        }
     }
 
     /// What is on page `page`, as a rectangle in page space (strokes with
     /// their width, text boxes, pictures); `None` when nothing is.
     pub fn content_bounds(&self, page: u32) -> Option<Rect> {
-        let strokes = self.strokes.iter().filter(|s| s.page == page).map(|s| {
-            let [x0, y0, x1, y1] = s.bounds;
-            Rect::from_min_max(pos2(x0, y0), pos2(x1, y1)).expand(s.width * 0.5)
-        });
+        let strokes = self.strokes.iter().filter(|s| s.page == page).map(|s| s.rect().expand(s.width * 0.5));
         let texts = self.texts.iter().filter(|t| t.page == page).map(TextBox::rect);
         let images = self.images.iter().filter(|i| i.page == page).map(Image::rect);
         strokes.chain(texts).chain(images).reduce(|a, b| a.union(b))
     }
 
     /// The part of an infinite page that makes a page of it (exporting,
-    /// printing, the library's preview): from its corner to what is on it,
-    /// with some paper right and below, at least a page of the default size.
+    /// printing, the library's preview): from its corner to what is on it
+    /// (its PDF's pages too), with some paper right and below, at least a
+    /// page of the default size.
     pub fn canvas_area(&self) -> Rect {
-        let written = self.content_bounds(0).map_or(pos2(0.0, 0.0), |c| c.max + vec2(CANVAS_MARGIN, CANVAS_MARGIN));
+        let written = self.canvas_used().map_or(pos2(0.0, 0.0), |c| c.max + vec2(CANVAS_MARGIN, CANVAS_MARGIN));
         let max = written.max(pos2(DEFAULT_PAGE_WIDTH, DEFAULT_PAGE_HEIGHT)).min(pos2(CANVAS_SIZE, CANVAS_SIZE));
         Rect::from_min_max(pos2(0.0, 0.0), max)
     }
@@ -609,9 +930,85 @@ impl Document {
             return std::borrow::Cow::Borrowed(self);
         }
         let area = self.canvas_area();
-        let mut doc = self.clone();
-        (doc.page_width, doc.page_height) = (area.width(), area.height());
-        std::borrow::Cow::Owned(doc)
+        std::borrow::Cow::Owned(self.cut_into(area.width(), Cut { top: 0.0, height: area.height() }, 1))
+    }
+
+    /// An infinite page cut into sheets to export or print, as OneNote
+    /// prints a page (see `sheets`); any other note as it is.
+    pub fn as_sheets(&self) -> std::borrow::Cow<'_, Document> {
+        if !self.is_canvas() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let (width, cut, count) = self.sheets();
+        std::borrow::Cow::Owned(self.cut_into(width, cut, count))
+    }
+
+    /// The pages `as_sheets` makes.
+    pub fn sheet_count(&self) -> u32 {
+        if self.is_canvas() { self.sheets().2 } else { self.page_count.max(1) }
+    }
+
+    /// The sheet of `as_sheets` the height `y` of an infinite page is on.
+    pub fn sheet_at(&self, y: f32) -> u32 {
+        let (_, cut, count) = self.sheets();
+        (((y - cut.top) / cut.height).floor().max(0.0) as u32).min(count - 1)
+    }
+
+    /// How an infinite page is cut into sheets: as wide as what is on it
+    /// (`canvas_area`), one under the other down to its end. With a PDF on
+    /// it, each as tall as a PDF page and the room after it, cut halfway
+    /// between two (a PDF page a sheet, with what is beside it); else of
+    /// the shape of the default paper (A4).
+    fn sheets(&self) -> (f32, Cut, u32) {
+        let area = self.canvas_area();
+        let width = area.width();
+        let count = |top: f32, height: f32, bottom: f32| ((bottom - top) / height - 1e-3).ceil().max(1.0) as u32;
+        match self.pdf.as_ref().filter(|pdf| !pdf.pages.is_empty()) {
+            Some(pdf) => {
+                let height = pdf.slot_size().y + pdf.gap.max(1.0);
+                let used = self.canvas_used().unwrap_or(area);
+                // Halfway up the room above the first one; higher if
+                // something is written there.
+                let top = (CANVAS_PDF_INSET - pdf.gap * 0.5).max(0.0).min(used.top().max(0.0));
+                (width, Cut { top, height }, count(top, height, used.bottom()))
+            }
+            None => {
+                let height = width * DEFAULT_PAGE_HEIGHT / DEFAULT_PAGE_WIDTH;
+                (width, Cut { top: 0.0, height }, count(0.0, height, area.bottom()))
+            }
+        }
+    }
+
+    /// An infinite page cut into `count` pages `width` wide (see `Cut`).
+    /// What crosses from one to the next is on both, cut off at their
+    /// edges (the copies keep its id: such a document is only drawn).
+    fn cut_into(&self, width: f32, cut: Cut, count: u32) -> Document {
+        let last = count.max(1) - 1;
+        let row = |y: f32| (((y - cut.top) / cut.height).floor().max(0.0) as u32).min(last);
+        let rows = |r: Rect| row(r.top())..=row(r.bottom());
+        let up = |page: u32| -(cut.top + page as f32 * cut.height);
+        let mut doc = Document { strokes: Vec::new(), texts: Vec::new(), images: Vec::new(), ..self.clone() };
+        for s in &self.strokes {
+            for page in rows(s.rect().expand(s.width * 0.5)) {
+                let mut s = s.clone();
+                s.translate(0.0, up(page));
+                s.page = page;
+                doc.strokes.push(s);
+            }
+        }
+        for t in &self.texts {
+            for page in rows(t.rect()) {
+                doc.texts.push(TextBox { page, y: t.y + up(page), ..t.clone() });
+            }
+        }
+        for i in &self.images {
+            for page in rows(i.rect()) {
+                doc.images.push(Image { page, y: i.y + up(page), ..i.clone() });
+            }
+        }
+        (doc.page_width, doc.page_height, doc.page_count) = (width, cut.height, last + 1);
+        doc.cut = Some(cut);
+        doc
     }
 
     /// A note written on `file`: one page per PDF page, the note's pages as
@@ -625,20 +1022,25 @@ impl Document {
             page_height: h * PT_TO_PX,
             page_count: count,
             page: PageStyle { kind: PageKind::Blank, ..PageStyle::default() },
-            pdf: Some(PdfBackground { sizes, pages: (0..count).map(Some).collect(), file: Some(file) }),
+            pdf: Some(PdfBackground { sizes, pages: (0..count).map(Some).collect(), gap: PDF_GAP, file: Some(file) }),
             ..Self::default()
         }
     }
 
-    /// The PDF page under note page `page`, if any.
-    pub fn pdf_page(&self, page: u32) -> Option<u32> {
-        self.pdf.as_ref()?.pages.get(page as usize).copied().flatten()
-    }
-
     /// Note page `page` gets the rules (or grid) of the paper: not a page
-    /// written on a PDF page, which is its own paper.
+    /// written on a PDF page, which is its own paper. An infinite page does,
+    /// under the PDF's pages on it (they cover them, see `pdf_places`).
     pub fn ruled(&self, page: u32) -> bool {
         self.page.kind != PageKind::Blank && self.pdf_page(page).is_none()
+    }
+
+    /// The PDF page under note page `page`, if any; on an infinite page
+    /// there are several (see `pdf_places`), none is "under" it.
+    pub fn pdf_page(&self, page: u32) -> Option<u32> {
+        if self.stacked() {
+            return None;
+        }
+        self.pdf.as_ref()?.pages.get(page as usize).copied().flatten()
     }
 
     /// Allocates a document-unique stroke id.
@@ -789,5 +1191,237 @@ mod tests {
         assert_eq!(highlight_on([255, 0, 0, 255], [255, 255, 255]), [255, 0, 0]);
         assert_eq!(highlight_on([255, 0, 0, 0], [10, 20, 30]), [10, 20, 30]);
         assert_eq!(highlight_on([0, 0, 0, 128], [255, 255, 255]), [127, 127, 127]);
+    }
+
+    /// A note on a PDF of three pages (the last one landscape), with a
+    /// stroke on its second page and a picture on its third.
+    fn note_on_pdf() -> Document {
+        let mut doc = Document::on_pdf(PdfFile::new(Vec::new()), vec![[600.0, 800.0], [600.0, 800.0], [800.0, 600.0]]);
+        let mut s = line(2.0);
+        s.translate(100.0, 200.0);
+        s.page = 1;
+        doc.strokes.push(s);
+        let data = Arc::new(ImageData::new(1, 1, Vec::new()));
+        doc.images.push(Image { id: 2, page: 2, x: 50.0, y: 60.0, width: 40.0, height: 30.0, data });
+        doc
+    }
+
+    #[test]
+    fn a_note_on_a_pdf_becomes_an_infinite_page_and_back() {
+        let pages = note_on_pdf();
+        let mut doc = pages.clone();
+        assert!(doc.can_be_canvas());
+        doc.pdf_to_canvas();
+        assert!(doc.is_canvas() && doc.page_count == 1);
+        // The PDF's pages one under the other, each in its place.
+        let places = doc.pdf_places(0);
+        assert_eq!(places.iter().map(|(p, _)| *p).collect::<Vec<_>>(), [0, 1, 2]);
+        let pdf = doc.pdf.as_ref().unwrap();
+        for (i, (_, r)) in places.iter().enumerate() {
+            assert!(pdf.canvas_slot(i).expand(0.01).contains_rect(*r));
+        }
+        assert!(places[0].1.bottom() < places[1].1.top(), "one under the other");
+        // What was on a page is where that page went: nothing moves on the PDF.
+        let slot = pdf.canvas_slot(1).min.to_vec2();
+        assert_eq!(doc.strokes[0].page, 0);
+        assert_eq!(doc.strokes[0].points[0].pos2(), pos2(100.0, 200.0) + slot);
+        assert_eq!(doc.images[0].rect().min, pos2(50.0, 60.0) + pdf.canvas_slot(2).min.to_vec2());
+        assert_eq!(doc.pdf_place_of(1).map(|(page, r)| (page, r.min)), Some((0, pos2(0.0, 0.0) + slot)));
+        // The infinite page goes as far as its PDF.
+        assert!(doc.canvas_used().unwrap().contains_rect(places[2].1));
+
+        assert!(doc.can_leave_canvas());
+        assert!(doc.canvas_to_pdf_pages());
+        assert_eq!((doc.page_width, doc.page_height, doc.page_count), (pages.page_width, pages.page_height, 3));
+        assert_eq!(doc.strokes[0].page, 1);
+        assert_eq!(doc.strokes[0].points[0].pos2(), pos2(100.0, 200.0));
+        assert_eq!((doc.images[0].page, doc.images[0].rect()), (2, pages.images[0].rect()));
+        assert_eq!(doc.pdf_page(2), Some(2));
+    }
+
+    #[test]
+    fn ink_beside_the_pdf_has_no_page_to_go_back_to() {
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        let mut s = line(2.0);
+        s.translate(5000.0, 100.0);
+        doc.strokes.push(s);
+        assert!(!doc.can_leave_canvas());
+        let before = (doc.page_count, doc.strokes[1].points[0]);
+        assert!(!doc.canvas_to_pdf_pages());
+        assert!(doc.is_canvas());
+        assert_eq!((doc.page_count, doc.strokes[1].points[0]), before, "nothing changed");
+    }
+
+    #[test]
+    fn a_page_of_another_size_is_scaled_into_its_place() {
+        let mut doc = note_on_pdf();
+        // Twice as large: the PDF page is twice as large on it, and so is the stroke.
+        (doc.page_width, doc.page_height) = (doc.page_width * 2.0, doc.page_height * 2.0);
+        doc.strokes[0].page = 0;
+        let width = doc.strokes[0].width;
+        doc.pdf_to_canvas();
+        let (_, place) = doc.pdf_place_of(0).unwrap();
+        let p = doc.strokes[0].points[0].pos2();
+        assert!((p - (place.min + vec2(50.0, 100.0))).length() < 0.01, "{p:?} on {place:?}");
+        assert!((doc.strokes[0].width - width * 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn an_infinite_page_on_a_pdf_made_a_page_keeps_the_pdf_where_it_was() {
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        let page = doc.as_pages();
+        assert!(!page.is_canvas());
+        assert_eq!(page.pdf_places(0), doc.pdf_places(0));
+        // As large as the PDF's pages on it.
+        assert!(page.page_height >= doc.pdf_places(0)[2].1.bottom());
+        assert!(!page.ruled(0) && page.pdf_page(0).is_none());
+    }
+
+    #[test]
+    fn a_pdf_saved_before_the_room_between_its_pages_gets_the_usual_room() {
+        let mut doc = note_on_pdf();
+        // Format 8: the same without the room (an unmistakable value here).
+        doc.pdf.as_mut().unwrap().gap = 1234.5;
+        let mut bytes = bincode::serialize(&doc).unwrap();
+        let at = bytes.windows(4).position(|w| w == 1234.5f32.to_le_bytes()).unwrap();
+        bytes.drain(at..at + 4);
+        let old: Document = bincode::deserialize::<DocumentV8>(&bytes).unwrap().into();
+        assert_eq!(old.pdf.as_ref().unwrap().gap, PDF_GAP);
+        assert_eq!(old.pdf.unwrap().pages, doc.pdf.unwrap().pages);
+        assert_eq!(old.images.len(), 1);
+    }
+
+    #[test]
+    fn more_room_between_the_pdf_pages_moves_what_is_on_them_and_beside_them() {
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        // Beside the third page, and above the first.
+        let third = doc.pdf.as_ref().unwrap().canvas_slot(2);
+        let mut beside = line(2.0);
+        beside.translate(third.right() + 300.0, third.center().y);
+        doc.strokes.push(beside);
+        let mut above = line(2.0);
+        above.translate(10.0, 5.0);
+        doc.strokes.push(above);
+        let (on, aside, top) = (doc.strokes[0].points[0], doc.strokes[1].points[0], doc.strokes[2].points[0]);
+        doc.set_pdf_gap(PDF_GAP + 100.0);
+        let pdf = doc.pdf.as_ref().unwrap();
+        assert_eq!(pdf.gap, PDF_GAP + 100.0);
+        assert_eq!(pdf.canvas_slot(2).top() - third.top(), 200.0);
+        // On the second page: 100 lower; beside the third: 200; above: as it was.
+        assert_eq!(doc.strokes[0].points[0].y - on.y, 100.0);
+        assert_eq!(doc.strokes[1].points[0].y - aside.y, 200.0);
+        assert_eq!(doc.strokes[2].points[0], top);
+        // Still on the PDF's pages: they can be pages again.
+        doc.strokes.truncate(1);
+        assert!(doc.canvas_to_pdf_pages());
+        assert_eq!(doc.strokes[0].points[0].pos2(), pos2(100.0, 200.0));
+        // Not past what can be set.
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        doc.set_pdf_gap(-5.0);
+        assert_eq!(doc.pdf.unwrap().gap, 0.0);
+    }
+
+    #[test]
+    fn an_infinite_page_is_exported_on_sheets_of_the_paper_s_shape() {
+        let mut doc = Document { page_width: CANVAS_SIZE, page_height: CANVAS_SIZE, ..Document::default() };
+        // Down to 2.5 A4 pages, and a stroke across the first cut.
+        let cut = DEFAULT_PAGE_HEIGHT;
+        let mut across = line(2.0);
+        across.points = vec![Point::new(10.0, cut - 20.0, 1.0), Point::new(10.0, cut + 20.0, 1.0)].into();
+        across.bounds = compute_bounds(&across.points);
+        doc.strokes.push(across);
+        let mut low = line(2.0);
+        low.translate(0.0, cut * 2.5);
+        doc.strokes.push(low);
+        assert_eq!(doc.sheet_count(), 3);
+        let sheets = doc.as_sheets();
+        assert!(!sheets.is_canvas());
+        assert_eq!((sheets.page_width, sheets.page_height, sheets.page_count), (DEFAULT_PAGE_WIDTH, cut, 3));
+        // On both sheets it crosses, each part where it is on that sheet.
+        let parts: Vec<(u32, f32)> = sheets.strokes.iter().map(|s| (s.page, s.points[0].y)).collect();
+        assert_eq!(parts[..2], [(0, cut - 20.0), (1, -20.0)]);
+        assert_eq!(parts[2], (2, cut * 0.5));
+        assert_eq!(doc.sheet_at(cut * 1.5), 1);
+        assert_eq!(doc.sheet_at(-5.0), 0);
+        assert_eq!(doc.sheet_at(1e9), 2);
+        // A note with pages is exported as it is.
+        assert!(matches!(Document::default().as_sheets(), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn an_infinite_page_on_a_pdf_is_exported_a_pdf_page_a_sheet() {
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        let pdf = doc.pdf.clone().unwrap();
+        let sheets = doc.as_sheets();
+        assert_eq!(sheets.page_count, 3);
+        assert_eq!(sheets.page_height, pdf.slot_size().y + pdf.gap);
+        for page in 0..3 {
+            // Each sheet has its PDF page, whole, halfway down the room around it.
+            let places = sheets.pdf_places(page);
+            assert_eq!(places.len(), 1, "sheet {page}");
+            let (p, r) = places[0];
+            assert_eq!(p, page);
+            assert!(r.top() >= 0.0 && r.bottom() <= sheets.page_height, "{r:?}");
+            assert_eq!(sheets.pdf_place_of(page).map(|(sheet, _)| sheet), Some(page));
+        }
+        // The stroke of the second page is on the second sheet, where it is on its PDF page.
+        let (_, second) = sheets.pdf_places(1)[0];
+        let s = sheets.strokes.iter().find(|s| s.page == 1).unwrap();
+        assert_eq!(s.points[0].pos2(), second.min + vec2(100.0, 200.0));
+        assert_eq!(doc.sheet_at(pdf.canvas_slot(2).center().y), 2);
+    }
+
+    #[test]
+    fn a_blank_page_between_the_pdf_pages_makes_room_for_itself() {
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        let pdf = doc.pdf.clone().unwrap();
+        let stride = pdf.slot_size().y + pdf.gap;
+        // The stroke is on the second PDF page, the picture on the third.
+        let (stroke, picture) = (doc.strokes[0].points[0], doc.images[0].y);
+        doc.insert_canvas_page(1);
+        assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), None, Some(1), Some(2)]);
+        assert_eq!(doc.strokes[0].points[0].y, stroke.y + stride, "moved down with its page");
+        assert_eq!(doc.images[0].y, picture + stride);
+        // The PDF's second page is a place further down, the stroke still on it.
+        let (_, second) = doc.pdf_place_of(1).unwrap();
+        assert_eq!(doc.strokes[0].points[0].pos2(), second.min + vec2(100.0, 200.0));
+        assert!(doc.canvas_used().unwrap().contains_rect(doc.pdf.as_ref().unwrap().canvas_slot(3)));
+        // Exported as a sheet of its own, and a page of its own back on pages.
+        assert_eq!(doc.sheet_count(), 4);
+        let mut pages = doc.clone();
+        assert!(pages.canvas_to_pdf_pages());
+        assert_eq!((pages.page_count, pages.pdf_page(1), pages.strokes[0].page), (4, None, 2));
+
+        // Taken away again: all back where it was.
+        assert!(doc.can_remove_canvas_page(1));
+        assert!(!doc.can_remove_canvas_page(0), "a PDF page stays");
+        assert!(doc.remove_canvas_page(1));
+        assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), Some(1), Some(2)]);
+        assert_eq!((doc.strokes[0].points[0], doc.images[0].y), (stroke, picture));
+    }
+
+    #[test]
+    fn a_blank_page_with_something_on_it_stays() {
+        let mut doc = note_on_pdf();
+        doc.pdf_to_canvas();
+        // At the end: nothing moves.
+        let before = doc.strokes[0].points[0];
+        doc.insert_canvas_page(99);
+        assert_eq!(doc.pdf.as_ref().unwrap().pages, [Some(0), Some(1), Some(2), None]);
+        assert_eq!(doc.strokes[0].points[0], before);
+        // Written on, it stays.
+        let mut s = line(2.0);
+        let slot = doc.pdf.as_ref().unwrap().canvas_slot(3);
+        s.translate(slot.left() + 50.0, slot.top() + 50.0);
+        doc.strokes.push(s);
+        assert!(!doc.can_remove_canvas_page(3));
+        assert!(!doc.remove_canvas_page(3));
+        assert_eq!(doc.pdf.as_ref().unwrap().pages.len(), 4);
     }
 }

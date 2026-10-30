@@ -208,6 +208,43 @@ fn keycap(ui: &mut Ui, keys: &str) {
         .show(ui, |ui| ui.label(RichText::new(keys).monospace().size(11.5).color(color::text())));
 }
 
+/// Copying, cutting and pasting whole pages, by `page`, and a picture of
+/// it (Page menu, context menu, pages panel). `enabled`: they can be (not
+/// on the pages of an infinite page); `paste`: pages were copied.
+pub(super) fn page_clipboard_entries(
+    ui: &mut Ui,
+    page: u32,
+    (enabled, paste): (bool, bool),
+    push: &mut dyn FnMut(&mut Ui, Command),
+) {
+    if entry(ui, icon::COPY, "Copy page", "", enabled) {
+        push(ui, Command::CopyPage(page));
+    }
+    if entry(ui, icon::SCISSORS, "Cut page", "", enabled) {
+        push(ui, Command::CutPage(page));
+    }
+    if entry(ui, icon::CLIPBOARD, "Paste page", "", enabled && paste) {
+        push(ui, Command::PastePages(page + 1));
+    }
+    if entry(ui, icon::FILE_PNG, "Save page as PNG...", "", enabled) {
+        push(ui, Command::SavePagePng(page));
+    }
+}
+
+/// Inserting a page before or after `page` and deleting it (Page menu,
+/// context menu, pages panel); `delete`: it can be deleted.
+pub(super) fn page_insert_entries(ui: &mut Ui, page: u32, delete: bool, push: &mut dyn FnMut(&mut Ui, Command)) {
+    if entry(ui, icon::ARROW_LINE_UP, "Insert page before", "", true) {
+        push(ui, Command::InsertPage(page));
+    }
+    if entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
+        push(ui, Command::InsertPage(page + 1));
+    }
+    if entry(ui, icon::TRASH, "Delete page", "", delete) {
+        push(ui, Command::DeletePage(page));
+    }
+}
+
 /// One menu entry: icon, label and shortcut. Returns true when clicked.
 pub(super) fn entry(ui: &mut Ui, glyph: &str, label: &str, shortcut: &str, enabled: bool) -> bool {
     // All menus share a minimum width, and widen to fit the label and the
@@ -817,43 +854,12 @@ impl InkApp {
         }
     }
 
-    /// Copying, cutting and pasting whole pages, by `page` (Page menu and
-    /// context menu).
-    fn page_clipboard_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
-        if entry(ui, icon::COPY, "Copy page", "", true) {
-            push(ui, Command::CopyPage(page));
-        }
-        if entry(ui, icon::SCISSORS, "Cut page", "", true) {
-            push(ui, Command::CutPage(page));
-        }
-        if entry(ui, icon::CLIPBOARD, "Paste page", "", self.clipboard.has_pages()) {
-            push(ui, Command::PastePages(page + 1));
-        }
-        if entry(ui, icon::FILE_PNG, "Save page as PNG...", "", true) {
-            push(ui, Command::SavePagePng(page));
-        }
-    }
-
     /// Insert / delete entries, then the clipboard ones, for `page` (Page
     /// menu).
     fn page_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
-        self.page_insert_entries(ui, page, push);
+        page_insert_entries(ui, page, true, push);
         ui.separator();
-        self.page_clipboard_entries(ui, page, push);
-    }
-
-    /// Inserting a page before or after `page` and deleting it (Page menu
-    /// and context menu).
-    fn page_insert_entries(&self, ui: &mut Ui, page: u32, push: &mut dyn FnMut(&mut Ui, Command)) {
-        if entry(ui, icon::ARROW_LINE_UP, "Insert page before", "", true) {
-            push(ui, Command::InsertPage(page));
-        }
-        if entry(ui, icon::ARROW_LINE_DOWN, "Insert page after", "", true) {
-            push(ui, Command::InsertPage(page + 1));
-        }
-        if entry(ui, icon::TRASH, "Delete page", "", true) {
-            push(ui, Command::DeletePage(page));
-        }
+        page_clipboard_entries(ui, page, (true, self.clipboard.has_pages()), push);
     }
 
     // -------------------------------------------------------- context menu
@@ -978,9 +984,9 @@ impl InkApp {
                             }
                             return;
                         }
-                        self.page_clipboard_entries(ui, page, &mut push);
+                        page_clipboard_entries(ui, page, (true, self.clipboard.has_pages()), &mut push);
                         ui.separator();
-                        self.page_insert_entries(ui, page, &mut push);
+                        page_insert_entries(ui, page, true, &mut push);
                     }
                 });
             });

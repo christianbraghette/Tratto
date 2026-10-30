@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 
-use tratto_core::model::{Document, PdfBackground, TextBox};
-use tratto_core::pdf_pages::TextChar;
+use tratto_core::model::{Document, TextBox};
+use tratto_core::pdf_pages::{PdfFile, TextChar};
 
 use crate::markdown;
 use crate::theme::color;
@@ -143,13 +143,14 @@ impl InkApp {
             return Some(glyphs.clone());
         }
         let mut pdf_glyphs = Vec::new();
-        if let Some(pdf) = &self.doc.pdf
-            && let (Some(file), Some(pdf_page)) = (&pdf.file, self.doc.pdf_page(page))
-        {
-            let chars = self.pdf_nav.text(file, pdf_page)?;
-            let size = (self.doc.page_width, self.doc.page_height);
+        if let Some(file) = self.doc.pdf.as_ref().and_then(|pdf| pdf.file.clone()) {
+            // Every PDF page on it is asked for, before waiting for any.
+            let places = self.doc.pdf_places(page);
+            let texts: Vec<_> = places.iter().map(|(pdf_page, _)| self.pdf_nav.text(&file, *pdf_page)).collect();
             let covers: Vec<Rect> = self.doc.images.iter().filter(|i| i.page == page).map(|i| i.rect()).collect();
-            pdf_glyphs = placed_pdf_text(pdf, pdf_page, size, &chars, &covers);
+            for ((_, placed), chars) in places.into_iter().zip(texts) {
+                pdf_glyphs.extend(placed_pdf_text(placed, &chars?, &covers));
+            }
         }
         let ctx = &self.egui_ctx;
         let glyphs = Arc::new(page_text(&self.doc.texts, page, pdf_glyphs, |t| box_glyphs(ctx, t)));
@@ -451,38 +452,32 @@ impl InkApp {
 #[derive(Clone)]
 pub(super) struct NoteText {
     pub page_count: u32,
-    page_size: (f32, f32),
     texts: Vec<TextBox>,
     /// The pictures' places, by page: they hide the PDF's text under them.
     pictures: Vec<(u32, Rect)>,
-    pub pdf: Option<PdfBackground>,
+    /// The PDF's file, and the PDF pages on each note page with their
+    /// places (`Document::pdf_places`).
+    pub pdf: Option<Arc<PdfFile>>,
+    places: Vec<Vec<(u32, Rect)>>,
 }
 
 impl NoteText {
     pub fn of(doc: &Document) -> Self {
+        let page_count = doc.page_count.max(1);
         Self {
-            page_count: doc.page_count.max(1),
-            page_size: (doc.page_width, doc.page_height),
+            page_count,
             texts: doc.texts.clone(),
             pictures: doc.images.iter().map(|i| (i.page, i.rect())).collect(),
-            pdf: doc.pdf.clone(),
+            pdf: doc.pdf.as_ref().and_then(|pdf| pdf.file.clone()),
+            places: (0..page_count).map(|page| doc.pdf_places(page)).collect(),
         }
     }
 
-    /// The PDF page under note page `page`, if any.
-    pub fn pdf_page(&self, page: u32) -> Option<u32> {
-        self.pdf.as_ref()?.pages.get(page as usize).copied().flatten()
-    }
-
-    /// The glyphs of `page`; `chars`: the text of the PDF page under it.
-    pub fn page_glyphs(&self, page: u32, chars: &[TextChar]) -> Vec<Glyph> {
-        let pdf = match (&self.pdf, self.pdf_page(page)) {
-            (Some(pdf), Some(pdf_page)) => {
-                let covers: Vec<Rect> = self.pictures.iter().filter(|(p, _)| *p == page).map(|(_, r)| *r).collect();
-                placed_pdf_text(pdf, pdf_page, self.page_size, chars, &covers)
-            }
-            _ => Vec::new(),
-        };
+    /// The glyphs of `page`; `chars`: the text of each PDF page on it.
+    pub fn page_glyphs(&self, page: u32, chars: impl Fn(u32) -> Vec<TextChar>) -> Vec<Glyph> {
+        let covers: Vec<Rect> = self.pictures.iter().filter(|(p, _)| *p == page).map(|(_, r)| *r).collect();
+        let places = self.places.get(page as usize).into_iter().flatten();
+        let pdf = places.flat_map(|(pdf_page, placed)| placed_pdf_text(*placed, &chars(*pdf_page), &covers)).collect();
         page_text(&self.texts, page, pdf, |t| t.text.chars().map(|ch| Glyph { ch, rect: None }).collect())
     }
 }
@@ -495,18 +490,11 @@ fn page_text(texts: &[TextBox], page: u32, pdf: Vec<Glyph>, boxed: impl Fn(&Text
     merge(pdf, boxes.into_iter().map(|t| (t.y, boxed(t))).collect())
 }
 
-/// The text `chars` of PDF page `pdf_page`, placed where that page sits on
-/// a note page of `page_size`, without what the pictures there (`covers`)
+/// The text `chars` of a PDF page, placed where that page sits on its note
+/// page (`placed`, page space), without what the pictures there (`covers`)
 /// hide.
-fn placed_pdf_text(
-    pdf: &PdfBackground,
-    pdf_page: u32,
-    page_size: (f32, f32),
-    chars: &[TextChar],
-    covers: &[Rect],
-) -> Vec<Glyph> {
-    let placed = pdf.placement(pdf_page, page_size.0, page_size.1).map(|placed| place_pdf_text(chars, placed));
-    uncovered(placed.unwrap_or_default(), covers)
+fn placed_pdf_text(placed: Rect, chars: &[TextChar], covers: &[Rect]) -> Vec<Glyph> {
+    uncovered(place_pdf_text(chars, placed), covers)
 }
 
 /// `glyphs` without those whose middle is under one of `covers` (pictures
@@ -532,9 +520,9 @@ fn uncovered(glyphs: Vec<Glyph>, covers: &[Rect]) -> Vec<Glyph> {
 }
 
 /// The PDF's text placed on a note page: `placed` is where the PDF page
-/// sits, `[x, y, width, height]` in page coordinates.
-fn place_pdf_text(chars: &[TextChar], placed: [f32; 4]) -> Vec<Glyph> {
-    let [x, y, w, h] = placed;
+/// sits, in page coordinates.
+fn place_pdf_text(chars: &[TextChar], placed: Rect) -> Vec<Glyph> {
+    let (x, y, w, h) = (placed.left(), placed.top(), placed.width(), placed.height());
     chars
         .iter()
         .map(|c| Glyph {
@@ -846,9 +834,9 @@ mod tests {
         doc.page_count = 2;
         doc.texts = vec![tb(0, 90.0, "Second *box*"), tb(1, 0.0, "Other page"), tb(0, 20.0, "First")];
         let note = NoteText::of(&doc);
-        let s: String = note.page_glyphs(0, &[]).iter().map(|g| g.ch).collect();
+        let s: String = note.page_glyphs(0, |_| Vec::new()).iter().map(|g| g.ch).collect();
         assert_eq!(s, "First\nSecond *box*");
-        let text = searchable(&note.page_glyphs(0, &[]));
+        let text = searchable(&note.page_glyphs(0, |_| Vec::new()));
         assert_eq!(find_all(&text, &normalize_query("second")).len(), 1);
         assert!(find_all(&text, &normalize_query("other")).is_empty());
     }
