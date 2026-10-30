@@ -504,15 +504,9 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions, pictures: &HashMap
         } else {
             let re = |r: emath::Rect| {
                 let [x, y, w, h] = [r.left(), r.top(), r.width(), r.height()].map(|v| num(v, 2));
-                format!(
-                    "{x} {y} {w} {h} re
-"
-                )
+                format!("{x} {y} {w} {h} re\n")
             };
-            c.push_str(
-                "q
-",
-            );
+            c.push_str("q\n");
             c.push_str(&re(emath::Rect::from_min_size(
                 emath::Pos2::ZERO,
                 emath::vec2(doc.page_width, doc.page_height),
@@ -521,15 +515,9 @@ fn page_content(doc: &Document, page: u32, opts: &PdfOptions, pictures: &HashMap
                 c.push_str(&re(r));
             }
             // Even-odd: the page without the PDF's pages.
-            c.push_str(
-                "W* n
-",
-            );
+            c.push_str("W* n\n");
             write_rules(&mut c, doc);
-            c.push_str(
-                "Q
-",
-            );
+            c.push_str("Q\n");
         }
     }
     for img in doc.images.iter().filter(|i| i.page == page) {
@@ -869,19 +857,8 @@ mod tests {
         let content = page_content(&page, 0, &opts, &HashMap::new());
         // The page with a hole per PDF page, then the rules, inside it.
         let clip = content.find("W* n").expect("the rules are clipped");
-        assert_eq!(
-            content[..clip]
-                .matches(
-                    " re
-"
-                )
-                .count(),
-            3
-        );
-        assert!(content[clip..].contains(
-            " l S
-"
-        ));
+        assert_eq!(content[..clip].matches(" re\n").count(), 3);
+        assert!(content[clip..].contains(" l S\n"));
         // Without the PDF's pages, nothing to keep them off.
         let bare = PdfOptions { include_pdf_pages: false, ..opts };
         assert!(!page_content(&page, 0, &bare, &HashMap::new()).contains("W* n"));

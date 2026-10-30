@@ -870,7 +870,8 @@ impl InkApp {
             }
             Act::ForgetPdf(path) => self.settings.forget_pdf(&path),
             Act::SetRoot(text) => {
-                let p = PathBuf::from(text.trim());
+                // Without the quotes of Explorer's "Copy as path", as the other path boxes.
+                let p = PathBuf::from(text.trim().trim_matches('"'));
                 match std::fs::create_dir_all(&p) {
                     Ok(()) => {
                         self.settings.library_root = p.to_string_lossy().into_owned();

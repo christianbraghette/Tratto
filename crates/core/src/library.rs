@@ -465,7 +465,11 @@ pub fn trash(root: &Path, path: &Path) -> Result<()> {
     }
     let mut index = read_trash_index(root);
     let origin = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-    index.push(TrashEntry { name: file_name(&target), origin, deleted: storage::now_secs() });
+    let name = file_name(&target);
+    // A line left by an item of that name removed from the trash by hand
+    // would be found first, and the item restored to that one's place.
+    index.retain(|e| e.name != name);
+    index.push(TrashEntry { name, origin, deleted: storage::now_secs() });
     write_trash_index(root, &index)?;
     Ok(())
 }
@@ -809,6 +813,24 @@ mod tests {
             assert_eq!(rename_note(&upper, "plan").unwrap(), dir.join("plan.ink"));
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_item_removed_from_the_trash_by_hand_leaves_no_place_behind() {
+        let root = std::env::temp_dir().join("tratto_trash_stale_test");
+        let _ = fs::remove_dir_all(&root);
+        let first = create_note(&root.join("A"), "Plan").unwrap();
+        trash(&root, &first).unwrap();
+        // Erased outside the app: its line in the index stays.
+        let trashed = list_trash(&root)[0].path.clone();
+        fs::remove_file(&trashed).unwrap();
+        // Another note gets the same name in the trash.
+        let second = create_note(&root.join("B"), "Plan").unwrap();
+        trash(&root, &second).unwrap();
+        let item = list_trash(&root)[0].path.clone();
+        assert_eq!(item, trashed);
+        assert_eq!(restore(&root, &item).unwrap(), second, "back where it came from, not where the first was");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

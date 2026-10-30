@@ -514,6 +514,14 @@ impl InkApp {
         self.page_drag = None;
         self.picture = None;
         self.picture_drag = None;
+        // Dropped, not finished: they belong to the note that was open (ids
+        // start over in every note, so they would name others in this one),
+        // and finishing a resize would apply its undo to the new note.
+        self.selection = None;
+        self.lasso = None;
+        self.moving = None;
+        self.transform = None;
+        self.touch_hold = None;
         self.picture_textures.clear();
         self.edit = None;
         self.text_press = None;

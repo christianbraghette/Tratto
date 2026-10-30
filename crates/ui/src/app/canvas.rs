@@ -847,9 +847,9 @@ impl InkApp {
         }
     }
 
-    /// The pages and what is on them. Bottom to top: paper, highlighters,
-    /// rules, text, pen (see `render`), then selected text and search
-    /// matches.
+    /// The pages and what is on them. Bottom to top: paper, the PDF's pages,
+    /// rules, pictures, highlighters, text, pen (see `render`), then selected
+    /// text and search matches.
     fn paint_pages(&mut self, ctx: &egui::Context, painter: &egui::Painter, view: &View, now: f64) {
         let (layout, scale, made) = (view.layout, view.scale, view.made);
         self.picture_textures.begin_frame(ctx, now, self.scroll, scale);

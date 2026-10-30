@@ -343,7 +343,7 @@ const COMPACT_MAX_NEW: usize = 8;
 /// The two stroke layers of a page (see the module docs).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Layer {
-    /// Highlighter strokes, under the rules and the text.
+    /// Highlighter strokes, over the rules and the pictures, under the text.
     Highlight,
     /// Pen strokes, on top.
     Ink,
@@ -897,7 +897,7 @@ fn rule_steps(spacing: f32, from: f32, to: f32, end: f32, canvas: bool) -> impl 
 }
 
 /// The rules, grid or dots of the pages that have them (`Document::ruled`)
-/// and the edge of every visible page, over the highlighters. Only what is
+/// and the edge of every visible page, under the highlighters. Only what is
 /// in view is drawn (a canvas is one very large page).
 pub fn paint_rules(painter: &Painter, view: &View, doc: &Document) {
     let l = view.layout;

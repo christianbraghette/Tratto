@@ -183,17 +183,24 @@ impl InkApp {
             self.clipboard.clip = None;
             return;
         }
+        self.copy_selected(ctx);
+    }
+
+    /// Copies what is selected on the note (not selected text).
+    fn copy_selected(&mut self, ctx: &egui::Context) {
         let Some(content) = self.selected_content() else { return };
         self.export_content(ctx, &content);
         self.clipboard.clip = Some(Clip::Content(content));
     }
 
-    /// Copies what is selected on the note and takes it off.
+    /// Copies what is selected on the note and takes it off. What is cut is
+    /// what is copied, even with text selected too (the select tool's
+    /// "Select all text"): copying that text instead would lose the ink.
     pub(super) fn cut(&mut self, ctx: &egui::Context) {
         if !self.can_cut() {
             return;
         }
-        self.copy(ctx);
+        self.copy_selected(ctx);
         self.delete_selection();
     }
 
