@@ -21,6 +21,7 @@
 //! - `outline_ui`     the sidebar's outline view (a PDF's contents)
 //! - `settings_ui`    the sidebar's note settings and the Settings window
 //! - `library_ui`     the library screen and its dialogs
+//! - `library_views`  the library screen's views, note cards and previews
 //! - `library_panel`  the sidebar's notebook view
 //! - `menus`          title bar menus, context menu, shortcuts, help windows
 //! - `export_ui`      the Export PDF dialog
@@ -67,6 +68,7 @@ mod ink;
 mod laser;
 mod library_panel;
 mod library_ui;
+mod library_views;
 mod menus;
 mod minimap;
 mod notes;

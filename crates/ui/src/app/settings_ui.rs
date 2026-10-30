@@ -14,7 +14,8 @@ use tratto_core::history::Action;
 use tratto_core::model::{CANVAS_SIZE, PAPERS, PDF_GAPS, PageKind, paper_label};
 
 use super::InkApp;
-use super::library_ui::{Dialog, location, when};
+use super::library_ui::Dialog;
+use super::library_views::{location, when};
 use super::menus::SETTINGS_WINDOW;
 use crate::file_assoc;
 use crate::settings::{BatterySaver, EraserMode, Settings, SidebarSide, ToolbarPosition};

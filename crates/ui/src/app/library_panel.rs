@@ -22,7 +22,8 @@ use egui_phosphor::regular as icon;
 use tratto_core::library::{self, NoteInfo, NotebookInfo, SectionInfo, TrashItem};
 
 use super::InkApp;
-use super::library_ui::{Act, Dialog, when};
+use super::library_ui::{Act, Dialog};
+use super::library_views::{notebook_tint, when};
 use super::menus::{button_menu, entry};
 use crate::theme::{self, color, radius, size, space};
 use crate::toolbar;
@@ -95,7 +96,7 @@ impl InkApp {
                         if let Some(nb) = &notebook {
                             let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
                             // The notebook's icon in its colour, then the name.
-                            let tint = Color32::from_rgb(nb.color[0], nb.color[1], nb.color[2]);
+                            let tint = notebook_tint(nb);
                             let icon_center = egui::pos2(area.left() + 12.0, area.center().y);
                             ui.painter().text(
                                 icon_center,
@@ -269,7 +270,7 @@ struct Group<'a> {
 /// "General" (notes directly in the notebook), one group per section, a row
 /// to add a section, and the notebook's trash.
 fn notebook_tree(ui: &mut Ui, nb: &NotebookInfo, trash: &[&TrashItem], t: &mut Tree) {
-    let tint = Color32::from_rgb(nb.color[0], nb.color[1], nb.color[2]);
+    let tint = notebook_tint(nb);
     // While a note is dragged, an empty "General" is a place to drop it.
     if !nb.loose.is_empty() || nb.sections.is_empty() || t.drag.is_some() {
         let g = Group {
