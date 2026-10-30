@@ -1,0 +1,7 @@
+# Whole-file formatting commits, skipped by `git blame` (GitHub reads this file;
+# locally: git config blame.ignoreRevsFile .git-blame-ignore-revs).
+
+# chore: store every text file with lf line endings
+0a6e49beb54606db51178050b6ff04db9e55d0df
+# style: apply rustfmt
+89aacb14cd13514b3da1a1980b984287e791ed50
