@@ -152,32 +152,6 @@ impl UpdateChannel {
     }
 }
 
-/// When Tratto presents with vsync to save power, whatever `Settings::vsync`
-/// says.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BatterySaver {
-    /// While the computer runs on battery at `power::LOW_PERCENT` or less.
-    #[default]
-    Low,
-    /// While the computer runs on battery.
-    OnBattery,
-    Always,
-    Off,
-}
-
-impl BatterySaver {
-    pub const ALL: [BatterySaver; 4] = [Self::Low, Self::OnBattery, Self::Always, Self::Off];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Low => "When battery is low",
-            Self::OnBattery => "On battery",
-            Self::Always => "Always",
-            Self::Off => "Off",
-        }
-    }
-}
-
 /// Notes whose place is remembered, at most (the least recent is forgotten).
 pub const NOTE_VIEWS: usize = 200;
 /// PDFs listed as recently read, at most.
@@ -240,8 +214,6 @@ pub struct Settings {
     pub predict_pen: bool,
     /// Present with vsync: saves power, adds latency.
     pub vsync: bool,
-    /// When vsync is used anyway, to save power.
-    pub battery_saver: BatterySaver,
     /// Frames per second at most, without vsync (`0`: no limit).
     pub fps_limit: u32,
     pub zoom: ZoomMode,
@@ -417,7 +389,6 @@ impl Default for Settings {
             eraser_mode: EraserMode::Stroke,
             predict_pen: true,
             vsync: false,
-            battery_saver: BatterySaver::default(),
             fps_limit: crate::frame_limit::DEFAULT_FPS,
             zoom: ZoomMode::Percent(100),
             sidebar: Sidebar::Closed,
@@ -485,6 +456,15 @@ mod tests {
         }
         assert_eq!(s.note_views.len(), NOTE_VIEWS);
         assert_eq!(s.note_view("b.ink"), None, "the least recent is forgotten");
+    }
+
+    /// Settings saved by a version with the battery saver (since removed)
+    /// still load, keeping the rest.
+    #[test]
+    fn settings_of_older_versions_still_load() {
+        let saved = "(vsync: true, battery_saver: Low, fps_limit: 60)";
+        let s: Settings = ron::from_str(saved).expect("an unknown setting is skipped");
+        assert_eq!((s.vsync, s.fps_limit), (true, 60));
     }
 
     #[test]

@@ -28,7 +28,6 @@
 //! - `file_assoc`     Tratto as the system's PDF reader (file associations)
 //! - `file_picker`    the system's file dialogs, off the UI thread
 //! - `frame_limit`    frame rate cap when vsync is off
-//! - `power`          whether the computer runs on battery (battery saver)
 //! - `print`          printing through the system's print dialog
 //! - `saver`          saves the open note on a background thread
 //! - `snapshot`       a picture of what was copied, for other apps
@@ -51,7 +50,6 @@ mod kinetic;
 mod markdown;
 mod pdf_nav;
 mod pdf_view;
-mod power;
 mod print;
 mod render;
 mod saver;
@@ -172,8 +170,8 @@ fn main() -> eframe::Result<()> {
     // Low-latency presentation by default: no vsync wait and at most one frame
     // queued, frames capped (File > Settings, see `frame_limit`). Vsync (saves
     // power, adds latency) is a setting too, read here for the window to start
-    // with it; it changes at runtime (`InkApp::present_mode`, also for the
-    // battery saver). TRATTO_VSYNC=1 forces it on.
+    // with it; it changes at runtime (`InkApp::present_mode`). TRATTO_VSYNC=1
+    // forces it on.
     // TRATTO_MSAA=4 additionally enables 4x MSAA (strokes are already
     // anti-aliased analytically, so this is rarely needed).
     let saved = app::saved_settings();

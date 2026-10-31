@@ -54,7 +54,7 @@ use crate::pdf_view::PdfTextures;
 use crate::render::{LiveStroke, PictureTextures, StrokeCache};
 use crate::saver::Saver;
 use crate::scrollbar;
-use crate::settings::{BatterySaver, NoteView, Settings, Sidebar, UpdateMode, ZoomMode};
+use crate::settings::{NoteView, Settings, Sidebar, UpdateMode, ZoomMode};
 use crate::theme::{self, color, radius, space};
 use crate::toolbar::{self, Tool, ToolbarEvent};
 use crate::update::{self, Updater};
@@ -243,6 +243,10 @@ struct PenInput {
     barrel: bool,
     /// Pressure of the pen's last sample (1.0 for a mouse).
     pressure: f32,
+    /// Wayland: where each move of this frame's pen samples went (its
+    /// `PointerMoved`) and its pressure, so every point of a stroke gets
+    /// its own, not the frame's last (see `canvas::pointer_samples`).
+    samples: Vec<(Pos2, f32)>,
     /// Windows: the touch of this frame is the pen's (see `finger`).
     windows_touch: bool,
     /// A paste key egui did not report as a paste was pressed this frame
@@ -561,7 +565,40 @@ impl InkApp {
         crate::win_frame::install(cc);
         crate::win_frame::open_maximized();
 
-        let mut app = Self {
+        let backend = cc.wgpu_render_state.as_ref().map(|rs| rs.adapter.get_info().backend);
+        let mut app = Self::with_context(&cc.egui_ctx, settings, vsync, backend);
+        if let Some(path) = open.as_ref().filter(|p| reader && p.is_file() && is_pdf(p)) {
+            // Just the PDF: no library, no update check from every reader window.
+            app.standalone = Some(Standalone { start: app.settings.clone(), pdfs: Vec::new() });
+            app.open_pdf(&cc.egui_ctx, path);
+            return app;
+        }
+        if app.settings.updates != UpdateMode::Off {
+            let install = app.settings.updates == UpdateMode::Install;
+            app.updater.check(&cc.egui_ctx, app.settings.update_channel, install);
+        }
+        app.refresh_library();
+        if let Some(path) = open {
+            app.open_path(&cc.egui_ctx, &path);
+            return app;
+        }
+        // Back where the app was closed: the note that was open, if any.
+        let last = app.settings.last_note.clone().filter(|_| app.settings.reopen_last_note).map(PathBuf::from);
+        if let Some(path) = last.filter(|p| p.is_file()) {
+            if is_pdf(&path) {
+                let ctx = cc.egui_ctx.clone();
+                app.open_pdf(&ctx, &path);
+            } else {
+                app.open_note(&path);
+            }
+        }
+        app
+    }
+
+    /// The app's state before anything is opened: what `new` starts from,
+    /// with no window (tests make one this way).
+    fn with_context(ctx: &egui::Context, settings: Settings, vsync: bool, backend: Option<wgpu::Backend>) -> Self {
+        Self {
             doc: Document::default(),
             history: History::default(),
             tool: Tool::Pointer,
@@ -578,7 +615,7 @@ impl InkApp {
             status_at: None,
             pen_input: PenInput { pressure: 1.0, ..PenInput::default() },
             frame_limit: FrameLimiter::new(vsync),
-            backend_in_use: cc.wgpu_render_state.as_ref().map(|rs| rs.adapter.get_info().backend),
+            backend_in_use: backend,
             saved_tool: None,
             panning: false,
             drag_pointer: None,
@@ -604,7 +641,7 @@ impl InkApp {
             escape_for_overlay: false,
             outline_open: HashSet::new(),
             loading: None,
-            egui_ctx: cc.egui_ctx.clone(),
+            egui_ctx: ctx.clone(),
             page_drag: None,
             panel_page: None,
             scroll_to: None,
@@ -626,7 +663,7 @@ impl InkApp {
             lib_ui: library_ui::LibraryUi::default(),
             note_path: None,
             note_meta: NoteMeta::new("Untitled note", true),
-            saver: Saver::new(cc.egui_ctx.clone()),
+            saver: Saver::new(ctx.clone()),
             dirty: false,
             close_unsaved: false,
             last_change: Instant::now(),
@@ -672,33 +709,13 @@ impl InkApp {
             pick_request: None,
             external_notebooks: Vec::new(),
             standalone: None,
-        };
-        if let Some(path) = open.as_ref().filter(|p| reader && p.is_file() && is_pdf(p)) {
-            // Just the PDF: no library, no update check from every reader window.
-            app.standalone = Some(Standalone { start: app.settings.clone(), pdfs: Vec::new() });
-            app.open_pdf(&cc.egui_ctx, path);
-            return app;
         }
-        if app.settings.updates != UpdateMode::Off {
-            let install = app.settings.updates == UpdateMode::Install;
-            app.updater.check(&cc.egui_ctx, app.settings.update_channel, install);
-        }
-        app.refresh_library();
-        if let Some(path) = open {
-            app.open_path(&cc.egui_ctx, &path);
-            return app;
-        }
-        // Back where the app was closed: the note that was open, if any.
-        let last = app.settings.last_note.clone().filter(|_| app.settings.reopen_last_note).map(PathBuf::from);
-        if let Some(path) = last.filter(|p| p.is_file()) {
-            if is_pdf(&path) {
-                let ctx = cc.egui_ctx.clone();
-                app.open_pdf(&ctx, &path);
-            } else {
-                app.open_note(&path);
-            }
-        }
-        app
+    }
+
+    /// An app with no window and no library, on an empty note (tests).
+    #[cfg(test)]
+    pub(super) fn for_test() -> Self {
+        Self::with_context(&egui::Context::default(), Settings::default(), false, None)
     }
 
     // -------------------------------------------------------------- updates
@@ -747,27 +764,17 @@ impl InkApp {
         }
     }
 
-    /// The battery saver is on now (see `Settings::battery_saver`).
-    fn saving_power(&self, ctx: &egui::Context) -> bool {
-        match self.settings.battery_saver {
-            BatterySaver::Off => false,
-            BatterySaver::Always => true,
-            BatterySaver::Low => crate::power::battery_low(ctx),
-            BatterySaver::OnBattery => crate::power::on_battery(ctx),
-        }
-    }
-
-    /// Presents with vsync when the setting, the battery saver or
-    /// TRATTO_VSYNC asks for it. The surface is reconfigured only when that
-    /// changes (plugging in, a setting), never in the middle of writing.
+    /// Presents with vsync when the setting or TRATTO_VSYNC asks for it.
+    /// The surface is reconfigured only when that changes, never in the
+    /// middle of writing.
     ///
     /// Without vsync, DirectX 12 presents in mailbox mode: wgpu's choice
     /// there (immediate) tears, the edge of a page turns into steps while
     /// zooming. Mailbox shows the newest whole frame at the next refresh,
     /// without waiting for it. The window starts with wgpu's choice (the
     /// backend is only known once it exists) and switches on the first frame.
-    fn present_mode(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let vsync = self.settings.vsync || self.frame_limit.vsync_forced() || self.saving_power(ctx);
+    fn present_mode(&mut self, frame: &mut eframe::Frame) {
+        let vsync = self.settings.vsync || self.frame_limit.vsync_forced();
         let mode = if vsync {
             wgpu::PresentMode::AutoVsync
         } else if self.backend_in_use == Some(wgpu::Backend::Dx12) {
@@ -1165,7 +1172,7 @@ impl eframe::App for InkApp {
         }
         // Before anything is painted: the palette of this frame.
         crate::theme::follow(ctx, self.settings.theme);
-        self.present_mode(ctx, frame);
+        self.present_mode(frame);
         Self::wake_for_long_press(ctx);
         self.publish_clipboard(ctx);
         // Every frame, so that one pressed elsewhere is not pasted later.

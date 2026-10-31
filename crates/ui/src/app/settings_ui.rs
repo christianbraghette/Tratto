@@ -18,7 +18,7 @@ use super::library_ui::Dialog;
 use super::library_views::{location, when};
 use super::menus::SETTINGS_WINDOW;
 use crate::file_assoc;
-use crate::settings::{BatterySaver, EraserMode, Settings, SidebarSide, ToolbarPosition};
+use crate::settings::{EraserMode, Settings, SidebarSide, ToolbarPosition};
 use crate::theme::{self, ThemeMode, color, space};
 
 /// Note settings in the sidebar: default width and resize range.
@@ -318,7 +318,6 @@ impl InkApp {
         ui.spacing_mut().slider_width = 220.0;
         let vsync_now = self.frame_limit.vsync();
         let vsync_forced = self.frame_limit.vsync_forced();
-        let saving_power = self.saving_power(ui.ctx());
         let fps_overridden = self.frame_limit.overridden();
         let s = &mut self.settings;
 
@@ -343,7 +342,7 @@ impl InkApp {
         appearance_section(ui, s);
         canvas_section(ui, s);
         pen_section(ui, s);
-        display_section(ui, s, FrameRate { vsync_now, vsync_forced, saving_power, fps_overridden });
+        display_section(ui, s, FrameRate { vsync_now, vsync_forced, fps_overridden });
 
         section(ui, "New notes");
         rows(ui, "global_new_notes", |ui| {
@@ -532,34 +531,19 @@ struct FrameRate {
     vsync_now: bool,
     /// `TRATTO_VSYNC` sets vsync.
     vsync_forced: bool,
-    saving_power: bool,
     /// `TRATTO_FPS` sets the limit.
     fps_overridden: bool,
 }
 
-/// Vsync, the battery saver and the frame rate limit.
+/// Vsync and the frame rate limit.
 fn display_section(ui: &mut Ui, s: &mut Settings, rate: FrameRate) {
-    let FrameRate { vsync_now, vsync_forced, saving_power, fps_overridden } = rate;
+    let FrameRate { vsync_now, vsync_forced, fps_overridden } = rate;
     section(ui, "Display");
     rows(ui, "global_display", |ui| {
         row(ui, "Vsync", |ui| {
             ui.add_enabled(!vsync_forced, egui::Checkbox::new(&mut s.vsync, "Wait for the display"))
                 .on_hover_text("Saves power, but the ink trails the pen a little more")
                 .on_disabled_hover_text("Set by the TRATTO_VSYNC environment variable");
-        });
-        row(ui, "Battery saver", |ui| {
-            egui::ComboBox::from_id_salt("battery_saver")
-                .selected_text(s.battery_saver.label())
-                .show_ui(ui, |ui| {
-                    for mode in BatterySaver::ALL {
-                        ui.selectable_value(&mut s.battery_saver, mode, mode.label());
-                    }
-                })
-                .response
-                .on_hover_text(format!(
-                    "Waits for the display to save power. Low: on battery at {}% or less",
-                    crate::power::LOW_PERCENT
-                ));
         });
         row(ui, "Frame rate limit", |ui| {
             ui.add_enabled_ui(!vsync_now && !fps_overridden, |ui| {
@@ -577,11 +561,7 @@ fn display_section(ui: &mut Ui, s: &mut Settings, rate: FrameRate) {
             });
         });
     });
-    if saving_power && !s.vsync {
-        hint(ui, "The battery saver is on: Tratto waits for the display.");
-    } else {
-        hint(ui, "A lower limit uses less GPU while you write or scroll.");
-    }
+    hint(ui, "A lower limit uses less GPU while you write or scroll.");
 }
 
 /// Scroll acceleration or momentum: off, the default (1×), up to double.

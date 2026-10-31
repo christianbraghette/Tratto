@@ -556,3 +556,41 @@ impl InkApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use eframe::egui::{Pos2, Vec2};
+    use tratto_core::model::{Point, Stroke, StrokeKind};
+
+    use super::*;
+    use crate::app::{Lasso, MoveDrag};
+
+    /// A note of one stroke, with the id the first stroke of every note gets.
+    fn note_with_a_stroke() -> Document {
+        let mut doc = Document::default();
+        let id = doc.alloc_id();
+        let points = vec![Point::new(10.0, 10.0, 1.0), Point::new(90.0, 10.0, 1.0)];
+        doc.strokes.push(Stroke::new(id, 0, StrokeKind::Pen, [0, 0, 0, 255], 2.0, points));
+        doc
+    }
+
+    /// What was selected or being dragged in one note is gone in the next:
+    /// its ids would name what is in that one.
+    #[test]
+    fn another_note_opens_with_nothing_selected() {
+        let mut app = InkApp::for_test();
+        app.doc = note_with_a_stroke();
+        let ids: HashSet<u64> = app.doc.strokes.iter().map(|s| s.id).collect();
+        app.selection = app.selection_for(0, ids, HashSet::new(), HashSet::new());
+        app.lasso = Some(Lasso { page: 0, points: vec![Pos2::ZERO], rect: false });
+        app.moving = Some(MoveDrag { start: Pos2::ZERO, delta: Vec2::ZERO });
+        assert!(app.selection.is_some());
+
+        let path = std::env::temp_dir().join("tratto_reset_test.ink");
+        app.show_note(&path, NoteMeta::new("Other", false), note_with_a_stroke(), NoteWriter::default());
+        assert!(app.selection.is_none() && app.lasso.is_none() && app.moving.is_none());
+        assert!(!app.busy(), "nothing is being dragged");
+    }
+}

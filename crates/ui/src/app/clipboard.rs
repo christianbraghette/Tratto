@@ -546,6 +546,43 @@ pub(super) fn content_bounds(strokes: &[Stroke], texts: &[TextBox], images: &[Im
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::text_select::TextSelection;
+
+    /// A text box of the note's first page, with the text "Shopping list".
+    fn text_box(id: u64) -> TextBox {
+        TextBox {
+            id,
+            page: 0,
+            x: 50.0,
+            y: 60.0,
+            width: 200.0,
+            size: 16.0,
+            color: [0, 0, 0],
+            text: "Shopping list".into(),
+            lines: vec!["Shopping list".into()],
+            line_h: 20.0,
+            layout: None,
+        }
+    }
+
+    /// Selected with the select tool, and some text of the page selected
+    /// too ("Select all text on page" keeps the selection): a cut copies
+    /// what it takes off, not that text.
+    #[test]
+    fn a_cut_copies_what_it_takes_off() {
+        let mut app = InkApp::for_test();
+        let id = app.doc.alloc_id();
+        app.doc.texts.push(text_box(id));
+        app.selection = app.selection_for(0, HashSet::new(), HashSet::from([id]), HashSet::new());
+        app.text_sel = Some(TextSelection::new(0, 0..4));
+        let ctx = app.egui_ctx.clone();
+        app.cut(&ctx);
+        assert!(app.doc.texts.is_empty(), "taken off");
+        match &app.clipboard.clip {
+            Some(Clip::Content(content)) => assert_eq!(content.texts.len(), 1, "copied"),
+            _ => panic!("the cut text box is not on the clipboard"),
+        }
+    }
 
     #[test]
     fn pasted_content_stays_on_the_page() {

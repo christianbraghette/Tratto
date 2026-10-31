@@ -659,7 +659,10 @@ struct PreviewBatch {
     /// What it was made from: the note's modified time and strokes, the
     /// card's scale and the pixels per point.
     made_for: (u64, usize, u32, u32),
-    batch: Batch,
+    /// The highlighters, drawn first with the darken blend (as on the
+    /// page), and the ink over them.
+    highlight: Batch,
+    ink: Batch,
     last_used: u64,
 }
 
@@ -688,21 +691,28 @@ fn paint_preview(painter: &egui::Painter, rect: Rect, note: &NoteInfo) {
     let made_for = (note.meta.modified, pv.strokes.len(), scale.to_bits(), ppp.to_bits());
     let entry = cache.batches.entry(key).or_insert_with(|| PreviewBatch {
         made_for: (0, 0, 0, 0),
-        batch: Batch::default(),
+        highlight: Batch::default(),
+        ink: Batch::default(),
         last_used: frame,
     });
     entry.last_used = frame;
     if entry.made_for != made_for {
-        let mut mesh = egui::epaint::Mesh::default();
+        let (mut highlight, mut ink) = (egui::epaint::Mesh::default(), egui::epaint::Mesh::default());
         for s in &pv.strokes {
+            let kind = preview_kind(s.color);
+            let mesh = if kind == StrokeKind::Highlighter { &mut highlight } else { &mut ink };
             // Full pressure: the stroke's own width.
             let pts: Vec<Point> = s.pts.iter().map(|p| Point::new(p[0], p[1], 1.0)).collect();
-            crate::stroke_mesh::tessellate(&mut mesh, StrokeKind::Pen, s.color, s.width, &pts, scale, 1.0 / ppp);
+            let rgba = crate::render::paint_rgba(kind, s.color);
+            crate::stroke_mesh::tessellate(mesh, kind, rgba, s.width, &pts, scale, 1.0 / ppp);
         }
-        entry.batch.replace(mesh);
+        entry.highlight.replace(highlight);
+        entry.ink.replace(ink);
         entry.made_for = made_for;
     }
-    stroke_gpu::paint_batch(painter, &entry.batch, rect.min.to_vec2(), 1.0, Blend::Over);
+    let at_card = rect.min.to_vec2();
+    stroke_gpu::paint_batch(painter, &entry.highlight, at_card, 1.0, Blend::Darken);
+    stroke_gpu::paint_batch(painter, &entry.ink, at_card, 1.0, Blend::Over);
     for b in &pv.bars {
         let r = Rect::from_min_size(at(b[0], b[1]), vec2(b[2] * scale, (b[3] * scale).max(1.0)));
         painter.rect_filled(r, 0.5, Color32::from_black_alpha(140));
@@ -710,6 +720,12 @@ fn paint_preview(painter: &egui::Painter, rect: Rect, note: &NoteInfo) {
 }
 
 // ---------------------------------------------------------------- helpers
+
+/// What drew a stroke of the preview, which keeps only its colour: pens
+/// write opaque, a highlighter's colour carries its strength (alpha).
+fn preview_kind(rgba: [u8; 4]) -> StrokeKind {
+    if rgba[3] < 255 { StrokeKind::Highlighter } else { StrokeKind::Pen }
+}
 
 pub(super) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -771,6 +787,12 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previews_tell_highlighters_from_ink_by_their_colour() {
+        assert_eq!(preview_kind([255, 230, 0, 96]), StrokeKind::Highlighter);
+        assert_eq!(preview_kind([20, 20, 20, 255]), StrokeKind::Pen);
+    }
 
     #[test]
     fn dates() {

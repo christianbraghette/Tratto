@@ -797,20 +797,8 @@ impl InkApp {
     /// at: a pen sends several per frame, each touch (its force) just before
     /// the move it makes.
     fn pointer_samples(&mut self, ui: &egui::Ui, resp: &egui::Response) -> (Vec<Pos2>, Vec<f32>) {
-        let mut force = self.pen_input.pressure;
-        let (mut moves, pressures): (Vec<Pos2>, Vec<f32>) = ui.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| match e {
-                    Event::Touch { phase: TouchPhase::Start | TouchPhase::Move, force: Some(f), .. } if *f > 0.0 => {
-                        force = f.clamp(0.0, 1.0);
-                        None
-                    }
-                    Event::PointerMoved(p) => Some((*p, force)),
-                    _ => None,
-                })
-                .unzip()
-        });
+        let samples = std::mem::take(&mut self.pen_input.samples);
+        let (mut moves, pressures) = ui.input(|i| moves_with_pressure(&i.events, self.pen_input.pressure, &samples));
         self.update_pressure(ui.ctx());
         if moves.is_empty() {
             // Out of the window (an item dragged there), where the pointer last was.
@@ -1126,6 +1114,34 @@ impl InkApp {
     }
 }
 
+/// The pointer's moves among `events`, each with the pressure it was taken
+/// at, `last` until one is known: a touch's force comes just before the
+/// move it makes; a Wayland pen's moves are its `samples` (where each went,
+/// in order, and its pressure), matched to them as they come.
+fn moves_with_pressure(events: &[Event], last: f32, samples: &[(Pos2, f32)]) -> (Vec<Pos2>, Vec<f32>) {
+    let mut force = last;
+    let mut samples = samples.iter().peekable();
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Touch { phase: TouchPhase::Start | TouchPhase::Move, force: Some(f), .. } if *f > 0.0 => {
+                force = f.clamp(0.0, 1.0);
+                None
+            }
+            Event::PointerMoved(p) => {
+                if let Some(&&(at, pressure)) = samples.peek()
+                    && at == *p
+                {
+                    force = pressure;
+                    samples.next();
+                }
+                Some((*p, force))
+            }
+            _ => None,
+        })
+        .unzip()
+}
+
 /// The canvas's geometry and clock for one frame, at the zoom it settled on:
 /// what the phases of [`InkApp::canvas_ui`] share.
 struct CanvasFrame {
@@ -1193,6 +1209,23 @@ pub(super) fn centred_left(written: Rect, width: f32) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_pen_sample_keeps_its_own_pressure() {
+        let moved = |x: f32| Event::PointerMoved(pos2(x, 10.0));
+        // A Wayland pen: three samples in one frame, each with its pressure.
+        let events = [moved(1.0), moved(2.0), moved(3.0)];
+        let samples = [(pos2(1.0, 10.0), 0.2), (pos2(2.0, 10.0), 0.5), (pos2(3.0, 10.0), 0.9)];
+        let (moves, pressures) = moves_with_pressure(&events, 0.9, &samples);
+        assert_eq!(moves.len(), 3);
+        assert_eq!(pressures, [0.2, 0.5, 0.9]);
+        // A move that is not the pen's (the mouse) keeps the last pressure.
+        let events = [moved(1.0), moved(7.0), moved(2.0)];
+        let (_, pressures) = moves_with_pressure(&events, 1.0, &samples[..2]);
+        assert_eq!(pressures, [0.2, 0.2, 0.5]);
+        // No pen samples: the pressure known so far.
+        assert_eq!(moves_with_pressure(&[moved(4.0)], 0.7, &[]).1, [0.7]);
+    }
 
     #[test]
     fn what_fits_across_the_view_is_shown_in_its_middle() {

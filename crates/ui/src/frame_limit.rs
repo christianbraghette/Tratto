@@ -11,8 +11,8 @@
 //!
 //! The cap is `Settings::fps_limit` (File > Settings); `TRATTO_FPS=<n>`
 //! overrides it, `0` removes it. With vsync the display paces the frames and
-//! there is no cap. Vsync can change at any time (the setting, the battery
-//! saver, see `InkApp::present_mode`); `TRATTO_VSYNC=1` forces it on.
+//! there is no cap. Vsync can change at any time (the setting, see
+//! `InkApp::present_mode`); `TRATTO_VSYNC=1` forces it on.
 
 use std::time::{Duration, Instant};
 

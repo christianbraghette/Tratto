@@ -823,7 +823,8 @@ fn dot(c: &mut String, p: Sample) {
 /// Compact number formatting (trailing zeros trimmed) to keep streams small.
 fn num(v: f32, decimals: usize) -> String {
     let s = format!("{v:.decimals$}");
-    let t = s.trim_end_matches('0').trim_end_matches('.');
+    // Only the zeros after a decimal point: "100" stays "100".
+    let t = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.') } else { &s };
     if t.is_empty() || t == "-" { "0".to_owned() } else { t.to_owned() }
 }
 
@@ -1140,5 +1141,9 @@ mod tests {
         assert_eq!(num(2.0, 2), "2");
         assert_eq!(num(-0.001, 2), "-0");
         assert_eq!(num(0.0, 3), "0");
+        // Without decimals only the point is left out, never a digit.
+        assert_eq!(num(10.0, 2), "10");
+        assert_eq!(num(100.0, 0), "100");
+        assert_eq!(num(-30.0, 0), "-30");
     }
 }

@@ -114,7 +114,7 @@ and [crates/ui/src/app/mod.rs](crates/ui/src/app/mod.rs) first for the map.
   feature is needed in Cargo.toml; keep doing that, and match egui/winit versions already
   in the tree (e.g. one `wayland-client`).
 - Settled decisions, don't undo them without asking: vsync off by default with a fps cap;
-  battery saver at 20%; no graphics-backend setting (DX12 by default on Windows, override
+  no battery saver (removed: vsync is only the user's setting); no graphics-backend setting (DX12 by default on Windows, override
   only via `WGPU_BACKEND`); PDF export currently turns non-Latin-1 text into `?` with a
   warning (embedded fonts are planned).
 
