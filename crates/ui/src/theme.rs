@@ -388,6 +388,9 @@ fn apply_style(style: &mut egui::Style, p: &color::Palette, dark: bool) {
     s.icon_spacing = 6.0;
     s.combo_width = 120.0;
     s.menu_width = 220.0;
+    // Narrower than egui's 500: a hint stays inside the Settings window
+    // instead of running past its edge.
+    s.tooltip_width = 320.0;
 
     let v = &mut style.visuals;
     v.dark_mode = dark;

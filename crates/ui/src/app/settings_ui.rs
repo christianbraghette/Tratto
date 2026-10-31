@@ -28,7 +28,18 @@ const NOTE_WIDTH: f32 = 340.0;
 
 /// Label | control rows, aligned within a section.
 pub(super) fn rows(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
-    egui::Grid::new(id).num_columns(2).spacing([space::L, space::S]).min_col_width(110.0).show(ui, add);
+    grid_rows(ui, id, 110.0, add);
+}
+
+/// Rows of the Settings window. Each section is a grid of its own, so the
+/// label column is wide enough for its longest label ("Pressure strength"):
+/// the controls of every section then line up.
+fn settings_rows(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
+    grid_rows(ui, id, 130.0, add);
+}
+
+fn grid_rows(ui: &mut Ui, id: &str, label_width: f32, add: impl FnOnce(&mut Ui)) {
+    egui::Grid::new(id).num_columns(2).spacing([space::L, space::S]).min_col_width(label_width).show(ui, add);
 }
 
 pub(super) fn row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
@@ -316,6 +327,9 @@ impl InkApp {
         let standalone = self.standalone.is_some();
         // Sliders filling their column.
         ui.spacing_mut().slider_width = 220.0;
+        // Text in a row wraps too: anything wider than the window would widen
+        // its body past the title bar and the outline (the window has a fixed size).
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
         let vsync_now = self.frame_limit.vsync();
         let vsync_forced = self.frame_limit.vsync_forced();
         let fps_overridden = self.frame_limit.overridden();
@@ -324,7 +338,7 @@ impl InkApp {
         if file_assoc::SUPPORTED {
             section(ui, "PDF reader");
             let registered = file_assoc::is_registered();
-            rows(ui, "global_pdf_reader", |ui| {
+            settings_rows(ui, "global_pdf_reader", |ui| {
                 row(ui, "Open PDFs", |ui| {
                     if registered {
                         ui.label(format!("{}  With Tratto", icon::CHECK));
@@ -345,14 +359,14 @@ impl InkApp {
         display_section(ui, s, FrameRate { vsync_now, vsync_forced, fps_overridden });
 
         section(ui, "New notes");
-        rows(ui, "global_new_notes", |ui| {
+        settings_rows(ui, "global_new_notes", |ui| {
             let size = (&mut s.new_page_width, &mut s.new_page_height);
             paper_rows(ui, "new", size, true, (true, ""), &mut s.new_page_kind, &mut s.new_page_spacing);
         });
         hint(ui, "Used for notes created from now on. Each note keeps its own paper (Note settings).");
 
         section(ui, "Saving");
-        rows(ui, "global_saving", |ui| {
+        settings_rows(ui, "global_saving", |ui| {
             row(ui, "Autosave after", |ui| {
                 ui.add(Slider::new(&mut s.autosave_secs, 1.0..=30.0).step_by(1.0).suffix(" s"));
             });
@@ -362,7 +376,7 @@ impl InkApp {
         // A reader-only window has no library.
         if !standalone {
             section(ui, "Library");
-            rows(ui, "global_library", |ui| {
+            settings_rows(ui, "global_library", |ui| {
                 row(ui, "Folder", |ui| {
                     ui.add(egui::Label::new(theme::muted(&s.library_root)).truncate()).on_hover_text(&s.library_root);
                 });
@@ -380,13 +394,10 @@ impl InkApp {
 
         ui.add_space(space::L);
         ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button(format!("{}  Reset to defaults", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
-                reset = true;
-            }
-            let kept = "Keeps the library folder, the panels and where each note was left.";
-            ui.label(RichText::new(kept).small().color(color::text_faint()));
-        });
+        if ui.button(format!("{}  Reset to defaults", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
+            reset = true;
+        }
+        hint(ui, "Keeps the library folder, the panels and where each note was left.");
 
         match pdf_reader.map(|on| (on, if on { file_assoc::register() } else { file_assoc::unregister() })) {
             Some((true, Ok(()))) => {
@@ -419,7 +430,7 @@ impl InkApp {
 /// Theme, interface size, title bar, toolbar and sidebar places.
 fn appearance_section(ui: &mut Ui, s: &mut Settings) {
     section(ui, "Appearance");
-    rows(ui, "global_appearance", |ui| {
+    settings_rows(ui, "global_appearance", |ui| {
         row(ui, "Theme", |ui| {
             egui::ComboBox::from_id_salt("theme_mode").selected_text(s.theme.label()).show_ui(ui, |ui| {
                 for mode in ThemeMode::ALL {
@@ -456,7 +467,7 @@ fn appearance_section(ui: &mut Ui, s: &mut Settings) {
 /// Scrolling, the minimap and what opens at startup.
 fn canvas_section(ui: &mut Ui, s: &mut Settings) {
     section(ui, "Canvas");
-    rows(ui, "global_canvas", |ui| {
+    settings_rows(ui, "global_canvas", |ui| {
         row(ui, "Smooth scrolling", |ui| {
             ui.checkbox(&mut s.smooth_scroll, "Gliding wheel, flick to pan, animated page jumps");
         });
@@ -493,7 +504,7 @@ fn canvas_section(ui: &mut Ui, s: &mut Settings) {
 /// Pen prediction and pressure, the side button and the eraser.
 fn pen_section(ui: &mut Ui, s: &mut Settings) {
     section(ui, "Pen and input");
-    rows(ui, "global_pen", |ui| {
+    settings_rows(ui, "global_pen", |ui| {
         row(ui, "Prediction", |ui| {
             ui.checkbox(&mut s.predict_pen, "Predict the pen tip").on_hover_text("Lower perceived latency");
         });
@@ -539,7 +550,7 @@ struct FrameRate {
 fn display_section(ui: &mut Ui, s: &mut Settings, rate: FrameRate) {
     let FrameRate { vsync_now, vsync_forced, fps_overridden } = rate;
     section(ui, "Display");
-    rows(ui, "global_display", |ui| {
+    settings_rows(ui, "global_display", |ui| {
         row(ui, "Vsync", |ui| {
             ui.add_enabled(!vsync_forced, egui::Checkbox::new(&mut s.vsync, "Wait for the display"))
                 .on_hover_text("Saves power, but the ink trails the pen a little more")
